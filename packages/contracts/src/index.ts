@@ -1,0 +1,215 @@
+import { z } from "zod";
+
+export const ENGINE_VALUES = ["sqlserver", "mysql"] as const;
+export const EngineSchema = z.enum(ENGINE_VALUES);
+export type Engine = z.infer<typeof EngineSchema>;
+
+export const CHART_TYPE_VALUES = [
+  "table",
+  "kpi_number",
+  "bar",
+  "horizontal_bar",
+  "grouped_bar",
+  "stacked_bar",
+  "line",
+  "area",
+  "combo_bar_line",
+  "pie",
+  "donut",
+  "scatter"
+] as const;
+export const ChartTypeSchema = z.enum(CHART_TYPE_VALUES);
+export type ChartType = z.infer<typeof ChartTypeSchema>;
+
+export const ColumnFormatSchema = z.strictObject({
+  type: z.enum([
+    "text",
+    "integer",
+    "decimal",
+    "currency",
+    "percentage",
+    "date",
+    "date_bucket",
+    "identifier"
+  ]),
+  currency: z.literal("EUR").optional(),
+  decimals: z.number().int().min(0).max(6).optional()
+});
+export type ColumnFormat = z.infer<typeof ColumnFormatSchema>;
+
+export const ChartSpecSchema = z.strictObject({
+  type: ChartTypeSchema,
+  title: z.string().min(1).max(160),
+  x: z.string().min(1).optional(),
+  y: z.array(z.string().min(1)).max(8).optional(),
+  series: z.string().min(1).optional(),
+  formatting: z.record(z.string().min(1), ColumnFormatSchema).default({}),
+  display: z
+    .strictObject({
+      show_legend: z.boolean().default(true),
+      show_data_labels: z.boolean().default(false),
+      sort: z.enum(["x_asc", "x_desc", "y_asc", "y_desc", "none"]).default("none"),
+      limit: z.number().int().min(1).max(100).default(20)
+    })
+    .default({
+      show_legend: true,
+      show_data_labels: false,
+      sort: "none",
+      limit: 20
+    })
+});
+export type ChartSpec = z.infer<typeof ChartSpecSchema>;
+
+export const VerificationStatusSchema = z.enum([
+  "pass",
+  "warn",
+  "fail",
+  "skip",
+  "engine_error"
+]);
+export type VerificationStatus = z.infer<typeof VerificationStatusSchema>;
+
+export const VerificationCheckSchema = z.strictObject({
+  type: z.enum([
+    "static_validation",
+    "tables_in_layer",
+    "columns_in_layer",
+    "dry_run",
+    "row_count_sanity",
+    "null_negative_sanity",
+    "duplicate_output_rows",
+    "join_amplification",
+    "total_vs_breakdown",
+    "header_detail_reconciliation",
+    "business_anchor_plausibility",
+    "metric_consistency",
+    "historical_plausibility",
+    "privacy"
+  ]),
+  status: VerificationStatusSchema,
+  message: z.string().min(1).max(500),
+  evidence: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({})
+});
+export type VerificationCheck = z.infer<typeof VerificationCheckSchema>;
+
+export const VerificationSummarySchema = z.strictObject({
+  status: VerificationStatusSchema,
+  checks: z.array(VerificationCheckSchema),
+  confidence_label: z.enum(["high", "medium", "low", "blocked"]),
+  result_visible: z.boolean()
+});
+export type VerificationSummary = z.infer<typeof VerificationSummarySchema>;
+
+export const RelationshipSchema = z.strictObject({
+  id: z.string().uuid(),
+  from_table: z.string().min(1),
+  from_columns: z.array(z.string().min(1)).min(1),
+  to_table: z.string().min(1),
+  to_columns: z.array(z.string().min(1)).min(1),
+  cardinality: z.enum(["one_to_one", "one_to_many", "many_to_one", "many_to_many"]),
+  semantic_status: z.enum(["confirmed", "suggested", "rejected"]),
+  source: z.enum(["database_fk", "user_validated", "ai_suggested"])
+});
+export type Relationship = z.infer<typeof RelationshipSchema>;
+
+export const SemanticColumnSchema = z.strictObject({
+  name: z.string().min(1),
+  data_type: z.string().min(1),
+  business_name: z.string().min(1).optional(),
+  role: z.enum(["dimension", "measure", "date", "identifier", "unknown"]),
+  format: ColumnFormatSchema.optional(),
+  pii: z.boolean().default(false)
+});
+export type SemanticColumn = z.infer<typeof SemanticColumnSchema>;
+
+export const SemanticTableSchema = z.strictObject({
+  name: z.string().min(1),
+  schema: z.string().min(1).default("dbo"),
+  business_name: z.string().min(1).optional(),
+  active: z.boolean(),
+  columns: z.array(SemanticColumnSchema)
+});
+export type SemanticTable = z.infer<typeof SemanticTableSchema>;
+
+export const SemanticMetricSchema = z.strictObject({
+  id: z.string().uuid(),
+  name: z.string().min(1),
+  expression: z.string().min(1),
+  grain: z.array(z.string().min(1)).default([]),
+  format: ColumnFormatSchema
+});
+export type SemanticMetric = z.infer<typeof SemanticMetricSchema>;
+
+export const BusinessAnchorSchema = z.strictObject({
+  id: z.string().uuid(),
+  name: z.string().min(1),
+  metric_id: z.string().uuid(),
+  expected_range: z.strictObject({
+    min: z.number().finite().optional(),
+    max: z.number().finite().optional()
+  }),
+  period: z.enum(["daily", "monthly", "quarterly", "yearly"])
+});
+export type BusinessAnchor = z.infer<typeof BusinessAnchorSchema>;
+
+export const SemanticLayerSchema = z.strictObject({
+  tenant_id: z.string().uuid(),
+  version_id: z.string().uuid(),
+  version: z.number().int().positive(),
+  status: z.enum(["draft", "active", "archived"]),
+  engine: EngineSchema,
+  tables: z.array(SemanticTableSchema),
+  relationships: z.array(RelationshipSchema),
+  metrics: z.array(SemanticMetricSchema),
+  business_anchors: z.array(BusinessAnchorSchema)
+});
+export type SemanticLayer = z.infer<typeof SemanticLayerSchema>;
+
+export const QueryPermissionSchema = z.strictObject({
+  can_view_sql: z.boolean(),
+  can_save_widget: z.boolean()
+});
+export type QueryPermission = z.infer<typeof QueryPermissionSchema>;
+
+export const QueryRequestSchema = z.strictObject({
+  tenant_id: z.string().uuid(),
+  connection_id: z.string().uuid(),
+  user_id: z.string().uuid(),
+  question: z.string().min(1).max(1000),
+  semantic_layer: SemanticLayerSchema,
+  permissions: QueryPermissionSchema,
+  execution: z.strictObject({
+    mode: z.enum(["plan_only", "run"]),
+    row_limit: z.number().int().min(1).max(5000),
+    timeout_ms: z.number().int().min(1000).max(120000)
+  })
+});
+export type QueryRequest = z.infer<typeof QueryRequestSchema>;
+
+export const ResultColumnSchema = z.strictObject({
+  name: z.string().min(1),
+  data_type: z.string().min(1),
+  format: ColumnFormatSchema
+});
+export type ResultColumn = z.infer<typeof ResultColumnSchema>;
+
+export const QueryResponseSchema = z.strictObject({
+  query_id: z.string().uuid(),
+  status: z.enum(["completed", "needs_clarification", "failed"]),
+  sql: z
+    .strictObject({
+      dialect: EngineSchema,
+      statement: z.string().min(1),
+      visible_to_user: z.boolean()
+    })
+    .optional(),
+  result_metadata: z.strictObject({
+    columns: z.array(ResultColumnSchema),
+    row_count: z.number().int().min(0),
+    truncated: z.boolean()
+  }),
+  chart: ChartSpecSchema.optional(),
+  verification: VerificationSummarySchema,
+  sanitized_error: z.string().min(1).max(500).optional()
+});
+export type QueryResponse = z.infer<typeof QueryResponseSchema>;

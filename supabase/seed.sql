@@ -1,0 +1,1 @@
+-- Local development starts without seeded tenants. Create tenants through the setup flow.

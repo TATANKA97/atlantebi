@@ -1,0 +1,16 @@
+{
+  "name": "@atlantebi/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "next build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@atlantebi/contracts": "workspace:*",
+    "next": "16.2.7",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "zod": "4.4.3"
+  }
+}
