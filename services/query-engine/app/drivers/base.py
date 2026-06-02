@@ -1,8 +1,14 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from app.models import Engine
+
+ConnectionTestStatus = Literal["ok", "failed", "not_implemented"]
+
+
+class DriverNotImplementedError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -20,7 +26,7 @@ class ConnectionMetadata:
 
 @dataclass(frozen=True)
 class ConnectionTestResult:
-    status: str
+    status: ConnectionTestStatus
     message: str
 
 
@@ -54,7 +60,11 @@ class DatabaseDriver(ABC):
 
     @abstractmethod
     async def execute_readonly(
-        self, connection: ConnectionMetadata, sql: str, row_limit: int
+        self,
+        connection: ConnectionMetadata,
+        sql: str,
+        row_limit: int,
+        timeout_ms: int,
     ) -> ReadonlyQueryResult:
         raise NotImplementedError
 

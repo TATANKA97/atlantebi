@@ -2,6 +2,7 @@ from app.drivers.base import (
     ConnectionMetadata,
     ConnectionTestResult,
     DatabaseDriver,
+    DriverNotImplementedError,
     ReadonlyQueryResult,
     SchemaIntrospectionResult,
 )
@@ -25,6 +26,12 @@ class SqlServerDriver(DatabaseDriver):
         return SchemaIntrospectionResult(engine=self.engine, tables=[])
 
     async def execute_readonly(
-        self, connection: ConnectionMetadata, sql: str, row_limit: int
+        self,
+        connection: ConnectionMetadata,
+        sql: str,
+        row_limit: int,
+        timeout_ms: int,
     ) -> ReadonlyQueryResult:
-        return ReadonlyQueryResult(columns=[], row_count=0, truncated=False)
+        raise DriverNotImplementedError(
+            "SQL Server readonly execution is scheduled for the connection milestone."
+        )

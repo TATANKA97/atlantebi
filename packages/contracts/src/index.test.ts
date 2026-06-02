@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ChartSpecSchema,
   EngineSchema,
+  QueryResponseSchema,
   QueryRequestSchema,
   RelationshipSchema,
   VerificationSummarySchema
@@ -149,5 +150,35 @@ describe("contracts", () => {
     });
 
     expect(parsed.semantic_layer.tables[0]?.columns).toHaveLength(2);
+  });
+
+  it("rejects null for optional query response fields", () => {
+    expect(() =>
+      QueryResponseSchema.parse({
+        query_id: "88888888-8888-4888-8888-888888888888",
+        status: "failed",
+        sql: null,
+        result_metadata: {
+          columns: [],
+          row_count: 0,
+          truncated: false
+        },
+        chart: null,
+        verification: {
+          status: "engine_error",
+          confidence_label: "blocked",
+          result_visible: false,
+          checks: [
+            {
+              type: "dry_run",
+              status: "engine_error",
+              message: "Query execution is not implemented.",
+              evidence: {}
+            }
+          ]
+        },
+        sanitized_error: "Query execution is not implemented."
+      })
+    ).toThrow();
   });
 });

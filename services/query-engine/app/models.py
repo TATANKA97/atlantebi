@@ -1,14 +1,29 @@
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
+NonEmptyString = Annotated[str, Field(min_length=1)]
+JsonUUID = Annotated[UUID, Field(strict=False)]
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(
-        extra="forbid", validate_by_name=True, serialize_by_alias=True
+        extra="forbid",
+        strict=True,
+        validate_by_name=True,
+        serialize_by_alias=True,
     )
+
+    def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        kwargs.setdefault("exclude_none", True)
+        return super().model_dump(*args, **kwargs)
+
+    def model_dump_json(self, *args: Any, **kwargs: Any) -> str:
+        kwargs.setdefault("exclude_none", True)
+        return super().model_dump_json(*args, **kwargs)
 
 
 class Engine(StrEnum):
@@ -42,8 +57,8 @@ class ColumnFormat(StrictModel):
         "date_bucket",
         "identifier",
     ]
-    currency: Literal["EUR"] | None = None
-    decimals: int | None = Field(default=None, ge=0, le=6)
+    currency: Literal["EUR"] = None
+    decimals: int = Field(default=None, ge=0, le=6)
 
 
 class ChartDisplay(StrictModel):
@@ -54,12 +69,12 @@ class ChartDisplay(StrictModel):
 
 
 class ChartSpec(StrictModel):
-    type: ChartType
+    type: ChartType = Field(strict=False)
     title: str = Field(min_length=1, max_length=160)
-    x: str | None = Field(default=None, min_length=1)
-    y: list[str] | None = Field(default=None, max_length=8)
-    series: str | None = Field(default=None, min_length=1)
-    formatting: dict[str, ColumnFormat] = Field(default_factory=dict)
+    x: NonEmptyString = None
+    y: list[NonEmptyString] = Field(default=None, max_length=8)
+    series: NonEmptyString = None
+    formatting: dict[NonEmptyString, ColumnFormat] = Field(default_factory=dict)
     display: ChartDisplay = Field(default_factory=ChartDisplay)
 
 
@@ -88,24 +103,24 @@ class VerificationCheck(StrictModel):
         "historical_plausibility",
         "privacy",
     ]
-    status: VerificationStatus
+    status: VerificationStatus = Field(strict=False)
     message: str = Field(min_length=1, max_length=500)
-    evidence: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    evidence: dict[NonEmptyString, str | int | float | bool] = Field(default_factory=dict)
 
 
 class VerificationSummary(StrictModel):
-    status: VerificationStatus
+    status: VerificationStatus = Field(strict=False)
     checks: list[VerificationCheck]
     confidence_label: Literal["high", "medium", "low", "blocked"]
     result_visible: bool
 
 
 class Relationship(StrictModel):
-    id: UUID
+    id: JsonUUID
     from_table: str = Field(min_length=1)
-    from_columns: list[str] = Field(min_length=1)
+    from_columns: list[NonEmptyString] = Field(min_length=1)
     to_table: str = Field(min_length=1)
-    to_columns: list[str] = Field(min_length=1)
+    to_columns: list[NonEmptyString] = Field(min_length=1)
     cardinality: Literal["one_to_one", "one_to_many", "many_to_one", "many_to_many"]
     semantic_status: Literal["confirmed", "suggested", "rejected"]
     source: Literal["database_fk", "user_validated", "ai_suggested"]
@@ -114,47 +129,47 @@ class Relationship(StrictModel):
 class SemanticColumn(StrictModel):
     name: str = Field(min_length=1)
     data_type: str = Field(min_length=1)
-    business_name: str | None = Field(default=None, min_length=1)
+    business_name: NonEmptyString = None
     role: Literal["dimension", "measure", "date", "identifier", "unknown"]
-    format: ColumnFormat | None = None
+    format: ColumnFormat = None
     pii: bool = False
 
 
 class SemanticTable(StrictModel):
     name: str = Field(min_length=1)
     table_schema: str = Field(default="dbo", alias="schema", min_length=1)
-    business_name: str | None = Field(default=None, min_length=1)
+    business_name: NonEmptyString = None
     active: bool
     columns: list[SemanticColumn]
 
 
 class SemanticMetric(StrictModel):
-    id: UUID
+    id: JsonUUID
     name: str = Field(min_length=1)
     expression: str = Field(min_length=1)
-    grain: list[str] = Field(default_factory=list)
+    grain: list[NonEmptyString] = Field(default_factory=list)
     format: ColumnFormat
 
 
 class ExpectedRange(StrictModel):
-    min: float | None = None
-    max: float | None = None
+    min: float = None
+    max: float = None
 
 
 class BusinessAnchor(StrictModel):
-    id: UUID
+    id: JsonUUID
     name: str = Field(min_length=1)
-    metric_id: UUID
+    metric_id: JsonUUID
     expected_range: ExpectedRange
     period: Literal["daily", "monthly", "quarterly", "yearly"]
 
 
 class SemanticLayer(StrictModel):
-    tenant_id: UUID
-    version_id: UUID
+    tenant_id: JsonUUID
+    version_id: JsonUUID
     version: int = Field(gt=0)
     status: Literal["draft", "active", "archived"]
-    engine: Engine
+    engine: Engine = Field(strict=False)
     tables: list[SemanticTable]
     relationships: list[Relationship]
     metrics: list[SemanticMetric]
@@ -173,9 +188,9 @@ class QueryExecutionOptions(StrictModel):
 
 
 class QueryRequest(StrictModel):
-    tenant_id: UUID
-    connection_id: UUID
-    user_id: UUID
+    tenant_id: JsonUUID
+    connection_id: JsonUUID
+    user_id: JsonUUID
     question: str = Field(min_length=1, max_length=1000)
     semantic_layer: SemanticLayer
     permissions: QueryPermission
@@ -195,19 +210,19 @@ class ResultMetadata(StrictModel):
 
 
 class SqlOutput(StrictModel):
-    dialect: Engine
+    dialect: Engine = Field(strict=False)
     statement: str = Field(min_length=1)
     visible_to_user: bool
 
 
 class QueryResponse(StrictModel):
-    query_id: UUID
+    query_id: JsonUUID
     status: Literal["completed", "needs_clarification", "failed"]
-    sql: SqlOutput | None = None
+    sql: SqlOutput = None
     result_metadata: ResultMetadata
-    chart: ChartSpec | None = None
+    chart: ChartSpec = None
     verification: VerificationSummary
-    sanitized_error: str | None = Field(default=None, min_length=1, max_length=500)
+    sanitized_error: str = Field(default=None, min_length=1, max_length=500)
 
 
 class HealthResponse(StrictModel):
