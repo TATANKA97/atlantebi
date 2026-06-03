@@ -9,6 +9,7 @@ __pycache__/
 .pytest_cache/
 *.pyc
 *.tsbuildinfo
+work-web-dev*.log
 .env
 .env.*
 !.env.example

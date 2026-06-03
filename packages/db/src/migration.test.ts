@@ -86,6 +86,19 @@ describe("Supabase metadata migration", () => {
     );
   });
 
+  it("exposes tenant bootstrap through an invoker RPC wrapper only", () => {
+    expect(migration).toContain(
+      "create or replace function public.create_tenant_with_owner"
+    );
+    expect(migration).toContain("security invoker");
+    expect(migration).toContain(
+      "select app_private.create_tenant_with_owner(tenant_slug, tenant_name, tenant_plan);"
+    );
+    expect(migration).toContain(
+      "grant execute on function public.create_tenant_with_owner(text, text, text) to authenticated;"
+    );
+  });
+
   it("enforces tenant consistency with composite foreign keys", () => {
     expect(migration).toContain("db_connections_tenant_id_id_unique");
     expect(migration).toContain("widgets_connection_tenant_fk");

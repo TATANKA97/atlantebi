@@ -44,9 +44,24 @@ python -m venv .venv
 
 Docker is exercised in CI with `services/query-engine/Dockerfile`.
 
+## Web environment
+
+The web app uses Supabase SSR Auth with cookie-based sessions.
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=https://zzvfjqnfhuvapuvhpxee.supabase.co
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<supabase publishable key>
+```
+
+Use a Supabase publishable key for the browser/BFF auth flow. Do not put
+`service_role`, database passwords, or customer database credentials in web
+environment variables.
+
 ## Services
 
 - Web health: `GET /api/health`
+- Web auth: `/login`
+- Tenant setup: `/setup`
 - Query engine health: `GET /health`
 - Query engine run boundary: `POST /query/run` validates the request contract and returns `501` until real execution is implemented.
 
