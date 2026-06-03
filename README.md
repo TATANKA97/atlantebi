@@ -66,7 +66,10 @@ The web BFF exposes the connection workflow:
 - `POST /api/connections`
 - `POST /api/connections/test`
 
-`POST /api/connections` creates the Secret Manager secret, calls the query-engine, and saves Supabase metadata only after a successful connection test.
+`POST /api/connections` creates a temporary Secret Manager secret, calls the
+query-engine, and saves Supabase metadata even when the test fails so the user
+can correct fields without retyping everything. Failed records do not retain a
+`secret_ref`; ready records require one.
 
 ## Web environment
 
@@ -80,6 +83,18 @@ QUERY_ENGINE_URL=http://127.0.0.1:8080
 QUERY_ENGINE_AUTH_MODE=
 QUERY_ENGINE_API_TOKEN=<server-only internal token>
 ```
+
+Production query-engine is deployed as a private Cloud Run service:
+
+```bash
+QUERY_ENGINE_URL=https://query-engine-899780610437.us-central1.run.app
+QUERY_ENGINE_AUTH_MODE=google_id_token
+QUERY_ENGINE_API_TOKEN=
+```
+
+When the query-engine runs in Cloud Run with the GCP proxy VM, connection
+metadata should use the proxy internal IP `10.128.0.2` rather than the proxy
+external IP. Local Docker tests can use the external static IP.
 
 Use a Supabase publishable key for the browser/BFF auth flow. Do not put
 `service_role`, database passwords, or customer database credentials in web

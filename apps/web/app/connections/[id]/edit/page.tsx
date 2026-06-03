@@ -1,25 +1,56 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
 
-import { createConnection } from "../actions";
-import { getActiveTenantContext } from "../../../lib/tenant";
+import { updateConnection } from "../../actions";
+import { getActiveTenantContext } from "../../../../lib/tenant";
+
+type ConnectionRow = {
+  id: string;
+  name: string;
+  engine: "sqlserver";
+  network_mode: "public_allowlist";
+  host: string;
+  port: number;
+  database_name: string;
+  username: string;
+  tls_required: boolean;
+  tls_server_name: string | null;
+  trust_server_certificate: boolean;
+  last_test_error: string | null;
+};
 
 const MESSAGE_COPY: Record<string, string> = {
-  connection_create_failed: "Creazione connessione non riuscita.",
-  connection_save_failed: "Connessione verificata ma salvataggio metadata non riuscito.",
-  connection_test_failed: "Test connessione non riuscito.",
+  connection_save_failed: "Metadata connessione non salvati.",
+  connection_update_failed: "Aggiornamento connessione non riuscito.",
   invalid_connection: "Dati connessione non validi."
 };
 
 export const dynamic = "force-dynamic";
 
-export default async function NewConnectionPage({
+export default async function EditConnectionPage({
+  params,
   searchParams
 }: {
+  params: Promise<{ id: string }>;
   searchParams: Promise<{ message?: string }>;
 }) {
-  const params = await searchParams;
-  const { tenantId } = await getActiveTenantContext();
-  const message = params.message ? MESSAGE_COPY[params.message] : undefined;
+  const [{ id }, query] = await Promise.all([params, searchParams]);
+  const { supabase, tenantId } = await getActiveTenantContext();
+  const { data } = await supabase
+    .from("db_connection_summaries")
+    .select(
+      "id,name,engine,network_mode,host,port,database_name,username,tls_required,tls_server_name,trust_server_certificate,last_test_error"
+    )
+    .eq("tenant_id", tenantId)
+    .eq("id", id)
+    .single();
+
+  if (!data) {
+    notFound();
+  }
+
+  const connection = data as ConnectionRow;
+  const message = query.message ? MESSAGE_COPY[query.message] : undefined;
 
   return (
     <main className="min-h-screen px-8 py-10">
@@ -29,10 +60,11 @@ export default async function NewConnectionPage({
             Connessioni
           </Link>
           <h1 className="mt-3 text-3xl font-semibold tracking-normal">
-            Nuova connessione SQL Server
+            Modifica connessione SQL Server
           </h1>
           <p className="mt-2 text-sm leading-6 text-[color:var(--muted)]">
-            La password viene inviata solo al server e salvata in GCP Secret Manager.
+            I metadata sono salvati in Supabase. La password resta in GCP Secret
+            Manager e viene aggiornata solo se ne inserisci una nuova.
           </p>
         </header>
 
@@ -41,17 +73,24 @@ export default async function NewConnectionPage({
             {message}
           </p>
         ) : null}
+        {connection.last_test_error ? (
+          <p className="border border-[color:var(--border)] px-4 py-3 text-sm text-[color:var(--muted)]">
+            Ultimo errore test: {connection.last_test_error}
+          </p>
+        ) : null}
 
         <form className="grid gap-5 border-t border-[color:var(--border)] pt-6">
           <input name="tenant_id" type="hidden" value={tenantId} />
-          <input name="engine" type="hidden" value="sqlserver" />
-          <input name="network_mode" type="hidden" value="public_allowlist" />
+          <input name="connection_id" type="hidden" value={connection.id} />
+          <input name="engine" type="hidden" value={connection.engine} />
+          <input name="network_mode" type="hidden" value={connection.network_mode} />
 
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="flex flex-col gap-2 text-sm">
               Nome
               <input
                 className="border border-[color:var(--border)] bg-transparent px-3 py-2 text-base"
+                defaultValue={connection.name}
                 maxLength={160}
                 minLength={2}
                 name="name"
@@ -77,6 +116,7 @@ export default async function NewConnectionPage({
               Host
               <input
                 className="border border-[color:var(--border)] bg-transparent px-3 py-2 text-base"
+                defaultValue={connection.host}
                 maxLength={255}
                 name="host"
                 required
@@ -86,6 +126,7 @@ export default async function NewConnectionPage({
               Porta
               <input
                 className="border border-[color:var(--border)] bg-transparent px-3 py-2 text-base"
+                defaultValue={connection.port}
                 max="65535"
                 min="1"
                 name="port"
@@ -100,6 +141,7 @@ export default async function NewConnectionPage({
               Database
               <input
                 className="border border-[color:var(--border)] bg-transparent px-3 py-2 text-base"
+                defaultValue={connection.database_name}
                 maxLength={255}
                 name="database_name"
                 required
@@ -109,6 +151,7 @@ export default async function NewConnectionPage({
               Username
               <input
                 className="border border-[color:var(--border)] bg-transparent px-3 py-2 text-base"
+                defaultValue={connection.username}
                 maxLength={255}
                 name="username"
                 required
@@ -117,12 +160,11 @@ export default async function NewConnectionPage({
           </div>
 
           <label className="flex flex-col gap-2 text-sm">
-            Password
+            Nuova password
             <input
               autoComplete="off"
               className="border border-[color:var(--border)] bg-transparent px-3 py-2 text-base"
               name="password"
-              required
               type="password"
             />
           </label>
@@ -131,6 +173,7 @@ export default async function NewConnectionPage({
             TLS server name
             <input
               className="border border-[color:var(--border)] bg-transparent px-3 py-2 text-base"
+              defaultValue={connection.tls_server_name ?? ""}
               maxLength={255}
               name="tls_server_name"
               required
@@ -139,20 +182,28 @@ export default async function NewConnectionPage({
 
           <div className="flex flex-wrap gap-5 border-t border-[color:var(--border)] pt-5 text-sm">
             <label className="flex items-center gap-2">
-              <input defaultChecked name="tls_required" type="checkbox" />
+              <input
+                defaultChecked={connection.tls_required}
+                name="tls_required"
+                type="checkbox"
+              />
               TLS
             </label>
             <label className="flex items-center gap-2">
-              <input name="trust_server_certificate" type="checkbox" />
+              <input
+                defaultChecked={connection.trust_server_certificate}
+                name="trust_server_certificate"
+                type="checkbox"
+              />
               Trust server certificate
             </label>
           </div>
 
           <button
             className="w-fit border border-[color:var(--accent)] px-4 py-2 text-sm font-medium"
-            formAction={createConnection}
+            formAction={updateConnection}
           >
-            Salva e testa
+            Salva e ritesta
           </button>
         </form>
       </section>

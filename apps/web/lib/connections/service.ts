@@ -13,6 +13,7 @@ import { z } from "zod";
 import type { createSupabaseServerClient } from "../supabase/server";
 
 type SupabaseClient = Awaited<ReturnType<typeof createSupabaseServerClient>>;
+type ConnectionTestStatus = "ok" | "failed" | "engine_error";
 
 const BooleanInputSchema = z
   .union([z.boolean(), z.enum(["on", "true", "false"])])
@@ -50,7 +51,11 @@ export const ConnectionFormInputSchema = ConnectionInputSchema.extend({
 });
 
 export type CreateConnectionResult =
-  | { ok: true; connectionId: string }
+  | {
+      ok: true;
+      connectionId: string;
+      testStatus: ConnectionTestStatus;
+    }
   | { ok: false; code: string; message: string };
 
 const secretClient = new SecretManagerServiceClient();
@@ -69,7 +74,7 @@ export async function createAndTestConnection({
   const secretRef = gcpSecretRef(secretId);
 
   try {
-    await createDatabasePasswordSecret(secretId, input.password);
+    await setDatabasePasswordSecret(secretId, input.password);
 
     const connection = ConnectionMetadataSchema.parse({
       tenant_id: input.tenant_id,
@@ -87,15 +92,11 @@ export async function createAndTestConnection({
       secret_ref: secretRef,
       status: "draft"
     });
-    const test = await testConnectionViaQueryEngine(connection, input.timeout_ms);
+    const test = await runConnectionTest(connection, input.timeout_ms);
+    const savedSecretRef = test.status === "ok" ? secretRef : null;
 
     if (test.status !== "ok") {
       await deleteSecretIfPresent(secretId);
-      return {
-        ok: false,
-        code: "connection_test_failed",
-        message: test.sanitized_error ?? test.message
-      };
     }
 
     const { error } = await supabase.from("db_connections").insert({
@@ -111,9 +112,10 @@ export async function createAndTestConnection({
       tls_required: input.tls_required,
       tls_server_name: input.tls_server_name ?? null,
       trust_server_certificate: input.trust_server_certificate,
-      secret_ref: secretRef,
-      status: "ready",
-      last_test_status: "ok",
+      secret_ref: savedSecretRef,
+      status: test.status === "ok" ? "ready" : "failed",
+      last_test_status: test.status,
+      last_test_error: test.status === "ok" ? null : sanitizeTestError(test),
       last_tested_at: test.checked_at,
       created_by: userId
     });
@@ -127,7 +129,7 @@ export async function createAndTestConnection({
       };
     }
 
-    return { ok: true, connectionId };
+    return { ok: true, connectionId, testStatus: test.status };
   } catch {
     await deleteSecretIfPresent(secretId);
     return {
@@ -135,6 +137,124 @@ export async function createAndTestConnection({
       code: "connection_create_failed",
       message: "Connection could not be created."
     };
+  }
+}
+
+export const ConnectionUpdateInputSchema = ConnectionInputSchema.extend({
+  connection_id: z.string().uuid(),
+  password: z.string().optional()
+});
+
+export const ConnectionUpdateFormInputSchema = ConnectionFormInputSchema.extend({
+  connection_id: z.string().uuid(),
+  password: z
+    .string()
+    .transform((value) => (value.length === 0 ? undefined : value))
+    .optional()
+});
+
+export type ConnectionUpdateInput = z.infer<typeof ConnectionUpdateInputSchema>;
+
+export async function updateAndTestConnection({
+  input,
+  supabase
+}: {
+  input: ConnectionUpdateInput;
+  supabase: NonNullable<SupabaseClient>;
+}): Promise<CreateConnectionResult> {
+  const secretId = `atlantebi-${input.tenant_id}-${input.connection_id}-db-password`;
+  const secretRef = gcpSecretRef(secretId);
+  const testSecretId = input.password
+    ? `atlantebi-${input.tenant_id}-${input.connection_id}-${randomUUID()}-db-password-test`
+    : secretId;
+  const testSecretRef = gcpSecretRef(testSecretId);
+
+  try {
+    const { data: existing, error: existingError } = await supabase
+      .from("db_connection_summaries")
+      .select("id,status")
+      .eq("tenant_id", input.tenant_id)
+      .eq("id", input.connection_id)
+      .single();
+
+    if (existingError || !existing) {
+      return {
+        ok: false,
+        code: "connection_not_found",
+        message: "Connection metadata could not be found."
+      };
+    }
+
+    if (input.password) {
+      await setDatabasePasswordSecret(testSecretId, input.password);
+    }
+
+    const connection = ConnectionMetadataSchema.parse({
+      tenant_id: input.tenant_id,
+      connection_id: input.connection_id,
+      name: input.name,
+      engine: input.engine,
+      network_mode: input.network_mode,
+      host: input.host,
+      port: input.port,
+      database_name: input.database_name,
+      username: input.username,
+      tls_required: input.tls_required,
+      trust_server_certificate: input.trust_server_certificate,
+      tls_server_name: input.tls_server_name ?? null,
+      secret_ref: testSecretRef,
+      status: "draft"
+    });
+    const test = await runConnectionTest(connection, input.timeout_ms);
+    const updatePayload: Record<string, unknown> = {
+      name: input.name,
+      engine: input.engine,
+      network_mode: input.network_mode,
+      host: input.host,
+      port: input.port,
+      database_name: input.database_name,
+      username: input.username,
+      tls_required: input.tls_required,
+      tls_server_name: input.tls_server_name ?? null,
+      trust_server_certificate: input.trust_server_certificate,
+      status: test.status === "ok" ? "ready" : "failed",
+      last_test_status: test.status,
+      last_test_error: test.status === "ok" ? null : sanitizeTestError(test),
+      last_tested_at: test.checked_at
+    };
+
+    if (test.status === "ok") {
+      if (input.password) {
+        await setDatabasePasswordSecret(secretId, input.password);
+      }
+      updatePayload.secret_ref = secretRef;
+    }
+
+    const { error } = await supabase
+      .from("db_connections")
+      .update(updatePayload)
+      .eq("tenant_id", input.tenant_id)
+      .eq("id", input.connection_id);
+
+    if (error) {
+      return {
+        ok: false,
+        code: "connection_save_failed",
+        message: "Connection metadata could not be saved."
+      };
+    }
+
+    return { ok: true, connectionId: input.connection_id, testStatus: test.status };
+  } catch {
+    return {
+      ok: false,
+      code: "connection_update_failed",
+      message: "Connection could not be updated."
+    };
+  } finally {
+    if (input.password) {
+      await deleteSecretIfPresent(testSecretId);
+    }
   }
 }
 
@@ -146,7 +266,7 @@ export async function testConnectionWithoutSaving(
   const secretRef = gcpSecretRef(secretId);
 
   try {
-    await createDatabasePasswordSecret(secretId, input.password);
+    await setDatabasePasswordSecret(secretId, input.password);
     const connection = ConnectionMetadataSchema.parse({
       tenant_id: input.tenant_id,
       connection_id: connectionId,
@@ -173,7 +293,7 @@ export async function testConnectionWithoutSaving(
       };
     }
 
-    return { ok: true, connectionId };
+    return { ok: true, connectionId, testStatus: "ok" };
   } catch {
     return {
       ok: false,
@@ -185,27 +305,43 @@ export async function testConnectionWithoutSaving(
   }
 }
 
-async function createDatabasePasswordSecret(secretId: string, password: string) {
+async function setDatabasePasswordSecret(secretId: string, password: string) {
   const projectId = getGcpProjectId();
   const parent = `projects/${projectId}`;
   const name = `${parent}/secrets/${secretId}`;
   const payload = DatabaseCredentialsSchema.parse({ password });
 
-  await secretClient.createSecret({
-    parent,
-    secretId,
-    secret: {
-      replication: {
-        automatic: {}
+  try {
+    await secretClient.createSecret({
+      parent,
+      secretId,
+      secret: {
+        replication: {
+          automatic: {}
+        }
       }
+    });
+  } catch (error) {
+    if (!isAlreadyExistsError(error)) {
+      throw error;
     }
-  });
+  }
+
   await secretClient.addSecretVersion({
     parent: name,
     payload: {
       data: Buffer.from(JSON.stringify(payload), "utf8")
     }
   });
+}
+
+function isAlreadyExistsError(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === 6
+  );
 }
 
 async function deleteSecretIfPresent(secretId: string) {
@@ -282,4 +418,28 @@ async function testConnectionViaQueryEngine(
   }
 
   return ConnectionTestResponseSchema.parse(await response.json());
+}
+
+async function runConnectionTest(
+  connection: z.infer<typeof ConnectionMetadataSchema>,
+  timeoutMs: number
+) {
+  try {
+    return await testConnectionViaQueryEngine(connection, timeoutMs);
+  } catch {
+    return {
+      status: "engine_error" as const,
+      message: "Connection test could not run.",
+      checked_at: new Date().toISOString(),
+      duration_ms: 0,
+      sanitized_error: "Connection test could not run."
+    };
+  }
+}
+
+function sanitizeTestError(test: {
+  sanitized_error?: string | undefined;
+  message: string;
+}) {
+  return (test.sanitized_error ?? test.message).slice(0, 500);
 }

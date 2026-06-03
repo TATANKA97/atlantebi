@@ -19,7 +19,7 @@ export async function GET() {
   const { data, error } = await supabase
     .from("db_connection_summaries")
     .select(
-      "id,name,engine,network_mode,host,port,database_name,username,tls_required,tls_server_name,trust_server_certificate,status,last_test_status,last_tested_at"
+      "id,name,engine,network_mode,host,port,database_name,username,tls_required,tls_server_name,trust_server_certificate,status,last_test_status,last_test_error,last_tested_at"
     )
     .eq("tenant_id", tenantId)
     .order("created_at", { ascending: false })
@@ -65,7 +65,14 @@ export async function POST(request: Request) {
     );
   }
 
-  return NextResponse.json({ connection_id: result.connectionId }, { status: 201 });
+  return NextResponse.json(
+    {
+      connection_id: result.connectionId,
+      status: result.testStatus === "ok" ? "ready" : "failed",
+      test_status: result.testStatus
+    },
+    { status: 201 }
+  );
 }
 
 async function readJson(

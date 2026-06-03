@@ -86,9 +86,14 @@ describe("Supabase metadata migration", () => {
       "revoke all privileges on table public.db_connection_summaries from authenticated;"
     );
     expect(migration).toContain("username,");
-    expect(migration).not.toMatch(
-      /db_connection_summaries[\s\S]*secret_ref[\s\S]*from public\.db_connections/i
-    );
+    const summaryViews =
+      migration.match(
+        /create(?: or replace)? view public\.db_connection_summaries[\s\S]*?from public\.db_connections;/gi
+      ) ?? [];
+    expect(summaryViews.length).toBeGreaterThan(0);
+    for (const summaryView of summaryViews) {
+      expect(summaryView).not.toContain("secret_ref");
+    }
   });
 
   it("stores connection test metadata without customer result data", () => {
@@ -97,6 +102,9 @@ describe("Supabase metadata migration", () => {
     expect(migration).toContain("add column trust_server_certificate boolean not null default false");
     expect(migration).toContain("add column last_test_status public.connection_test_status");
     expect(migration).toContain("add column last_test_error text");
+    expect(migration).toContain("alter column secret_ref drop not null");
+    expect(migration).toContain("db_connections_ready_requires_secret_ref");
+    expect(migration).toContain("check (status <> 'ready' or secret_ref is not null)");
     expect(migration).not.toMatch(
       /\b(sample_rows|preview_rows|result_rows|data_cache|raw_rows|cached_result)\b/i
     );

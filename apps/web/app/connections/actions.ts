@@ -4,7 +4,9 @@ import { redirect } from "next/navigation";
 
 import {
   ConnectionFormInputSchema,
-  createAndTestConnection
+  ConnectionUpdateFormInputSchema,
+  createAndTestConnection,
+  updateAndTestConnection
 } from "../../lib/connections/service";
 import {
   assertCanManageConnections,
@@ -46,5 +48,52 @@ export async function createConnection(formData: FormData) {
     redirect(`/connections/new?message=${result.code}`);
   }
 
+  if (result.testStatus !== "ok") {
+    redirect(`/connections?created=${result.connectionId}&message=connection_saved_test_failed`);
+  }
+
   redirect(`/connections?created=${result.connectionId}`);
+}
+
+export async function updateConnection(formData: FormData) {
+  const tenantId = formData.get("tenant_id")?.toString();
+  const connectionId = formData.get("connection_id")?.toString();
+  const context = await getActiveTenantContext(tenantId);
+  assertCanManageConnections(context.role);
+
+  const parsed = ConnectionUpdateFormInputSchema.safeParse({
+    tenant_id: context.tenantId,
+    connection_id: connectionId,
+    name: formData.get("name"),
+    engine: formData.get("engine"),
+    network_mode: formData.get("network_mode"),
+    host: formData.get("host"),
+    port: formData.get("port"),
+    database_name: formData.get("database_name"),
+    username: formData.get("username"),
+    password: formData.get("password"),
+    tls_required: formData.get("tls_required") === "on",
+    trust_server_certificate: formData.get("trust_server_certificate") === "on",
+    tls_server_name: formData.get("tls_server_name"),
+    timeout_ms: formData.get("timeout_ms") ?? "30000"
+  });
+
+  if (!parsed.success) {
+    redirect(`/connections/${connectionId}/edit?message=invalid_connection`);
+  }
+
+  const result = await updateAndTestConnection({
+    input: parsed.data,
+    supabase: context.supabase
+  });
+
+  if (!result.ok) {
+    redirect(`/connections/${connectionId}/edit?message=${result.code}`);
+  }
+
+  if (result.testStatus !== "ok") {
+    redirect(`/connections?updated=${result.connectionId}&message=connection_saved_test_failed`);
+  }
+
+  redirect(`/connections?updated=${result.connectionId}`);
 }

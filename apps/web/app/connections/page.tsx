@@ -16,11 +16,14 @@ type ConnectionSummaryRow = {
   trust_server_certificate: boolean;
   status: string;
   last_test_status: string | null;
+  last_test_error: string | null;
   last_tested_at: string | null;
 };
 
 const MESSAGE_COPY: Record<string, string> = {
-  connection_forbidden: "Il tuo ruolo non consente di gestire connessioni."
+  connection_forbidden: "Il tuo ruolo non consente di gestire connessioni.",
+  connection_saved_test_failed:
+    "Connessione salvata, ma il test e fallito. Correggi i metadata e riprova."
 };
 
 export const dynamic = "force-dynamic";
@@ -28,14 +31,14 @@ export const dynamic = "force-dynamic";
 export default async function ConnectionsPage({
   searchParams
 }: {
-  searchParams: Promise<{ created?: string; message?: string }>;
+  searchParams: Promise<{ created?: string; updated?: string; message?: string }>;
 }) {
   const params = await searchParams;
   const { supabase, tenantId } = await getActiveTenantContext();
   const { data } = await supabase
     .from("db_connection_summaries")
     .select(
-      "id,name,engine,network_mode,host,port,database_name,username,tls_required,tls_server_name,trust_server_certificate,status,last_test_status,last_tested_at"
+      "id,name,engine,network_mode,host,port,database_name,username,tls_required,tls_server_name,trust_server_certificate,status,last_test_status,last_test_error,last_tested_at"
     )
     .eq("tenant_id", tenantId)
     .order("created_at", { ascending: false })
@@ -63,7 +66,12 @@ export default async function ConnectionsPage({
 
         {params.created ? (
           <p className="border border-[color:var(--accent)] px-4 py-3 text-sm">
-            Connessione verificata e salvata.
+            Connessione salvata.
+          </p>
+        ) : null}
+        {params.updated ? (
+          <p className="border border-[color:var(--accent)] px-4 py-3 text-sm">
+            Connessione aggiornata.
           </p>
         ) : null}
         {message ? (
@@ -101,6 +109,9 @@ export default async function ConnectionsPage({
                   <th className="border-b border-[color:var(--border)] py-2 font-medium">
                     Ultimo test
                   </th>
+                  <th className="border-b border-[color:var(--border)] py-2 font-medium">
+                    Azioni
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -125,7 +136,20 @@ export default async function ConnectionsPage({
                       {connection.status}
                     </td>
                     <td className="border-b border-[color:var(--border)] py-3">
-                      {connection.last_test_status ?? "mai"}
+                      <div>{connection.last_test_status ?? "mai"}</div>
+                      {connection.last_test_error ? (
+                        <div className="mt-1 max-w-xs text-xs text-[color:var(--muted)]">
+                          {connection.last_test_error}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td className="border-b border-[color:var(--border)] py-3">
+                      <Link
+                        className="text-sm text-[color:var(--accent)]"
+                        href={`/connections/${connection.id}/edit`}
+                      >
+                        Modifica
+                      </Link>
                     </td>
                   </tr>
                 ))}
