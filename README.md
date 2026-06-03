@@ -87,7 +87,7 @@ QUERY_ENGINE_API_TOKEN=<server-only internal token>
 Production query-engine is deployed as a private Cloud Run service:
 
 ```bash
-QUERY_ENGINE_URL=https://query-engine-899780610437.us-central1.run.app
+QUERY_ENGINE_URL=https://query-engine-3zsxzvizgq-uc.a.run.app
 QUERY_ENGINE_AUTH_MODE=google_id_token
 QUERY_ENGINE_API_TOKEN=
 ```

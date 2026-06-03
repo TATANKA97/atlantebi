@@ -1,0 +1,53 @@
+name: Deploy Web
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      GCP_PROJECT_ID: business-intelligence-495312
+      GCP_REGION: us-central1
+      ARTIFACT_REPOSITORY: atlantebi
+      SERVICE_NAME: web
+      RUNTIME_SERVICE_ACCOUNT: web-runtime@business-intelligence-495312.iam.gserviceaccount.com
+      NEXT_PUBLIC_SUPABASE_URL: https://zzvfjqnfhuvapuvhpxee.supabase.co
+      QUERY_ENGINE_URL: https://query-engine-3zsxzvizgq-uc.a.run.app
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+
+      - name: Build and push image
+        run: |
+          IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REPOSITORY}/${SERVICE_NAME}:${GITHUB_SHA}"
+          docker build -f apps/web/Dockerfile -t "${IMAGE}" .
+          docker push "${IMAGE}"
+          echo "IMAGE=${IMAGE}" >> "${GITHUB_ENV}"
+
+      - name: Deploy public Cloud Run web service
+        run: |
+          gcloud run deploy "${SERVICE_NAME}" \
+            --project="${GCP_PROJECT_ID}" \
+            --region="${GCP_REGION}" \
+            --image="${IMAGE}" \
+            --service-account="${RUNTIME_SERVICE_ACCOUNT}" \
+            --port=8080 \
+            --allow-unauthenticated \
+            --set-env-vars="NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL},NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }},GCP_PROJECT_ID=${GCP_PROJECT_ID},QUERY_ENGINE_URL=${QUERY_ENGINE_URL},QUERY_ENGINE_AUTH_MODE=google_id_token" \
+            --remove-env-vars="QUERY_ENGINE_API_TOKEN" \
+            --timeout=120s \
+            --max-instances=10 \
+            --quiet

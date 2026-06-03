@@ -22,6 +22,7 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+      - run: docker build -f apps/web/Dockerfile -t atlantebi-web .
 
   query-engine:
     runs-on: ubuntu-latest
