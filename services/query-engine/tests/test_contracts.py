@@ -6,10 +6,27 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from app.drivers.base import ConnectionMetadata, DriverNotImplementedError
+import app.main as main_module
+from app.drivers.base import (
+    ConnectionMetadata,
+    ConnectionTestResult,
+    DatabaseCredentials,
+    DatabaseDriver,
+    DriverNotImplementedError,
+    ReadonlyQueryResult,
+    SchemaIntrospectionResult,
+)
 from app.drivers.registry import DRIVER_REGISTRY, get_driver
 from app.main import app
-from app.models import Engine, QueryRequest, QueryResponse, Relationship, VerificationSummary
+from app.models import (
+    ConnectionTestRequest,
+    Engine,
+    QueryRequest,
+    QueryResponse,
+    Relationship,
+    VerificationSummary,
+)
+from app.secrets import SecretResolutionError, parse_secret_ref
 
 
 def test_health_endpoint() -> None:
@@ -29,6 +46,105 @@ def test_driver_registry_accepts_only_v1_engines() -> None:
     assert set(DRIVER_REGISTRY.keys()) == {Engine.sqlserver, Engine.mysql}
     assert get_driver(Engine.sqlserver).engine == Engine.sqlserver
     assert get_driver(Engine.mysql).engine == Engine.mysql
+
+
+def test_secret_ref_parser_targets_gcp_secret_manager() -> None:
+    parsed = parse_secret_ref(
+        "gcp-secret-manager://projects/atlantebi/secrets/demo-password"
+    )
+
+    assert parsed.resource_name == "projects/atlantebi/secrets/demo-password/versions/latest"
+
+    with pytest.raises(SecretResolutionError):
+        parse_secret_ref("postgres://readonly:password@example.com/db")
+
+
+def test_connection_test_request_rejects_coercion() -> None:
+    payload = {
+        "connection": {
+            "tenant_id": "11111111-1111-4111-8111-111111111111",
+            "connection_id": "33333333-3333-4333-8333-333333333333",
+            "name": "MySQL demo",
+            "engine": "mysql",
+            "network_mode": "public_allowlist",
+            "host": "mysql.example.com",
+            "port": "3306",
+            "database_name": "demo",
+            "username": "readonly_user",
+            "tls_required": "true",
+            "secret_ref": "gcp-secret-manager://projects/demo/secrets/customer-db",
+            "status": "draft",
+        },
+        "timeout_ms": "30000",
+    }
+
+    with pytest.raises(ValidationError):
+        ConnectionTestRequest.model_validate_json(json.dumps(payload))
+
+
+def test_connection_test_endpoint_uses_secret_resolver_and_driver(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeSecretResolver:
+        async def resolve_database_credentials(self, secret_ref: str) -> DatabaseCredentials:
+            assert secret_ref == "gcp-secret-manager://projects/demo/secrets/customer-db"
+            return DatabaseCredentials(password="secret")
+
+    class FakeDriver(DatabaseDriver):
+        engine = Engine.mysql
+
+        async def test_connection(
+            self,
+            connection: ConnectionMetadata,
+            credentials: DatabaseCredentials,
+            timeout_ms: int,
+        ) -> ConnectionTestResult:
+            assert connection.username == "readonly_user"
+            assert credentials.password == "secret"
+            assert timeout_ms == 30000
+            return ConnectionTestResult(status="ok", message="MySQL connection verified.")
+
+        async def introspect_schema(
+            self, connection: ConnectionMetadata
+        ) -> SchemaIntrospectionResult:
+            raise DriverNotImplementedError("not implemented")
+
+        async def execute_readonly(
+            self,
+            connection: ConnectionMetadata,
+            sql: str,
+            row_limit: int,
+            timeout_ms: int,
+        ) -> ReadonlyQueryResult:
+            raise DriverNotImplementedError("not implemented")
+
+    client = TestClient(app)
+    monkeypatch.setattr(app.state, "secret_resolver", FakeSecretResolver())
+    monkeypatch.setattr(main_module, "get_driver", lambda engine: FakeDriver())
+
+    response = client.post(
+        "/connections/test",
+        json={
+            "connection": {
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "connection_id": "33333333-3333-4333-8333-333333333333",
+                "name": "MySQL demo",
+                "engine": "mysql",
+                "network_mode": "public_allowlist",
+                "host": "mysql.example.com",
+                "port": 3306,
+                "database_name": "demo",
+                "username": "readonly_user",
+                "tls_required": True,
+                "trust_server_certificate": False,
+                "secret_ref": "gcp-secret-manager://projects/demo/secrets/customer-db",
+                "status": "draft",
+            },
+            "timeout_ms": 30000,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert "sanitized_error" not in response.json()
 
 
 def test_relationship_confidence_is_not_numeric() -> None:
@@ -190,14 +306,21 @@ def test_driver_execute_readonly_raises_until_implemented() -> None:
     connection = ConnectionMetadata(
         tenant_id="11111111-1111-4111-8111-111111111111",
         connection_id="33333333-3333-4333-8333-333333333333",
+        name="Demo",
         engine=Engine.sqlserver,
+        network_mode="public_allowlist",
         host="db.example.com",
         port=1433,
         database_name="Demo",
+        username="readonly_user",
         secret_ref="gcp-secret-manager://projects/demo/secrets/customer-db",
         tls_required=True,
+        trust_server_certificate=False,
         tls_server_name=None,
     )
 
     with pytest.raises(DriverNotImplementedError):
         asyncio.run(driver.execute_readonly(connection, "select 1", 100, 30000))
+
+    with pytest.raises(DriverNotImplementedError):
+        asyncio.run(driver.introspect_schema(connection))

@@ -31,6 +31,60 @@ class Engine(StrEnum):
     mysql = "mysql"
 
 
+class NetworkMode(StrEnum):
+    public_allowlist = "public_allowlist"
+    vpn = "vpn"
+
+
+class ConnectionStatus(StrEnum):
+    draft = "draft"
+    ready = "ready"
+    failed = "failed"
+    disabled = "disabled"
+
+
+class ConnectionTestStatus(StrEnum):
+    ok = "ok"
+    failed = "failed"
+    engine_error = "engine_error"
+
+
+class ConnectionMetadataInput(StrictModel):
+    tenant_id: JsonUUID
+    connection_id: JsonUUID
+    name: str = Field(min_length=2, max_length=160)
+    engine: Engine = Field(strict=False)
+    network_mode: NetworkMode = Field(strict=False)
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(ge=1, le=65535)
+    database_name: str = Field(min_length=1, max_length=255)
+    username: str = Field(min_length=1, max_length=255)
+    tls_required: bool
+    trust_server_certificate: bool = False
+    tls_server_name: str = Field(default=None, min_length=1, max_length=255)
+    secret_ref: str = Field(
+        pattern=r"^gcp-secret-manager://projects/[^/]+/secrets/[^/]+(/versions/[^/]+)?$"
+    )
+    status: ConnectionStatus = Field(strict=False)
+
+
+class DatabaseCredentialsInput(StrictModel):
+    password: str = Field(min_length=1)
+
+
+class ConnectionTestRequest(StrictModel):
+    connection: ConnectionMetadataInput
+    timeout_ms: int = Field(ge=1000, le=120000)
+
+
+class ConnectionTestResponse(StrictModel):
+    status: ConnectionTestStatus = Field(strict=False)
+    message: str = Field(min_length=1, max_length=500)
+    checked_at: str
+    duration_ms: int = Field(ge=0)
+    sanitized_error: str = Field(default=None, min_length=1, max_length=500)
+
+
 class ChartType(StrEnum):
     table = "table"
     kpi_number = "kpi_number"

@@ -66,6 +66,13 @@ describe("Supabase metadata migration", () => {
     expect(migration).toContain(
       "grant select, insert on table public.query_history to authenticated;"
     );
+    expect(migration).toContain(
+      "grant insert, update, delete on table public.db_connections to authenticated;"
+    );
+    expect(migration).toContain("revoke all privileges on table public.db_connections from anon;");
+    expect(migration).toContain(
+      "revoke all privileges on table public.db_connections from authenticated;"
+    );
   });
 
   it("keeps connection secret references out of broad authenticated selects", () => {
@@ -74,6 +81,25 @@ describe("Supabase metadata migration", () => {
       "grant select on table public.db_connections to authenticated;"
     );
     expect(migration).toContain(") on table public.db_connections to authenticated;");
+    expect(migration).toContain("grant select on table public.db_connection_summaries to authenticated;");
+    expect(migration).toContain(
+      "revoke all privileges on table public.db_connection_summaries from authenticated;"
+    );
+    expect(migration).toContain("username,");
+    expect(migration).not.toMatch(
+      /db_connection_summaries[\s\S]*secret_ref[\s\S]*from public\.db_connections/i
+    );
+  });
+
+  it("stores connection test metadata without customer result data", () => {
+    expect(migration).toContain("create type public.connection_test_status");
+    expect(migration).toContain("add column username text not null");
+    expect(migration).toContain("add column trust_server_certificate boolean not null default false");
+    expect(migration).toContain("add column last_test_status public.connection_test_status");
+    expect(migration).toContain("add column last_test_error text");
+    expect(migration).not.toMatch(
+      /\b(sample_rows|preview_rows|result_rows|data_cache|raw_rows|cached_result)\b/i
+    );
   });
 
   it("uses a non-circular tenant bootstrap function", () => {

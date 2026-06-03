@@ -4,6 +4,64 @@ export const ENGINE_VALUES = ["sqlserver", "mysql"] as const;
 export const EngineSchema = z.enum(ENGINE_VALUES);
 export type Engine = z.infer<typeof EngineSchema>;
 
+export const NETWORK_MODE_VALUES = ["public_allowlist", "vpn"] as const;
+export const NetworkModeSchema = z.enum(NETWORK_MODE_VALUES);
+export type NetworkMode = z.infer<typeof NetworkModeSchema>;
+
+export const CONNECTION_STATUS_VALUES = ["draft", "ready", "failed", "disabled"] as const;
+export const ConnectionStatusSchema = z.enum(CONNECTION_STATUS_VALUES);
+export type ConnectionStatus = z.infer<typeof ConnectionStatusSchema>;
+
+export const CONNECTION_TEST_STATUS_VALUES = ["ok", "failed", "engine_error"] as const;
+export const ConnectionTestStatusSchema = z.enum(CONNECTION_TEST_STATUS_VALUES);
+export type ConnectionTestStatus = z.infer<typeof ConnectionTestStatusSchema>;
+
+export const GcpSecretRefSchema = z
+  .string()
+  .regex(
+    /^gcp-secret-manager:\/\/projects\/[^/]+\/secrets\/[^/]+(\/versions\/[^/]+)?$/,
+    "Secret reference must point to GCP Secret Manager"
+  );
+export type GcpSecretRef = z.infer<typeof GcpSecretRefSchema>;
+
+export const ConnectionMetadataSchema = z.strictObject({
+  tenant_id: z.string().uuid(),
+  connection_id: z.string().uuid(),
+  name: z.string().min(2).max(160),
+  engine: EngineSchema,
+  network_mode: NetworkModeSchema,
+  host: z.string().min(1).max(255),
+  port: z.number().int().min(1).max(65535),
+  database_name: z.string().min(1).max(255),
+  username: z.string().min(1).max(255),
+  tls_required: z.boolean(),
+  trust_server_certificate: z.boolean().default(false),
+  tls_server_name: z.string().min(1).max(255).nullable().optional(),
+  secret_ref: GcpSecretRefSchema,
+  status: ConnectionStatusSchema
+});
+export type ConnectionMetadata = z.infer<typeof ConnectionMetadataSchema>;
+
+export const DatabaseCredentialsSchema = z.strictObject({
+  password: z.string().min(1)
+});
+export type DatabaseCredentials = z.infer<typeof DatabaseCredentialsSchema>;
+
+export const ConnectionTestRequestSchema = z.strictObject({
+  connection: ConnectionMetadataSchema,
+  timeout_ms: z.number().int().min(1000).max(120000)
+});
+export type ConnectionTestRequest = z.infer<typeof ConnectionTestRequestSchema>;
+
+export const ConnectionTestResponseSchema = z.strictObject({
+  status: ConnectionTestStatusSchema,
+  message: z.string().min(1).max(500),
+  checked_at: z.string().datetime({ offset: true }),
+  duration_ms: z.number().int().min(0),
+  sanitized_error: z.string().min(1).max(500).optional()
+});
+export type ConnectionTestResponse = z.infer<typeof ConnectionTestResponseSchema>;
+
 export const CHART_TYPE_VALUES = [
   "table",
   "kpi_number",

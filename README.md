@@ -2,7 +2,7 @@
 
 Atlante BI is an AI-powered BI platform for Italian SMBs. This repository starts with the product foundation only: application metadata, strict shared contracts, a technical web shell, and a query-engine boundary.
 
-This first commit intentionally does not include AI orchestration, dashboard UI, chart rendering, live database drivers, or customer data storage.
+This foundation intentionally does not include AI orchestration, dashboard UI, chart rendering, query execution, introspection, or customer data storage.
 
 ## Architecture
 
@@ -44,6 +44,20 @@ python -m venv .venv
 
 Docker is exercised in CI with `services/query-engine/Dockerfile`.
 
+## Connection Testing
+
+The query-engine exposes `POST /connections/test` for SQL Server and MySQL connection checks. It resolves only password material from GCP Secret Manager; Supabase keeps connection metadata and `secret_ref`.
+
+Secret Manager payload:
+
+```json
+{
+  "password": "customer database password"
+}
+```
+
+The database username is application metadata in Supabase. Passwords, DSNs, and full connection strings are not.
+
 ## Web environment
 
 The web app uses Supabase SSR Auth with cookie-based sessions.
@@ -63,6 +77,7 @@ environment variables.
 - Web auth: `/login`
 - Tenant setup: `/setup`
 - Query engine health: `GET /health`
+- Query engine connection test: `POST /connections/test`
 - Query engine run boundary: `POST /query/run` validates the request contract and returns `501` until real execution is implemented.
 
 ## Sources Checked

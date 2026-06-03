@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   ChartSpecSchema,
+  ConnectionMetadataSchema,
+  ConnectionTestRequestSchema,
+  ConnectionTestResponseSchema,
+  DatabaseCredentialsSchema,
   EngineSchema,
   QueryResponseSchema,
   QueryRequestSchema,
@@ -21,6 +25,69 @@ describe("contracts", () => {
     expect(EngineSchema.parse("sqlserver")).toBe("sqlserver");
     expect(EngineSchema.parse("mysql")).toBe("mysql");
     expect(() => EngineSchema.parse("postgres")).toThrow();
+  });
+
+  it("validates connection metadata without storing database passwords", () => {
+    const metadata = ConnectionMetadataSchema.parse({
+      tenant_id: tenantId,
+      connection_id: connectionId,
+      name: "Azure SQL demo",
+      engine: "sqlserver",
+      network_mode: "public_allowlist",
+      host: "demo.database.windows.net",
+      port: 1433,
+      database_name: "SalesLT",
+      username: "readonly_user",
+      tls_required: true,
+      trust_server_certificate: false,
+      secret_ref: "gcp-secret-manager://projects/atlantebi/secrets/demo-sql-password",
+      status: "draft"
+    });
+
+    expect(metadata.username).toBe("readonly_user");
+    expect(() =>
+      ConnectionMetadataSchema.parse({
+        ...metadata,
+        password: "must-not-be-here"
+      })
+    ).toThrow();
+  });
+
+  it("keeps database secret payload minimal and strict", () => {
+    expect(DatabaseCredentialsSchema.parse({ password: "secret" }).password).toBe("secret");
+    expect(() => DatabaseCredentialsSchema.parse({ username: "u", password: "p" })).toThrow();
+  });
+
+  it("validates connection test request and response contracts", () => {
+    const request = ConnectionTestRequestSchema.parse({
+      connection: {
+        tenant_id: tenantId,
+        connection_id: connectionId,
+        name: "MySQL demo",
+        engine: "mysql",
+        network_mode: "public_allowlist",
+        host: "mysql.example.com",
+        port: 3306,
+        database_name: "demo",
+        username: "readonly_user",
+        tls_required: true,
+        secret_ref: "gcp-secret-manager://projects/atlantebi/secrets/demo-mysql-password",
+        status: "draft"
+      },
+      timeout_ms: 30000
+    });
+
+    expect(request.connection.trust_server_certificate).toBe(false);
+
+    const response = ConnectionTestResponseSchema.parse({
+      status: "failed",
+      message: "MySQL connection failed.",
+      checked_at: "2026-06-03T12:00:00.000Z",
+      duration_ms: 42,
+      sanitized_error: "MySQL connection failed."
+    });
+
+    expect(response.status).toBe("failed");
   });
 
   it("keeps chart specs deterministic and strict", () => {

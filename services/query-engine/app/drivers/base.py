@@ -4,10 +4,14 @@ from typing import Literal, Protocol
 
 from app.models import Engine
 
-ConnectionTestStatus = Literal["ok", "failed", "not_implemented"]
+ConnectionTestStatus = Literal["ok", "failed", "engine_error"]
 
 
 class DriverNotImplementedError(RuntimeError):
+    pass
+
+
+class DriverConfigurationError(RuntimeError):
     pass
 
 
@@ -15,13 +19,22 @@ class DriverNotImplementedError(RuntimeError):
 class ConnectionMetadata:
     tenant_id: str
     connection_id: str
+    name: str
     engine: Engine
+    network_mode: str
     host: str
     port: int
     database_name: str
+    username: str
     secret_ref: str
     tls_required: bool
+    trust_server_certificate: bool
     tls_server_name: str | None
+
+
+@dataclass(frozen=True)
+class DatabaseCredentials:
+    password: str
 
 
 @dataclass(frozen=True)
@@ -48,7 +61,10 @@ class DatabaseDriver(ABC):
 
     @abstractmethod
     async def test_connection(
-        self, connection: ConnectionMetadata
+        self,
+        connection: ConnectionMetadata,
+        credentials: DatabaseCredentials,
+        timeout_ms: int,
     ) -> ConnectionTestResult:
         raise NotImplementedError
 
