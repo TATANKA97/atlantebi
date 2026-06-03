@@ -10,6 +10,7 @@ __pycache__/
 *.pyc
 *.tsbuildinfo
 work-web-dev*.log
+.next-dev.log
 .env
 .env.*
 !.env.example
