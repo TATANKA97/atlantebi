@@ -17,6 +17,7 @@ from app.drivers.base import (
     SchemaIntrospectionResult,
 )
 from app.drivers.registry import DRIVER_REGISTRY, get_driver
+from app.drivers.sqlserver import _login_username
 from app.main import app
 from app.models import (
     ConnectionTestRequest,
@@ -145,6 +146,31 @@ def test_connection_test_endpoint_uses_secret_resolver_and_driver(monkeypatch: p
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
     assert "sanitized_error" not in response.json()
+
+
+def test_sqlserver_proxy_derives_azure_login_server_name() -> None:
+    connection = ConnectionMetadata(
+        tenant_id="11111111-1111-4111-8111-111111111111",
+        connection_id="33333333-3333-4333-8333-333333333333",
+        name="Azure SQL proxy test",
+        engine=Engine.sqlserver,
+        network_mode="public_allowlist",
+        host="136.111.143.3",
+        port=10002,
+        database_name="AdventureWorksLT",
+        username="atlante_demo_ro",
+        secret_ref="gcp-secret-manager://projects/demo/secrets/customer-db",
+        tls_required=True,
+        trust_server_certificate=False,
+        tls_server_name="atlanteadmin.database.windows.net",
+    )
+
+    assert _login_username(connection) == "atlante_demo_ro@atlanteadmin"
+
+    already_qualified = ConnectionMetadata(
+        **{**connection.__dict__, "username": "atlante_demo_ro@atlanteadmin"}
+    )
+    assert _login_username(already_qualified) == "atlante_demo_ro@atlanteadmin"
 
 
 def test_relationship_confidence_is_not_numeric() -> None:

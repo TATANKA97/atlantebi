@@ -13,6 +13,9 @@ from app.drivers.base import (
 from app.models import Engine
 
 
+AZURE_SQL_DOMAIN_SUFFIX = ".database.windows.net"
+
+
 class SqlServerDriver(DatabaseDriver):
     engine = Engine.sqlserver
 
@@ -33,7 +36,7 @@ class SqlServerDriver(DatabaseDriver):
             "Driver={ODBC Driver 18 for SQL Server}",
             f"Server=tcp:{connection.host},{connection.port}",
             f"Database={connection.database_name}",
-            f"UID={connection.username}",
+            f"UID={_login_username(connection)}",
             f"PWD={credentials.password}",
             f"Encrypt={encrypt}",
             f"TrustServerCertificate={'yes' if connection.trust_server_certificate else 'no'}",
@@ -81,3 +84,17 @@ class SqlServerDriver(DatabaseDriver):
         raise DriverNotImplementedError(
             "SQL Server readonly execution is scheduled for the connection milestone."
         )
+
+
+def _login_username(connection: ConnectionMetadata) -> str:
+    if (
+        "@" not in connection.username
+        and "\\" not in connection.username
+        and connection.tls_server_name is not None
+        and connection.tls_server_name.endswith(AZURE_SQL_DOMAIN_SUFFIX)
+        and connection.host != connection.tls_server_name
+    ):
+        server_name = connection.tls_server_name.removesuffix(AZURE_SQL_DOMAIN_SUFFIX)
+        return f"{connection.username}@{server_name}"
+
+    return connection.username
