@@ -58,6 +58,16 @@ Secret Manager payload:
 
 The database username is application metadata in Supabase. Passwords, DSNs, and full connection strings are not.
 
+The web BFF exposes the connection workflow:
+
+- `GET /connections`
+- `GET /connections/new`
+- `GET /api/connections`
+- `POST /api/connections`
+- `POST /api/connections/test`
+
+`POST /api/connections` creates the Secret Manager secret, calls the query-engine, and saves Supabase metadata only after a successful connection test.
+
 ## Web environment
 
 The web app uses Supabase SSR Auth with cookie-based sessions.
@@ -65,6 +75,10 @@ The web app uses Supabase SSR Auth with cookie-based sessions.
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=https://zzvfjqnfhuvapuvhpxee.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<supabase publishable key>
+GCP_PROJECT_ID=business-intelligence-495312
+QUERY_ENGINE_URL=http://127.0.0.1:8080
+QUERY_ENGINE_AUTH_MODE=
+QUERY_ENGINE_API_TOKEN=<server-only internal token>
 ```
 
 Use a Supabase publishable key for the browser/BFF auth flow. Do not put
@@ -76,6 +90,7 @@ environment variables.
 - Web health: `GET /api/health`
 - Web auth: `/login`
 - Tenant setup: `/setup`
+- Connections: `/connections`
 - Query engine health: `GET /health`
 - Query engine connection test: `POST /connections/test`
 - Query engine run boundary: `POST /query/run` validates the request contract and returns `501` until real execution is implemented.

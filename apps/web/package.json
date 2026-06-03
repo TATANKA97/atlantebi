@@ -5,12 +5,15 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@atlantebi/contracts": "workspace:*",
+    "@google-cloud/secret-manager": "^6.1.2",
     "@supabase/ssr": "^0.10.3",
     "@supabase/supabase-js": "^2.107.0",
+    "google-auth-library": "^10.6.2",
     "next": "16.2.7",
     "react": "19.2.7",
     "react-dom": "19.2.7",

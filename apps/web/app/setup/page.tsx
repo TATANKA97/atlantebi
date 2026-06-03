@@ -153,6 +153,12 @@ export default async function SetupPage({
                     <span className="ml-2 text-[color:var(--muted)]">
                       /{membership.tenants.slug} · {membership.role}
                     </span>
+                    <a
+                      className="ml-4 text-[color:var(--accent)]"
+                      href="/connections"
+                    >
+                      Connessioni
+                    </a>
                   </li>
                 ) : null
               )}

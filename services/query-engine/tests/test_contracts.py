@@ -148,6 +148,101 @@ def test_connection_test_endpoint_uses_secret_resolver_and_driver(monkeypatch: p
     assert "sanitized_error" not in response.json()
 
 
+def test_connection_test_endpoint_requires_token_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("QUERY_ENGINE_API_TOKEN", "test-token")
+    client = TestClient(app)
+
+    response = client.post(
+        "/connections/test",
+        json={
+            "connection": {
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "connection_id": "33333333-3333-4333-8333-333333333333",
+                "name": "MySQL demo",
+                "engine": "mysql",
+                "network_mode": "public_allowlist",
+                "host": "mysql.example.com",
+                "port": 3306,
+                "database_name": "demo",
+                "username": "readonly_user",
+                "tls_required": True,
+                "trust_server_certificate": False,
+                "secret_ref": "gcp-secret-manager://projects/demo/secrets/customer-db",
+                "status": "draft",
+            },
+            "timeout_ms": 30000,
+        },
+    )
+
+    assert response.status_code == 401
+
+
+def test_connection_test_endpoint_accepts_internal_token_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeSecretResolver:
+        async def resolve_database_credentials(self, secret_ref: str) -> DatabaseCredentials:
+            return DatabaseCredentials(password="secret")
+
+    class FakeDriver(DatabaseDriver):
+        engine = Engine.mysql
+
+        async def test_connection(
+            self,
+            connection: ConnectionMetadata,
+            credentials: DatabaseCredentials,
+            timeout_ms: int,
+        ) -> ConnectionTestResult:
+            return ConnectionTestResult(status="ok", message="MySQL connection verified.")
+
+        async def introspect_schema(
+            self, connection: ConnectionMetadata
+        ) -> SchemaIntrospectionResult:
+            raise DriverNotImplementedError("not implemented")
+
+        async def execute_readonly(
+            self,
+            connection: ConnectionMetadata,
+            sql: str,
+            row_limit: int,
+            timeout_ms: int,
+        ) -> ReadonlyQueryResult:
+            raise DriverNotImplementedError("not implemented")
+
+    monkeypatch.setenv("QUERY_ENGINE_API_TOKEN", "test-token")
+    monkeypatch.setattr(app.state, "secret_resolver", FakeSecretResolver())
+    monkeypatch.setattr(main_module, "get_driver", lambda engine: FakeDriver())
+    client = TestClient(app)
+
+    response = client.post(
+        "/connections/test",
+        headers={"x-atlante-query-engine-token": "test-token"},
+        json={
+            "connection": {
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "connection_id": "33333333-3333-4333-8333-333333333333",
+                "name": "MySQL demo",
+                "engine": "mysql",
+                "network_mode": "public_allowlist",
+                "host": "mysql.example.com",
+                "port": 3306,
+                "database_name": "demo",
+                "username": "readonly_user",
+                "tls_required": True,
+                "trust_server_certificate": False,
+                "secret_ref": "gcp-secret-manager://projects/demo/secrets/customer-db",
+                "status": "draft",
+            },
+            "timeout_ms": 30000,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
 def test_sqlserver_proxy_derives_azure_login_server_name() -> None:
     connection = ConnectionMetadata(
         tenant_id="11111111-1111-4111-8111-111111111111",

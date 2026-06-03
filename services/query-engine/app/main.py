@@ -1,7 +1,9 @@
+import os
+import secrets
 from datetime import UTC, datetime
 from time import perf_counter
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 
 from app.drivers.base import (
     ConnectionMetadata,
@@ -27,12 +29,46 @@ async def health() -> HealthResponse:
     return HealthResponse(service="atlantebi-query-engine", status="ok", version="0.1.0")
 
 
+def require_internal_auth(
+    authorization: str | None = Header(default=None),
+    internal_token: str | None = Header(
+        default=None,
+        alias="x-atlante-query-engine-token",
+    ),
+) -> None:
+    expected_token = os.getenv("QUERY_ENGINE_API_TOKEN")
+
+    if not expected_token:
+        return
+
+    expected_header = f"Bearer {expected_token}"
+    authorization_valid = authorization is not None and secrets.compare_digest(
+        authorization,
+        expected_header,
+    )
+    internal_token_valid = internal_token is not None and secrets.compare_digest(
+        internal_token,
+        expected_token,
+    )
+
+    if authorization_valid or internal_token_valid:
+        return
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid query-engine credentials.",
+    )
+
+
 @app.post(
     "/connections/test",
     response_model=ConnectionTestResponse,
     response_model_exclude_none=True,
 )
-async def test_connection(request: ConnectionTestRequest) -> ConnectionTestResponse:
+async def test_connection(
+    request: ConnectionTestRequest,
+    _: None = Depends(require_internal_auth),
+) -> ConnectionTestResponse:
     started = perf_counter()
     checked_at = datetime.now(UTC).isoformat()
     connection_input = request.connection
@@ -101,7 +137,10 @@ def _connection_test_error(
 
 
 @app.post("/query/run", response_model=QueryResponse, response_model_exclude_none=True)
-async def run_query(request: QueryRequest) -> QueryResponse:
+async def run_query(
+    request: QueryRequest,
+    _: None = Depends(require_internal_auth),
+) -> QueryResponse:
     raise HTTPException(
         status_code=501,
         detail=(
