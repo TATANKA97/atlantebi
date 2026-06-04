@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   isSemanticColumnQueryable,
   semanticColumnFlags,
+  semanticColumnTypeLabel,
   splitSemanticColumns,
   type SemanticColumnDisplay
 } from "./columns";
@@ -54,5 +55,20 @@ describe("semantic column display helpers", () => {
 
     expect(isSemanticColumnQueryable(emailAddress)).toBe(true);
     expect(semanticColumnFlags(emailAddress)).toEqual(["nullable", "PII"]);
+  });
+
+  it("shows declared SQL Server alias types without replacing base type", () => {
+    const phone: SemanticColumnDisplay = {
+      ...baseColumn,
+      data_type: "nvarchar",
+      metadata: {
+        declared_type: "Phone",
+        is_nullable: true
+      },
+      physical_name: "Phone"
+    };
+
+    expect(semanticColumnTypeLabel(phone)).toBe("nvarchar (Phone)");
+    expect(semanticColumnTypeLabel(baseColumn)).toBe("nvarchar");
   });
 });

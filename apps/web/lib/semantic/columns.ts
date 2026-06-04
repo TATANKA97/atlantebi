@@ -6,6 +6,7 @@ export type SemanticColumnDisplay = {
   role: string;
   pii: boolean;
   metadata: {
+    declared_type?: string;
     is_nullable?: boolean;
     is_primary_key?: boolean;
     is_sensitive?: boolean;
@@ -44,4 +45,15 @@ export function semanticColumnFlags(column: SemanticColumnDisplay) {
   }
 
   return flags;
+}
+
+export function semanticColumnTypeLabel(column: SemanticColumnDisplay) {
+  if (
+    column.metadata.declared_type &&
+    column.metadata.declared_type.toLowerCase() !== column.data_type.toLowerCase()
+  ) {
+    return `${column.data_type} (${column.metadata.declared_type})`;
+  }
+
+  return column.data_type;
 }

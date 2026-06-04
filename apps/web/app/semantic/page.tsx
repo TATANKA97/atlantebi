@@ -3,6 +3,7 @@ import Link from "next/link";
 import { introspectConnectionAction } from "./actions";
 import {
   semanticColumnFlags,
+  semanticColumnTypeLabel,
   splitSemanticColumns,
   type SemanticColumnDisplay
 } from "../../lib/semantic/columns";
@@ -260,7 +261,7 @@ export default async function SemanticPage({
                                 {column.physical_name}
                               </td>
                               <td className="border-b border-[color:var(--border)] py-2 pr-4">
-                                {column.data_type}
+                                {semanticColumnTypeLabel(column)}
                               </td>
                               <td className="border-b border-[color:var(--border)] py-2 pr-4">
                                 {column.role}
@@ -302,7 +303,7 @@ export default async function SemanticPage({
                                   {column.physical_name}
                                 </td>
                                 <td className="border-b border-[color:var(--border)] py-2 pr-4">
-                                  {column.data_type}
+                                  {semanticColumnTypeLabel(column)}
                                 </td>
                                 <td className="border-b border-[color:var(--border)] py-2 pr-4">
                                   {column.role}

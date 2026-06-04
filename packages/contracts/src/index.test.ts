@@ -132,6 +132,16 @@ describe("contracts", () => {
               is_nullable: false,
               is_identity: true,
               is_computed: false
+            },
+            {
+              name: "FirstName",
+              data_type: "nvarchar",
+              declared_type: "Name",
+              ordinal_position: 2,
+              is_nullable: false,
+              max_length: 50,
+              is_identity: false,
+              is_computed: false
             }
           ],
           primary_key: {
@@ -144,6 +154,7 @@ describe("contracts", () => {
     });
 
     expect(response.tables[0]?.primary_key?.columns).toEqual(["CustomerID"]);
+    expect(response.tables[0]?.columns[1]?.declared_type).toBe("Name");
     expect(() =>
       SchemaIntrospectionResponseSchema.parse({
         ...response,

@@ -73,6 +73,7 @@ export type SchemaIntrospectionStatus = z.infer<
 export const SchemaColumnMetadataSchema = z.strictObject({
   name: z.string().min(1).max(255),
   data_type: z.string().min(1).max(255),
+  declared_type: z.string().min(1).max(255).optional(),
   ordinal_position: z.number().int().min(1),
   is_nullable: z.boolean(),
   max_length: z.number().int().min(-1).optional(),

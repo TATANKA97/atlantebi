@@ -99,6 +99,7 @@ class SchemaIntrospectionRequest(StrictModel):
 class SchemaColumnMetadata(StrictModel):
     name: str = Field(min_length=1, max_length=255)
     data_type: str = Field(min_length=1, max_length=255)
+    declared_type: str | None = Field(default=None, min_length=1, max_length=255)
     ordinal_position: int = Field(ge=1)
     is_nullable: bool
     max_length: int | None = Field(default=None, ge=-1)

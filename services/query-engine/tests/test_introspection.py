@@ -84,6 +84,13 @@ def test_schema_introspection_response_serializes_schema_alias() -> None:
                         "data_type": "int",
                         "ordinal_position": 1,
                         "is_nullable": False,
+                    },
+                    {
+                        "name": "FirstName",
+                        "data_type": "nvarchar",
+                        "declared_type": "Name",
+                        "ordinal_position": 2,
+                        "is_nullable": False,
                     }
                 ],
                 "primary_key": {
@@ -99,6 +106,7 @@ def test_schema_introspection_response_serializes_schema_alias() -> None:
 
     assert dumped["tables"][0]["schema"] == "SalesLT"
     assert "table_schema" not in dumped["tables"][0]
+    assert dumped["tables"][0]["columns"][1]["declared_type"] == "Name"
 
 
 def test_schema_introspection_endpoint_uses_secret_resolver_and_driver(
@@ -224,14 +232,59 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
             return self
 
         def fetchall(self):
-            if "INFORMATION_SCHEMA.COLUMNS" in self.query:
+            if "sys.foreign_keys" in self.query:
                 return [
-                    ("SalesLT", "Customer", "CustomerID", 1, "int", "NO", None, 10, 0, None, 1, 0),
+                    (
+                        "FK_SalesOrderHeader_Customer",
+                        "SalesLT",
+                        "SalesOrderHeader",
+                        "CustomerID",
+                        "SalesLT",
+                        "Customer",
+                        "CustomerID",
+                        1,
+                        "NO_ACTION",
+                        "NO_ACTION",
+                    )
+                ]
+            if "sys.columns" in self.query:
+                return [
+                    (
+                        "SalesLT",
+                        "Customer",
+                        "CustomerID",
+                        1,
+                        "int",
+                        "int",
+                        "NO",
+                        None,
+                        10,
+                        0,
+                        None,
+                        1,
+                        0,
+                    ),
+                    (
+                        "SalesLT",
+                        "Customer",
+                        "FirstName",
+                        2,
+                        "nvarchar",
+                        "Name",
+                        "NO",
+                        50,
+                        0,
+                        0,
+                        None,
+                        0,
+                        0,
+                    ),
                     (
                         "SalesLT",
                         "SalesOrderHeader",
                         "SalesOrderID",
                         1,
+                        "int",
                         "int",
                         "NO",
                         None,
@@ -246,6 +299,7 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
                         "SalesOrderHeader",
                         "CustomerID",
                         2,
+                        "int",
                         "int",
                         "NO",
                         None,
@@ -265,21 +319,6 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
                 return [
                     ("SalesLT", "Customer", "BASE TABLE"),
                     ("SalesLT", "SalesOrderHeader", "BASE TABLE"),
-                ]
-            if "sys.foreign_keys" in self.query:
-                return [
-                    (
-                        "FK_SalesOrderHeader_Customer",
-                        "SalesLT",
-                        "SalesOrderHeader",
-                        "CustomerID",
-                        "SalesLT",
-                        "Customer",
-                        "CustomerID",
-                        1,
-                        "NO_ACTION",
-                        "NO_ACTION",
-                    )
                 ]
             raise AssertionError(f"Unexpected query: {self.query}")
 
@@ -324,6 +363,9 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
     assert result.tables[0].name == "Customer"
     assert result.tables[0].primary_key is not None
     assert result.tables[0].primary_key.columns == ["CustomerID"]
+    assert result.tables[0].columns[1].name == "FirstName"
+    assert result.tables[0].columns[1].data_type == "nvarchar"
+    assert result.tables[0].columns[1].declared_type == "Name"
     assert result.tables[1].columns[1].name == "CustomerID"
     assert result.foreign_keys[0].from_table == "SalesOrderHeader"
     assert result.foreign_keys[0].to_table == "Customer"

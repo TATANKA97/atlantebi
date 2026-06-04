@@ -35,33 +35,48 @@ order by t.TABLE_SCHEMA, t.TABLE_NAME
 
 SQLSERVER_COLUMNS_QUERY = """
 select
-    c.TABLE_SCHEMA,
-    c.TABLE_NAME,
-    c.COLUMN_NAME,
-    c.ORDINAL_POSITION,
-    c.DATA_TYPE,
-    c.IS_NULLABLE,
-    c.CHARACTER_MAXIMUM_LENGTH,
-    c.NUMERIC_PRECISION,
-    c.NUMERIC_SCALE,
-    c.DATETIME_PRECISION,
-    cast(columnproperty(
-        object_id(quotename(c.TABLE_SCHEMA) + '.' + quotename(c.TABLE_NAME)),
-        c.COLUMN_NAME,
-        'IsIdentity'
-    ) as int) as IS_IDENTITY,
-    cast(columnproperty(
-        object_id(quotename(c.TABLE_SCHEMA) + '.' + quotename(c.TABLE_NAME)),
-        c.COLUMN_NAME,
-        'IsComputed'
-    ) as int) as IS_COMPUTED
-from INFORMATION_SCHEMA.COLUMNS as c
-inner join INFORMATION_SCHEMA.TABLES as t
-    on t.TABLE_SCHEMA = c.TABLE_SCHEMA
-   and t.TABLE_NAME = c.TABLE_NAME
-where t.TABLE_TYPE in ('BASE TABLE', 'VIEW')
-  and c.TABLE_SCHEMA not in ('INFORMATION_SCHEMA', 'sys')
-order by c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION
+    schema_name(schema_object.schema_id) as TABLE_SCHEMA,
+    schema_object.name as TABLE_NAME,
+    column_object.name as COLUMN_NAME,
+    column_object.column_id as ORDINAL_POSITION,
+    system_type.name as DATA_TYPE,
+    user_type.name as DECLARED_TYPE,
+    case when column_object.is_nullable = 1 then 'YES' else 'NO' end as IS_NULLABLE,
+    case
+        when system_type.name in ('nchar', 'nvarchar') and column_object.max_length > 0
+            then column_object.max_length / 2
+        else column_object.max_length
+    end as CHARACTER_MAXIMUM_LENGTH,
+    column_object.precision as NUMERIC_PRECISION,
+    column_object.scale as NUMERIC_SCALE,
+    case
+        when system_type.name in (
+            'date',
+            'datetime',
+            'datetime2',
+            'datetimeoffset',
+            'smalldatetime',
+            'time'
+        ) then column_object.scale
+        else null
+    end as DATETIME_PRECISION,
+    cast(column_object.is_identity as int) as IS_IDENTITY,
+    cast(column_object.is_computed as int) as IS_COMPUTED
+from sys.objects as schema_object
+inner join sys.columns as column_object
+    on column_object.object_id = schema_object.object_id
+inner join sys.types as user_type
+    on user_type.user_type_id = column_object.user_type_id
+inner join sys.types as system_type
+    on system_type.user_type_id = column_object.system_type_id
+   and system_type.user_type_id = system_type.system_type_id
+where schema_object.type in ('U', 'V')
+  and schema_object.is_ms_shipped = 0
+  and schema_name(schema_object.schema_id) not in ('INFORMATION_SCHEMA', 'sys')
+order by
+    schema_name(schema_object.schema_id),
+    schema_object.name,
+    column_object.column_id
 """
 
 SQLSERVER_PRIMARY_KEYS_QUERY = """
@@ -281,13 +296,14 @@ def _build_tables(
                 name=row[2],
                 ordinal_position=int(row[3]),
                 data_type=row[4],
-                is_nullable=row[5] == "YES",
-                max_length=_optional_int(row[6]),
-                numeric_precision=_optional_int(row[7]),
-                numeric_scale=_optional_int(row[8]),
-                datetime_precision=_optional_int(row[9]),
-                is_identity=bool(row[10]),
-                is_computed=bool(row[11]),
+                declared_type=_declared_type(row[4], row[5]),
+                is_nullable=row[6] == "YES",
+                max_length=_optional_int(row[7]),
+                numeric_precision=_optional_int(row[8]),
+                numeric_scale=_optional_int(row[9]),
+                datetime_precision=_optional_int(row[10]),
+                is_identity=bool(row[11]),
+                is_computed=bool(row[12]),
             )
         )
 
@@ -358,3 +374,9 @@ def _optional_int(value) -> int | None:
     if value is None:
         return None
     return int(value)
+
+
+def _declared_type(data_type: str, declared_type: str) -> str | None:
+    if data_type.lower() == declared_type.lower():
+        return None
+    return declared_type

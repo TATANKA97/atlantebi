@@ -530,6 +530,9 @@ function toSemanticColumnInsert({
     is_computed: column.is_computed
   };
 
+  if (column.declared_type !== undefined) {
+    metadata.declared_type = column.declared_type;
+  }
   if (column.max_length !== undefined) {
     metadata.max_length = column.max_length;
   }

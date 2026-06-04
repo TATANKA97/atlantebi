@@ -66,6 +66,7 @@ class SchemaColumnMetadata:
     datetime_precision: int | None = None
     is_identity: bool = False
     is_computed: bool = False
+    declared_type: str | None = None
 
 
 @dataclass(frozen=True)
