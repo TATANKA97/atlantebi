@@ -35,7 +35,25 @@ type SemanticTableRow = {
     table_type?: string;
     column_count?: number;
     primary_key_count?: number;
+    row_count_estimate?: number;
+    view_definition_available?: boolean;
+    has_definition_hash?: boolean;
   };
+};
+
+type SnapshotCoverageWarning = {
+  code: string;
+  severity: "info" | "warning";
+  message: string;
+  object_schema?: string;
+  object_name?: string;
+};
+
+type SnapshotSummaryRow = {
+  id: string;
+  engine_version: string | null;
+  schema_hash: string | null;
+  coverage_warnings: SnapshotCoverageWarning[];
 };
 
 type SemanticColumnRow = SemanticColumnDisplay & {
@@ -84,8 +102,17 @@ export default async function SemanticPage({
   const selectedVersionId = params.version ?? versions[0]?.id;
   const selectedVersion = versions.find((version) => version.id === selectedVersionId);
   const semanticData = selectedVersion
-    ? await readSemanticVersionData({ semanticVersionId: selectedVersion.id, supabase, tenantId })
-    : { tables: [], columnsByTable: new Map<string, SemanticColumnRow[]>() };
+    ? await readSemanticVersionData({
+        semanticVersionId: selectedVersion.id,
+        snapshotId: selectedVersion.schema_snapshot_id,
+        supabase,
+        tenantId
+      })
+    : {
+        columnsByTable: new Map<string, SemanticColumnRow[]>(),
+        snapshot: null,
+        tables: []
+      };
   const message = params.message ? MESSAGE_COPY[params.message] : undefined;
 
   return (
@@ -211,11 +238,44 @@ export default async function SemanticPage({
               <div>
                 <h2 className="text-base font-semibold">Schema importato</h2>
                 <p className="mt-2 text-sm text-[color:var(--muted)]">
-                  {semanticData.tables.length} tabelle nella versione v
+                  {semanticData.tables.length} oggetti nella versione v
                   {selectedVersion.version}.
                 </p>
               </div>
             </div>
+
+            {semanticData.snapshot ? (
+              <div className="mt-4 grid gap-3 border border-[color:var(--border)] p-4 text-sm">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <p>
+                    <span className="text-[color:var(--muted)]">Engine version:</span>{" "}
+                    {semanticData.snapshot.engine_version ?? "non disponibile"}
+                  </p>
+                  <p className="break-all">
+                    <span className="text-[color:var(--muted)]">Schema hash:</span>{" "}
+                    {semanticData.snapshot.schema_hash ?? "non disponibile"}
+                  </p>
+                </div>
+                {semanticData.snapshot.coverage_warnings.length > 0 ? (
+                  <div>
+                    <p className="text-xs font-medium text-[color:var(--muted)]">
+                      Coverage warnings
+                    </p>
+                    <ul className="mt-2 grid gap-1 text-xs text-[color:var(--muted)]">
+                      {semanticData.snapshot.coverage_warnings.map((warning, index) => (
+                        <li key={`${warning.code}-${index}`}>
+                          {warning.severity.toUpperCase()} {warning.code}
+                          {warning.object_schema && warning.object_name
+                            ? ` (${warning.object_schema}.${warning.object_name})`
+                            : ""}
+                          : {warning.message}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             <div className="mt-5 grid gap-6">
               {semanticData.tables.map((table) => {
@@ -233,6 +293,16 @@ export default async function SemanticPage({
                         {queryableColumns.length} colonne queryable
                         {excludedColumns.length > 0
                           ? `, ${excludedColumns.length} escluse`
+                          : ""}
+                        {table.metadata.row_count_estimate !== undefined
+                          ? ` - row estimate ${table.metadata.row_count_estimate}`
+                          : ""}
+                        {table.metadata.table_type === "view"
+                          ? ` - definition ${
+                              table.metadata.view_definition_available
+                                ? "available"
+                                : "not available"
+                            }`
                           : ""}
                       </p>
                     </div>
@@ -330,10 +400,12 @@ export default async function SemanticPage({
 
 async function readSemanticVersionData({
   semanticVersionId,
+  snapshotId,
   supabase,
   tenantId
 }: {
   semanticVersionId: string;
+  snapshotId: string | null;
   supabase: Awaited<ReturnType<typeof getActiveTenantContext>>["supabase"];
   tenantId: string;
 }) {
@@ -348,7 +420,15 @@ async function readSemanticVersionData({
   const tableIds = tables.map((table) => table.id);
 
   if (tableIds.length === 0) {
-    return { tables, columnsByTable: new Map<string, SemanticColumnRow[]>() };
+    return {
+      columnsByTable: new Map<string, SemanticColumnRow[]>(),
+      snapshot: await readSnapshotSummary({
+        resolvedSnapshotId: snapshotId,
+        supabase,
+        tenantId
+      }),
+      tables
+    };
   }
 
   const { data: columnData } = await supabase
@@ -373,5 +453,36 @@ async function readSemanticVersionData({
     );
   }
 
-  return { tables, columnsByTable };
+  return {
+    columnsByTable,
+    snapshot: await readSnapshotSummary({
+      resolvedSnapshotId: snapshotId,
+      supabase,
+      tenantId
+    }),
+    tables
+  };
+}
+
+async function readSnapshotSummary({
+  resolvedSnapshotId,
+  supabase,
+  tenantId
+}: {
+  resolvedSnapshotId: string | null;
+  supabase: Awaited<ReturnType<typeof getActiveTenantContext>>["supabase"];
+  tenantId: string;
+}) {
+  if (!resolvedSnapshotId) {
+    return null;
+  }
+
+  const { data } = await supabase
+    .from("schema_snapshot_summaries")
+    .select("id,engine_version,schema_hash,coverage_warnings")
+    .eq("tenant_id", tenantId)
+    .eq("id", resolvedSnapshotId)
+    .single();
+
+  return (data as SnapshotSummaryRow | null) ?? null;
 }

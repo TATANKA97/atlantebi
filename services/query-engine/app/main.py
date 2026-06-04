@@ -140,8 +140,27 @@ async def introspect_schema(
             introspected_at=introspected_at,
             duration_ms=int((perf_counter() - started) * 1000),
             engine=result.engine,
+            database_name=result.database_name,
+            engine_version=result.engine_version,
+            schema_hash=result.schema_hash,
             tables=[asdict(table) for table in result.tables],
             foreign_keys=[asdict(foreign_key) for foreign_key in result.foreign_keys],
+            unique_constraints=[
+                asdict(unique_constraint)
+                for unique_constraint in result.unique_constraints
+            ],
+            check_constraints=[
+                asdict(check_constraint) for check_constraint in result.check_constraints
+            ],
+            default_constraints=[
+                asdict(default_constraint)
+                for default_constraint in result.default_constraints
+            ],
+            indexes=[asdict(index) for index in result.indexes],
+            coverage_warnings=[
+                asdict(coverage_warning)
+                for coverage_warning in result.coverage_warnings
+            ],
         )
     except SecretResolutionError as exc:
         return _schema_introspection_error(

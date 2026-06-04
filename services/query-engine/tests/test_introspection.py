@@ -14,12 +14,17 @@ from app.drivers.base import (
     DatabaseDriver,
     ReadonlyQueryResult,
     SchemaColumnMetadata,
+    SchemaCheckConstraintMetadata,
+    SchemaDefaultConstraintMetadata,
     SchemaForeignKeyMetadata,
+    SchemaIndexColumnMetadata,
+    SchemaIndexMetadata,
     SchemaIntrospectionResult,
     SchemaPrimaryKeyMetadata,
     SchemaTableMetadata,
+    SchemaUniqueConstraintMetadata,
 )
-from app.drivers.sqlserver import SqlServerDriver
+from app.drivers.sqlserver import SqlServerDriver, _schema_hash
 from app.main import app
 from app.models import Engine, SchemaIntrospectionRequest, SchemaIntrospectionResponse
 
@@ -139,6 +144,9 @@ def test_schema_introspection_endpoint_uses_secret_resolver_and_driver(
             assert timeout_ms == 30000
             return SchemaIntrospectionResult(
                 engine=Engine.sqlserver,
+                database_name="AdventureWorksLT",
+                engine_version="12.0.2000.8",
+                schema_hash="a" * 64,
                 tables=[
                     SchemaTableMetadata(
                         table_schema="SalesLT",
@@ -172,6 +180,7 @@ def test_schema_introspection_endpoint_uses_secret_resolver_and_driver(
                         on_update="no_action",
                     )
                 ],
+                coverage_warnings=[],
             )
 
         async def execute_readonly(
@@ -232,6 +241,54 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
             return self
 
         def fetchall(self):
+            if "serverproperty('ProductVersion')" in self.query:
+                return [("AdventureWorksLT", "12.0.2000.8")]
+            if "sys.dm_db_partition_stats" in self.query:
+                raise fake_pyodbc.Error("row counts unavailable")
+            if "sys.check_constraints" in self.query:
+                return [
+                    (
+                        "SalesLT",
+                        "SalesOrderHeader",
+                        "CK_Order_TotalDue",
+                        "([TotalDue]>=(0))",
+                        0,
+                        0,
+                    )
+                ]
+            if "sys.indexes" in self.query:
+                return [
+                    (
+                        "SalesLT",
+                        "Customer",
+                        "IX_Customer_Email",
+                        1,
+                        0,
+                        "NONCLUSTERED",
+                        "EmailAddress",
+                        1,
+                        1,
+                        0,
+                        0,
+                        None,
+                        0,
+                    ),
+                    (
+                        "SalesLT",
+                        "Customer",
+                        "IX_Customer_Email",
+                        1,
+                        0,
+                        "NONCLUSTERED",
+                        "Phone",
+                        0,
+                        2,
+                        0,
+                        1,
+                        None,
+                        0,
+                    ),
+                ]
             if "sys.foreign_keys" in self.query:
                 return [
                     (
@@ -245,7 +302,29 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
                         1,
                         "NO_ACTION",
                         "NO_ACTION",
+                        0,
+                        0,
                     )
+                ]
+            if "sys.key_constraints" in self.query:
+                return [
+                    ("SalesLT", "Customer", "PK_Customer", "PK", "CustomerID", 1),
+                    (
+                        "SalesLT",
+                        "Customer",
+                        "UQ_Customer_Email",
+                        "UQ",
+                        "EmailAddress",
+                        1,
+                    ),
+                    (
+                        "SalesLT",
+                        "SalesOrderHeader",
+                        "PK_SalesOrderHeader",
+                        "PK",
+                        "SalesOrderID",
+                        1,
+                    ),
                 ]
             if "sys.columns" in self.query:
                 return [
@@ -256,13 +335,20 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
                         1,
                         "int",
                         "int",
-                        "NO",
+                        0,
                         None,
                         10,
                         0,
                         None,
+                        None,
                         1,
                         0,
+                        "1",
+                        "1",
+                        None,
+                        None,
+                        None,
+                        None,
                     ),
                     (
                         "SalesLT",
@@ -271,13 +357,42 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
                         2,
                         "nvarchar",
                         "Name",
-                        "NO",
+                        0,
                         50,
                         0,
                         0,
                         None,
+                        "SQL_Latin1_General_CP1_CI_AS",
                         0,
                         0,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        "Customer first name",
+                    ),
+                    (
+                        "SalesLT",
+                        "Customer",
+                        "EmailAddress",
+                        3,
+                        "nvarchar",
+                        "nvarchar",
+                        1,
+                        50,
+                        0,
+                        0,
+                        None,
+                        "SQL_Latin1_General_CP1_CI_AS",
+                        0,
+                        0,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
                     ),
                     (
                         "SalesLT",
@@ -286,13 +401,20 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
                         1,
                         "int",
                         "int",
-                        "NO",
+                        0,
                         None,
                         10,
                         0,
                         None,
+                        None,
                         1,
                         0,
+                        "1",
+                        "1",
+                        None,
+                        None,
+                        None,
+                        None,
                     ),
                     (
                         "SalesLT",
@@ -301,24 +423,26 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
                         2,
                         "int",
                         "int",
-                        "NO",
+                        0,
                         None,
                         10,
                         0,
                         None,
+                        None,
                         0,
                         0,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
                     ),
                 ]
-            if "INFORMATION_SCHEMA.TABLE_CONSTRAINTS" in self.query:
+            if "sys.objects" in self.query and "sys.sql_modules" in self.query:
                 return [
-                    ("SalesLT", "Customer", "PK_Customer", "CustomerID", 1),
-                    ("SalesLT", "SalesOrderHeader", "PK_SalesOrderHeader", "SalesOrderID", 1),
-                ]
-            if "INFORMATION_SCHEMA.TABLES" in self.query and "TABLE_TYPE" in self.query:
-                return [
-                    ("SalesLT", "Customer", "BASE TABLE"),
-                    ("SalesLT", "SalesOrderHeader", "BASE TABLE"),
+                    ("SalesLT", "Customer", "base_table", 1001, 0, None, None),
+                    ("SalesLT", "SalesOrderHeader", "base_table", 1002, 0, None, None),
                 ]
             raise AssertionError(f"Unexpected query: {self.query}")
 
@@ -356,16 +480,151 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
 
     assert fake_connection.connection_string is not None
     assert "PWD=secret" in fake_connection.connection_string
-    assert len(executed_queries) == 4
-    assert all("INFORMATION_SCHEMA" in query or "sys." in query for query in executed_queries)
+    assert len(executed_queries) == 8
+    assert all("sys." in query or "serverproperty" in query for query in executed_queries)
     assert all("select *" not in query.lower() for query in executed_queries)
+    assert all("count(*)" not in query.lower() for query in executed_queries)
     assert result.engine == Engine.sqlserver
+    assert result.database_name == "AdventureWorksLT"
+    assert result.engine_version == "12.0.2000.8"
+    assert len(result.schema_hash) == 64
     assert result.tables[0].name == "Customer"
     assert result.tables[0].primary_key is not None
     assert result.tables[0].primary_key.columns == ["CustomerID"]
     assert result.tables[0].columns[1].name == "FirstName"
     assert result.tables[0].columns[1].data_type == "nvarchar"
     assert result.tables[0].columns[1].declared_type == "Name"
+    assert result.tables[0].columns[2].is_unique_member is True
     assert result.tables[1].columns[1].name == "CustomerID"
     assert result.foreign_keys[0].from_table == "SalesOrderHeader"
     assert result.foreign_keys[0].to_table == "Customer"
+    assert result.foreign_keys[0].source == "db_fk"
+    assert result.unique_constraints[0].name == "UQ_Customer_Email"
+    assert result.indexes[0].included_columns[0].name == "Phone"
+    assert result.check_constraints[0].definition == "([TotalDue]>=(0))"
+    assert result.coverage_warnings[0].code == "ROW_COUNT_ESTIMATE_UNAVAILABLE"
+
+
+def test_sqlserver_schema_hash_ignores_unstable_object_id_and_row_count() -> None:
+    base_table = SchemaTableMetadata(
+        table_schema="dbo",
+        name="Synthetic",
+        table_type="base_table",
+        object_id=100,
+        row_count_estimate=10,
+        columns=[
+            SchemaColumnMetadata(
+                name="SyntheticID",
+                data_type="int",
+                native_type="int",
+                normalized_type="int",
+                ordinal_position=1,
+                is_nullable=False,
+                is_identity=True,
+                identity_seed="1",
+                identity_increment="1",
+                is_primary_key=True,
+            ),
+            SchemaColumnMetadata(
+                name="Total",
+                data_type="decimal",
+                native_type="decimal",
+                normalized_type="decimal",
+                ordinal_position=2,
+                is_nullable=False,
+                numeric_precision=18,
+                numeric_scale=2,
+                default_value="((0))",
+            ),
+            SchemaColumnMetadata(
+                name="TotalWithTax",
+                data_type="decimal",
+                native_type="decimal",
+                normalized_type="decimal",
+                ordinal_position=3,
+                is_nullable=True,
+                numeric_precision=18,
+                numeric_scale=2,
+                is_computed=True,
+                computed_expression="([Total]*(1.22))",
+            ),
+        ],
+        primary_key=SchemaPrimaryKeyMetadata(name="PK_Synthetic", columns=["SyntheticID"]),
+    )
+    recreated_table = SchemaTableMetadata(
+        **{
+            **base_table.__dict__,
+            "object_id": 200,
+            "row_count_estimate": 999,
+        }
+    )
+    unique_constraints = [
+        SchemaUniqueConstraintMetadata(
+            name="UQ_Synthetic_Total",
+            schema_name="dbo",
+            table_name="Synthetic",
+            columns=["Total"],
+        )
+    ]
+    indexes = [
+        SchemaIndexMetadata(
+            name="IX_Synthetic_Total",
+            schema_name="dbo",
+            table_name="Synthetic",
+            is_unique=True,
+            is_primary_key=False,
+            index_type="nonclustered",
+            key_columns=[
+                SchemaIndexColumnMetadata(
+                    name="Total",
+                    ordinal_position=1,
+                    is_descending=True,
+                )
+            ],
+            included_columns=[
+                SchemaIndexColumnMetadata(
+                    name="TotalWithTax",
+                    ordinal_position=2,
+                    is_descending=False,
+                    is_included=True,
+                )
+            ],
+            filter_definition="([Total]>(0))",
+        )
+    ]
+    check_constraints = [
+        SchemaCheckConstraintMetadata(
+            name="CK_Synthetic_Total",
+            schema_name="dbo",
+            table_name="Synthetic",
+            definition="([Total]>=(0))",
+        )
+    ]
+    default_constraints = [
+        SchemaDefaultConstraintMetadata(
+            name="DF_Synthetic_Total",
+            schema_name="dbo",
+            table_name="Synthetic",
+            column_name="Total",
+            definition="((0))",
+        )
+    ]
+
+    first_hash = _schema_hash(
+        tables=[base_table],
+        foreign_keys=[],
+        unique_constraints=unique_constraints,
+        check_constraints=check_constraints,
+        default_constraints=default_constraints,
+        indexes=indexes,
+    )
+    second_hash = _schema_hash(
+        tables=[recreated_table],
+        foreign_keys=[],
+        unique_constraints=unique_constraints,
+        check_constraints=check_constraints,
+        default_constraints=default_constraints,
+        indexes=indexes,
+    )
+
+    assert first_hash == second_hash

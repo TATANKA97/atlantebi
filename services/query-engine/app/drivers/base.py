@@ -50,8 +50,16 @@ class ConnectionTestResult:
 @dataclass(frozen=True)
 class SchemaIntrospectionResult:
     engine: Engine
+    database_name: str
+    engine_version: str
+    schema_hash: str
     tables: list["SchemaTableMetadata"]
     foreign_keys: list["SchemaForeignKeyMetadata"]
+    unique_constraints: list["SchemaUniqueConstraintMetadata"] = field(default_factory=list)
+    check_constraints: list["SchemaCheckConstraintMetadata"] = field(default_factory=list)
+    default_constraints: list["SchemaDefaultConstraintMetadata"] = field(default_factory=list)
+    indexes: list["SchemaIndexMetadata"] = field(default_factory=list)
+    coverage_warnings: list["SchemaCoverageWarning"] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -60,6 +68,8 @@ class SchemaColumnMetadata:
     data_type: str
     ordinal_position: int
     is_nullable: bool
+    native_type: str | None = None
+    normalized_type: str | None = None
     max_length: int | None = None
     numeric_precision: int | None = None
     numeric_scale: int | None = None
@@ -67,6 +77,15 @@ class SchemaColumnMetadata:
     is_identity: bool = False
     is_computed: bool = False
     declared_type: str | None = None
+    default_value: str | None = None
+    collation: str | None = None
+    identity_seed: str | None = None
+    identity_increment: str | None = None
+    computed_expression: str | None = None
+    is_primary_key: bool = False
+    is_foreign_key: bool = False
+    is_unique_member: bool = False
+    comment: str | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +101,15 @@ class SchemaTableMetadata:
     table_type: Literal["base_table", "view"]
     columns: list[SchemaColumnMetadata] = field(default_factory=list)
     primary_key: SchemaPrimaryKeyMetadata | None = None
+    database_name: str | None = None
+    object_id: int | None = None
+    is_system_object: bool = False
+    row_count_estimate: int | None = None
+    comment: str | None = None
+    view_definition_available: bool | None = None
+    view_definition: str | None = None
+    definition_hash: str | None = None
+    lineage_available: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +123,77 @@ class SchemaForeignKeyMetadata:
     to_columns: list[str]
     on_delete: str
     on_update: str
+    is_disabled: bool = False
+    is_not_trusted: bool = False
+    source: Literal["db_fk"] = "db_fk"
+    verified_by_db: bool = True
+
+
+@dataclass(frozen=True)
+class SchemaUniqueConstraintMetadata:
+    name: str
+    schema_name: str
+    table_name: str
+    columns: list[str]
+
+
+@dataclass(frozen=True)
+class SchemaCheckConstraintMetadata:
+    name: str
+    schema_name: str
+    table_name: str
+    definition: str | None
+    is_disabled: bool = False
+    is_not_trusted: bool = False
+
+
+@dataclass(frozen=True)
+class SchemaDefaultConstraintMetadata:
+    name: str
+    schema_name: str
+    table_name: str
+    column_name: str
+    definition: str | None
+
+
+@dataclass(frozen=True)
+class SchemaIndexColumnMetadata:
+    name: str
+    ordinal_position: int
+    is_descending: bool
+    is_included: bool = False
+
+
+@dataclass(frozen=True)
+class SchemaIndexMetadata:
+    name: str
+    schema_name: str
+    table_name: str
+    is_unique: bool
+    is_primary_key: bool
+    index_type: str
+    key_columns: list[SchemaIndexColumnMetadata]
+    included_columns: list[SchemaIndexColumnMetadata] = field(default_factory=list)
+    filter_definition: str | None = None
+    is_disabled: bool = False
+
+
+@dataclass(frozen=True)
+class SchemaCoverageWarning:
+    code: Literal[
+        "ROW_COUNT_ESTIMATE_UNAVAILABLE",
+        "VIEW_DEFINITION_MISSING",
+        "VIEW_DEFINITION_PERMISSION_DENIED",
+        "NO_VIEW_DEFINITION_PERMISSION",
+        "PARTIAL_METADATA_VISIBILITY_POSSIBLE",
+        "INDEX_METADATA_UNAVAILABLE",
+        "NO_FOREIGN_KEYS_FOUND",
+        "VIEW_LINEAGE_NOT_AVAILABLE",
+    ]
+    severity: Literal["info", "warning"]
+    message: str
+    object_schema: str | None = None
+    object_name: str | None = None
 
 
 @dataclass(frozen=True)

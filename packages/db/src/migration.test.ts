@@ -173,4 +173,28 @@ describe("Supabase metadata migration", () => {
     expect(migration).toContain('create policy "admins can update non-owner memberships"');
     expect(migration).toContain('create policy "owners can delete memberships"');
   });
+
+  it("stores technical FK metadata for SQL Server snapshots without raw data", () => {
+    expect(migration).toContain("add column if not exists constraint_name text");
+    expect(migration).toContain("add column if not exists update_rule text");
+    expect(migration).toContain("add column if not exists delete_rule text");
+    expect(migration).toContain("add column if not exists is_disabled boolean not null default false");
+    expect(migration).toContain("add column if not exists is_not_trusted boolean not null default false");
+    expect(migration).toContain("add column if not exists verified_by_db boolean not null default false");
+    expect(migration).toContain("db_fk maps to database_fk");
+  });
+
+  it("exposes only safe technical snapshot summary fields to authenticated users", () => {
+    expect(migration).toContain("snapshot->>'engine_version' as engine_version");
+    expect(migration).toContain("snapshot->>'schema_hash' as schema_hash");
+    expect(migration).toContain("snapshot->'coverage_warnings'");
+    const summaryViews =
+      migration.match(
+        /create(?: or replace)? view public\.schema_snapshot_summaries[\s\S]*?from public\.schema_snapshots;/gi
+      ) ?? [];
+    expect(summaryViews.length).toBeGreaterThan(0);
+    const latestSummaryView = summaryViews.at(-1) ?? "";
+    expect(latestSummaryView).not.toContain("view_definition");
+    expect(latestSummaryView).not.toContain("extended_properties");
+  });
 });

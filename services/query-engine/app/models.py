@@ -100,6 +100,8 @@ class SchemaColumnMetadata(StrictModel):
     name: str = Field(min_length=1, max_length=255)
     data_type: str = Field(min_length=1, max_length=255)
     declared_type: str | None = Field(default=None, min_length=1, max_length=255)
+    native_type: str | None = Field(default=None, min_length=1, max_length=255)
+    normalized_type: str | None = Field(default=None, min_length=1, max_length=255)
     ordinal_position: int = Field(ge=1)
     is_nullable: bool
     max_length: int | None = Field(default=None, ge=-1)
@@ -108,6 +110,15 @@ class SchemaColumnMetadata(StrictModel):
     datetime_precision: int | None = Field(default=None, ge=0)
     is_identity: bool = False
     is_computed: bool = False
+    default_value: str | None = Field(default=None, min_length=1)
+    collation: str | None = Field(default=None, min_length=1, max_length=255)
+    identity_seed: str | None = Field(default=None, min_length=1, max_length=80)
+    identity_increment: str | None = Field(default=None, min_length=1, max_length=80)
+    computed_expression: str | None = Field(default=None, min_length=1)
+    is_primary_key: bool = False
+    is_foreign_key: bool = False
+    is_unique_member: bool = False
+    comment: str | None = Field(default=None, min_length=1)
 
 
 class SchemaPrimaryKeyMetadata(StrictModel):
@@ -121,6 +132,15 @@ class SchemaTableMetadata(StrictModel):
     table_type: Literal["base_table", "view"]
     columns: list[SchemaColumnMetadata]
     primary_key: SchemaPrimaryKeyMetadata | None = None
+    database_name: str | None = Field(default=None, min_length=1, max_length=255)
+    object_id: int | None = Field(default=None, ge=1)
+    is_system_object: bool = False
+    row_count_estimate: int | None = Field(default=None, ge=0)
+    comment: str | None = Field(default=None, min_length=1)
+    view_definition_available: bool | None = None
+    view_definition: str | None = Field(default=None, min_length=1)
+    definition_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    lineage_available: bool | None = None
 
 
 class SchemaForeignKeyMetadata(StrictModel):
@@ -133,6 +153,71 @@ class SchemaForeignKeyMetadata(StrictModel):
     to_columns: list[NonEmptyString] = Field(min_length=1)
     on_delete: str = Field(min_length=1, max_length=40)
     on_update: str = Field(min_length=1, max_length=40)
+    is_disabled: bool = False
+    is_not_trusted: bool = False
+    source: Literal["db_fk"] = "db_fk"
+    verified_by_db: bool = True
+
+
+class SchemaUniqueConstraintMetadata(StrictModel):
+    name: str = Field(min_length=1, max_length=255)
+    schema_name: str = Field(min_length=1, max_length=255)
+    table_name: str = Field(min_length=1, max_length=255)
+    columns: list[NonEmptyString] = Field(min_length=1)
+
+
+class SchemaCheckConstraintMetadata(StrictModel):
+    name: str = Field(min_length=1, max_length=255)
+    schema_name: str = Field(min_length=1, max_length=255)
+    table_name: str = Field(min_length=1, max_length=255)
+    definition: str | None = Field(default=None, min_length=1)
+    is_disabled: bool = False
+    is_not_trusted: bool = False
+
+
+class SchemaDefaultConstraintMetadata(StrictModel):
+    name: str = Field(min_length=1, max_length=255)
+    schema_name: str = Field(min_length=1, max_length=255)
+    table_name: str = Field(min_length=1, max_length=255)
+    column_name: str = Field(min_length=1, max_length=255)
+    definition: str | None = Field(default=None, min_length=1)
+
+
+class SchemaIndexColumnMetadata(StrictModel):
+    name: str = Field(min_length=1, max_length=255)
+    ordinal_position: int = Field(ge=1)
+    is_descending: bool
+    is_included: bool = False
+
+
+class SchemaIndexMetadata(StrictModel):
+    name: str = Field(min_length=1, max_length=255)
+    schema_name: str = Field(min_length=1, max_length=255)
+    table_name: str = Field(min_length=1, max_length=255)
+    is_unique: bool
+    is_primary_key: bool
+    index_type: str = Field(min_length=1, max_length=80)
+    key_columns: list[SchemaIndexColumnMetadata] = Field(default_factory=list)
+    included_columns: list[SchemaIndexColumnMetadata] = Field(default_factory=list)
+    filter_definition: str | None = Field(default=None, min_length=1)
+    is_disabled: bool = False
+
+
+class SchemaCoverageWarning(StrictModel):
+    code: Literal[
+        "ROW_COUNT_ESTIMATE_UNAVAILABLE",
+        "VIEW_DEFINITION_MISSING",
+        "VIEW_DEFINITION_PERMISSION_DENIED",
+        "NO_VIEW_DEFINITION_PERMISSION",
+        "PARTIAL_METADATA_VISIBILITY_POSSIBLE",
+        "INDEX_METADATA_UNAVAILABLE",
+        "NO_FOREIGN_KEYS_FOUND",
+        "VIEW_LINEAGE_NOT_AVAILABLE",
+    ]
+    severity: Literal["info", "warning"]
+    message: str = Field(min_length=1, max_length=500)
+    object_schema: str | None = Field(default=None, min_length=1, max_length=255)
+    object_name: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 class SchemaIntrospectionResponse(StrictModel):
@@ -141,8 +226,16 @@ class SchemaIntrospectionResponse(StrictModel):
     introspected_at: str
     duration_ms: int = Field(ge=0)
     engine: Engine | None = Field(default=None, strict=False)
+    database_name: str | None = Field(default=None, min_length=1, max_length=255)
+    engine_version: str | None = Field(default=None, min_length=1, max_length=500)
+    schema_hash: str | None = Field(default=None, min_length=64, max_length=64)
     tables: list[SchemaTableMetadata] = Field(default_factory=list)
     foreign_keys: list[SchemaForeignKeyMetadata] = Field(default_factory=list)
+    unique_constraints: list[SchemaUniqueConstraintMetadata] = Field(default_factory=list)
+    check_constraints: list[SchemaCheckConstraintMetadata] = Field(default_factory=list)
+    default_constraints: list[SchemaDefaultConstraintMetadata] = Field(default_factory=list)
+    indexes: list[SchemaIndexMetadata] = Field(default_factory=list)
+    coverage_warnings: list[SchemaCoverageWarning] = Field(default_factory=list)
     sanitized_error: str = Field(default=None, min_length=1, max_length=500)
 
 

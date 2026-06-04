@@ -74,6 +74,8 @@ export const SchemaColumnMetadataSchema = z.strictObject({
   name: z.string().min(1).max(255),
   data_type: z.string().min(1).max(255),
   declared_type: z.string().min(1).max(255).optional(),
+  native_type: z.string().min(1).max(255).optional(),
+  normalized_type: z.string().min(1).max(255).optional(),
   ordinal_position: z.number().int().min(1),
   is_nullable: z.boolean(),
   max_length: z.number().int().min(-1).optional(),
@@ -81,7 +83,16 @@ export const SchemaColumnMetadataSchema = z.strictObject({
   numeric_scale: z.number().int().min(0).optional(),
   datetime_precision: z.number().int().min(0).optional(),
   is_identity: z.boolean().default(false),
-  is_computed: z.boolean().default(false)
+  is_computed: z.boolean().default(false),
+  default_value: z.string().min(1).optional(),
+  collation: z.string().min(1).max(255).optional(),
+  identity_seed: z.string().min(1).max(80).optional(),
+  identity_increment: z.string().min(1).max(80).optional(),
+  computed_expression: z.string().min(1).optional(),
+  is_primary_key: z.boolean().default(false),
+  is_foreign_key: z.boolean().default(false),
+  is_unique_member: z.boolean().default(false),
+  comment: z.string().min(1).optional()
 });
 export type SchemaColumnMetadata = z.infer<typeof SchemaColumnMetadataSchema>;
 
@@ -96,7 +107,16 @@ export const SchemaTableMetadataSchema = z.strictObject({
   name: z.string().min(1).max(255),
   table_type: z.enum(["base_table", "view"]),
   columns: z.array(SchemaColumnMetadataSchema),
-  primary_key: SchemaPrimaryKeyMetadataSchema.optional()
+  primary_key: SchemaPrimaryKeyMetadataSchema.optional(),
+  database_name: z.string().min(1).max(255).optional(),
+  object_id: z.number().int().min(1).optional(),
+  is_system_object: z.boolean().default(false),
+  row_count_estimate: z.number().int().min(0).optional(),
+  comment: z.string().min(1).optional(),
+  view_definition_available: z.boolean().optional(),
+  view_definition: z.string().min(1).optional(),
+  definition_hash: z.string().length(64).optional(),
+  lineage_available: z.boolean().optional()
 });
 export type SchemaTableMetadata = z.infer<typeof SchemaTableMetadataSchema>;
 
@@ -109,9 +129,88 @@ export const SchemaForeignKeyMetadataSchema = z.strictObject({
   to_table: z.string().min(1).max(255),
   to_columns: z.array(z.string().min(1).max(255)).min(1),
   on_delete: z.string().min(1).max(40),
-  on_update: z.string().min(1).max(40)
+  on_update: z.string().min(1).max(40),
+  is_disabled: z.boolean().default(false),
+  is_not_trusted: z.boolean().default(false),
+  source: z.literal("db_fk").default("db_fk"),
+  verified_by_db: z.literal(true).default(true)
 });
 export type SchemaForeignKeyMetadata = z.infer<typeof SchemaForeignKeyMetadataSchema>;
+
+export const SchemaUniqueConstraintMetadataSchema = z.strictObject({
+  name: z.string().min(1).max(255),
+  schema_name: z.string().min(1).max(255),
+  table_name: z.string().min(1).max(255),
+  columns: z.array(z.string().min(1).max(255)).min(1)
+});
+export type SchemaUniqueConstraintMetadata = z.infer<
+  typeof SchemaUniqueConstraintMetadataSchema
+>;
+
+export const SchemaCheckConstraintMetadataSchema = z.strictObject({
+  name: z.string().min(1).max(255),
+  schema_name: z.string().min(1).max(255),
+  table_name: z.string().min(1).max(255),
+  definition: z.string().min(1).optional(),
+  is_disabled: z.boolean().default(false),
+  is_not_trusted: z.boolean().default(false)
+});
+export type SchemaCheckConstraintMetadata = z.infer<
+  typeof SchemaCheckConstraintMetadataSchema
+>;
+
+export const SchemaDefaultConstraintMetadataSchema = z.strictObject({
+  name: z.string().min(1).max(255),
+  schema_name: z.string().min(1).max(255),
+  table_name: z.string().min(1).max(255),
+  column_name: z.string().min(1).max(255),
+  definition: z.string().min(1).optional()
+});
+export type SchemaDefaultConstraintMetadata = z.infer<
+  typeof SchemaDefaultConstraintMetadataSchema
+>;
+
+export const SchemaIndexColumnMetadataSchema = z.strictObject({
+  name: z.string().min(1).max(255),
+  ordinal_position: z.number().int().min(1),
+  is_descending: z.boolean(),
+  is_included: z.boolean().default(false)
+});
+export type SchemaIndexColumnMetadata = z.infer<
+  typeof SchemaIndexColumnMetadataSchema
+>;
+
+export const SchemaIndexMetadataSchema = z.strictObject({
+  name: z.string().min(1).max(255),
+  schema_name: z.string().min(1).max(255),
+  table_name: z.string().min(1).max(255),
+  is_unique: z.boolean(),
+  is_primary_key: z.boolean(),
+  index_type: z.string().min(1).max(80),
+  key_columns: z.array(SchemaIndexColumnMetadataSchema).default([]),
+  included_columns: z.array(SchemaIndexColumnMetadataSchema).default([]),
+  filter_definition: z.string().min(1).optional(),
+  is_disabled: z.boolean().default(false)
+});
+export type SchemaIndexMetadata = z.infer<typeof SchemaIndexMetadataSchema>;
+
+export const SchemaCoverageWarningSchema = z.strictObject({
+  code: z.enum([
+    "ROW_COUNT_ESTIMATE_UNAVAILABLE",
+    "VIEW_DEFINITION_MISSING",
+    "VIEW_DEFINITION_PERMISSION_DENIED",
+    "NO_VIEW_DEFINITION_PERMISSION",
+    "PARTIAL_METADATA_VISIBILITY_POSSIBLE",
+    "INDEX_METADATA_UNAVAILABLE",
+    "NO_FOREIGN_KEYS_FOUND",
+    "VIEW_LINEAGE_NOT_AVAILABLE"
+  ]),
+  severity: z.enum(["info", "warning"]),
+  message: z.string().min(1).max(500),
+  object_schema: z.string().min(1).max(255).optional(),
+  object_name: z.string().min(1).max(255).optional()
+});
+export type SchemaCoverageWarning = z.infer<typeof SchemaCoverageWarningSchema>;
 
 export const SchemaIntrospectionRequestSchema = z.strictObject({
   connection: ConnectionMetadataSchema,
@@ -125,8 +224,16 @@ export const SchemaIntrospectionResponseSchema = z.strictObject({
   introspected_at: z.string().datetime({ offset: true }),
   duration_ms: z.number().int().min(0),
   engine: EngineSchema.optional(),
+  database_name: z.string().min(1).max(255).optional(),
+  engine_version: z.string().min(1).max(500).optional(),
+  schema_hash: z.string().length(64).optional(),
   tables: z.array(SchemaTableMetadataSchema).default([]),
   foreign_keys: z.array(SchemaForeignKeyMetadataSchema).default([]),
+  unique_constraints: z.array(SchemaUniqueConstraintMetadataSchema).default([]),
+  check_constraints: z.array(SchemaCheckConstraintMetadataSchema).default([]),
+  default_constraints: z.array(SchemaDefaultConstraintMetadataSchema).default([]),
+  indexes: z.array(SchemaIndexMetadataSchema).default([]),
+  coverage_warnings: z.array(SchemaCoverageWarningSchema).default([]),
   sanitized_error: z.string().min(1).max(500).optional()
 });
 export type SchemaIntrospectionResponse = z.infer<

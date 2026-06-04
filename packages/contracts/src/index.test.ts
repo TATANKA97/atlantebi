@@ -119,29 +119,42 @@ describe("contracts", () => {
       introspected_at: "2026-06-03T12:00:00.000Z",
       duration_ms: 1000,
       engine: "sqlserver",
+      database_name: "AdventureWorksLT",
+      engine_version: "12.0.2000.8",
+      schema_hash: "a".repeat(64),
       tables: [
         {
           schema: "SalesLT",
           name: "Customer",
           table_type: "base_table",
+          database_name: "AdventureWorksLT",
+          object_id: 12345,
+          is_system_object: false,
+          row_count_estimate: 847,
           columns: [
             {
               name: "CustomerID",
               data_type: "int",
+              native_type: "int",
+              normalized_type: "int",
               ordinal_position: 1,
               is_nullable: false,
               is_identity: true,
-              is_computed: false
+              is_computed: false,
+              is_primary_key: true
             },
             {
               name: "FirstName",
               data_type: "nvarchar",
               declared_type: "Name",
+              native_type: "nvarchar",
+              normalized_type: "nvarchar",
               ordinal_position: 2,
               is_nullable: false,
               max_length: 50,
               is_identity: false,
-              is_computed: false
+              is_computed: false,
+              collation: "SQL_Latin1_General_CP1_CI_AS"
             }
           ],
           primary_key: {
@@ -150,11 +163,72 @@ describe("contracts", () => {
           }
         }
       ],
-      foreign_keys: []
+      foreign_keys: [
+        {
+          name: "FK_Order_Customer",
+          from_schema: "SalesLT",
+          from_table: "SalesOrderHeader",
+          from_columns: ["CustomerID"],
+          to_schema: "SalesLT",
+          to_table: "Customer",
+          to_columns: ["CustomerID"],
+          on_delete: "no_action",
+          on_update: "no_action",
+          is_disabled: false,
+          is_not_trusted: false,
+          source: "db_fk",
+          verified_by_db: true
+        }
+      ],
+      unique_constraints: [],
+      check_constraints: [
+        {
+          name: "CK_Demo",
+          schema_name: "SalesLT",
+          table_name: "Customer",
+          definition: "([CustomerID]>(0))"
+        }
+      ],
+      default_constraints: [
+        {
+          name: "DF_Demo",
+          schema_name: "SalesLT",
+          table_name: "Customer",
+          column_name: "CustomerID",
+          definition: "((0))"
+        }
+      ],
+      indexes: [
+        {
+          name: "IX_Customer_Email",
+          schema_name: "SalesLT",
+          table_name: "Customer",
+          is_unique: true,
+          is_primary_key: false,
+          index_type: "nonclustered",
+          key_columns: [
+            {
+              name: "EmailAddress",
+              ordinal_position: 1,
+              is_descending: false
+            }
+          ],
+          included_columns: []
+        }
+      ],
+      coverage_warnings: [
+        {
+          code: "VIEW_LINEAGE_NOT_AVAILABLE",
+          severity: "info",
+          message: "View lineage is not extracted in Technical Snapshot V1."
+        }
+      ]
     });
 
     expect(response.tables[0]?.primary_key?.columns).toEqual(["CustomerID"]);
     expect(response.tables[0]?.columns[1]?.declared_type).toBe("Name");
+    expect(response.foreign_keys[0]?.source).toBe("db_fk");
+    expect(response.indexes[0]?.is_unique).toBe(true);
     expect(() =>
       SchemaIntrospectionResponseSchema.parse({
         ...response,

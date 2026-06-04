@@ -75,6 +75,13 @@ type SemanticRelationshipInsert = {
   cardinality: "many_to_one";
   semantic_status: "confirmed";
   source: "database_fk";
+  constraint_name: string;
+  update_rule: string;
+  delete_rule: string;
+  is_disabled: boolean;
+  is_not_trusted: boolean;
+  verified_by_db: boolean;
+  metadata: Record<string, string | number | boolean>;
 };
 
 export async function introspectConnection({
@@ -319,6 +326,8 @@ async function persistSchemaIntrospection({
     metadata: {
       schema_snapshot_id: (snapshot as { id: string }).id,
       semantic_version_id: semanticVersionId,
+      schema_hash: schema.schema_hash,
+      engine_version: schema.engine_version,
       table_count: schema.tables.length,
       column_count: countColumns(schema)
     }
@@ -364,18 +373,29 @@ async function insertSemanticTables({
   | { ok: true; tables: SemanticTableRow[] }
   | { ok: false; code: string; message: string }
 > {
-  const rows: SemanticTableInsert[] = schema.tables.map((table) => ({
-    tenant_id: context.tenantId,
-    semantic_version_id: semanticVersionId,
-    physical_schema: table.schema,
-    physical_name: table.name,
-    active: false,
-    metadata: {
+  const rows: SemanticTableInsert[] = schema.tables.map((table) => {
+    const metadata: SemanticTableInsert["metadata"] = {
       table_type: table.table_type,
       column_count: table.columns.length,
-      primary_key_count: table.primary_key?.columns.length ?? 0
+      primary_key_count: table.primary_key?.columns.length ?? 0,
+      has_definition_hash: table.definition_hash !== undefined
+    };
+    if (table.row_count_estimate !== undefined) {
+      metadata.row_count_estimate = table.row_count_estimate;
     }
-  }));
+    if (table.view_definition_available !== undefined) {
+      metadata.view_definition_available = table.view_definition_available;
+    }
+
+    return {
+      tenant_id: context.tenantId,
+      semantic_version_id: semanticVersionId,
+      physical_schema: table.schema,
+      physical_name: table.name,
+      active: false,
+      metadata
+    };
+  });
 
   if (rows.length === 0) {
     return { ok: true, tables: [] };
@@ -488,7 +508,17 @@ async function insertSemanticRelationships({
       to_columns: relationship.to_columns,
       cardinality: "many_to_one",
       semantic_status: "confirmed",
-      source: "database_fk"
+      source: "database_fk",
+      constraint_name: relationship.name,
+      update_rule: relationship.on_update,
+      delete_rule: relationship.on_delete,
+      is_disabled: relationship.is_disabled,
+      is_not_trusted: relationship.is_not_trusted,
+      verified_by_db: relationship.verified_by_db,
+      metadata: {
+        snapshot_source: relationship.source,
+        source_mapping: "db_fk->database_fk"
+      }
     });
   }
 
@@ -526,6 +556,8 @@ function toSemanticColumnInsert({
     ordinal_position: column.ordinal_position,
     is_nullable: column.is_nullable,
     is_primary_key: primaryKeyColumns.has(column.name.toLowerCase()),
+    is_foreign_key: column.is_foreign_key,
+    is_unique_member: column.is_unique_member,
     is_identity: column.is_identity,
     is_computed: column.is_computed
   };
@@ -544,6 +576,30 @@ function toSemanticColumnInsert({
   }
   if (column.datetime_precision !== undefined) {
     metadata.datetime_precision = column.datetime_precision;
+  }
+  if (column.native_type !== undefined) {
+    metadata.native_type = column.native_type;
+  }
+  if (column.normalized_type !== undefined) {
+    metadata.normalized_type = column.normalized_type;
+  }
+  if (column.default_value !== undefined) {
+    metadata.has_default = true;
+  }
+  if (column.collation !== undefined) {
+    metadata.collation = column.collation;
+  }
+  if (column.identity_seed !== undefined) {
+    metadata.identity_seed = column.identity_seed;
+  }
+  if (column.identity_increment !== undefined) {
+    metadata.identity_increment = column.identity_increment;
+  }
+  if (column.computed_expression !== undefined) {
+    metadata.has_computed_expression = true;
+  }
+  if (column.comment !== undefined) {
+    metadata.has_comment = true;
   }
 
   const sensitivity = classifyColumnSensitivity(column.name);
