@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from app.drivers.base import (
     ConnectionMetadata,
@@ -19,6 +20,7 @@ from app.models import Engine
 
 
 AZURE_SQL_DOMAIN_SUFFIX = ".database.windows.net"
+logger = logging.getLogger(__name__)
 
 SQLSERVER_TABLES_QUERY = """
 select
@@ -175,6 +177,7 @@ class SqlServerDriver(DatabaseDriver):
             finally:
                 await asyncio.to_thread(sql_connection.close)
         except pyodbc.Error as exc:
+            logger.exception("SQL Server schema introspection query failed.")
             raise DriverIntrospectionError("SQL Server schema introspection failed.") from exc
 
         return SchemaIntrospectionResult(
