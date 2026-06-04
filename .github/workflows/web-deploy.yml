@@ -47,7 +47,6 @@ jobs:
             --port=8080 \
             --allow-unauthenticated \
             --set-env-vars="NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL},NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }},SUPABASE_SECRET_KEY=${{ secrets.SUPABASE_SECRET_KEY }},GCP_PROJECT_ID=${GCP_PROJECT_ID},QUERY_ENGINE_URL=${QUERY_ENGINE_URL},QUERY_ENGINE_AUTH_MODE=google_id_token" \
-            --remove-env-vars="QUERY_ENGINE_API_TOKEN" \
             --timeout=120s \
             --max-instances=10 \
             --quiet
