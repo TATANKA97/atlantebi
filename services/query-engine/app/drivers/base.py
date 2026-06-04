@@ -70,6 +70,10 @@ class SchemaColumnMetadata:
     is_nullable: bool
     native_type: str | None = None
     normalized_type: str | None = None
+    declared_type_schema: str | None = None
+    declared_type_name: str | None = None
+    declared_type_is_user_defined: bool | None = None
+    declared_type_is_assembly: bool | None = None
     max_length: int | None = None
     numeric_precision: int | None = None
     numeric_scale: int | None = None
@@ -95,6 +99,26 @@ class SchemaPrimaryKeyMetadata:
 
 
 @dataclass(frozen=True)
+class SchemaViewLineageDependency:
+    source: Literal["dm_sql_referenced_entities", "sql_expression_dependencies"]
+    referenced_class: str
+    referencing_column: str | None = None
+    referenced_server_name: str | None = None
+    referenced_database_name: str | None = None
+    referenced_schema_name: str | None = None
+    referenced_entity_name: str | None = None
+    referenced_column_name: str | None = None
+    is_selected: bool | None = None
+    is_updated: bool | None = None
+    is_select_all: bool | None = None
+    is_all_columns_found: bool | None = None
+    is_caller_dependent: bool | None = None
+    is_ambiguous: bool | None = None
+    is_incomplete: bool | None = None
+    is_schema_bound_reference: bool | None = None
+
+
+@dataclass(frozen=True)
 class SchemaTableMetadata:
     table_schema: str
     name: str
@@ -110,6 +134,7 @@ class SchemaTableMetadata:
     view_definition: str | None = None
     definition_hash: str | None = None
     lineage_available: bool | None = None
+    view_lineage: list[SchemaViewLineageDependency] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -189,7 +214,11 @@ class SchemaCoverageWarning:
         "INDEX_METADATA_UNAVAILABLE",
         "NO_FOREIGN_KEYS_FOUND",
         "VIEW_LINEAGE_NOT_AVAILABLE",
+        "VIEW_LINEAGE_PARTIAL",
+        "VIEW_LINEAGE_PERMISSION_DENIED",
+        "VIEW_LINEAGE_UNRESOLVED_REFERENCE",
         "COLUMN_DECLARED_TYPE_UNAVAILABLE",
+        "COLUMN_DECLARED_TYPE_SCHEMA_UNAVAILABLE",
         "COLUMN_OBJECT_MAPPING_MISSING",
     ]
     severity: Literal["info", "warning"]

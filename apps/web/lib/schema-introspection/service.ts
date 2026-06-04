@@ -386,6 +386,12 @@ async function insertSemanticTables({
     if (table.view_definition_available !== undefined) {
       metadata.view_definition_available = table.view_definition_available;
     }
+    if (table.lineage_available !== undefined) {
+      metadata.lineage_available = table.lineage_available;
+    }
+    if (table.table_type === "view") {
+      metadata.view_lineage_count = table.view_lineage.length;
+    }
 
     return {
       tenant_id: context.tenantId,
@@ -564,6 +570,18 @@ function toSemanticColumnInsert({
 
   if (column.declared_type !== undefined) {
     metadata.declared_type = column.declared_type;
+  }
+  if (column.declared_type_schema !== undefined) {
+    metadata.declared_type_schema = column.declared_type_schema;
+  }
+  if (column.declared_type_name !== undefined) {
+    metadata.declared_type_name = column.declared_type_name;
+  }
+  if (column.declared_type_is_user_defined !== undefined) {
+    metadata.declared_type_is_user_defined = column.declared_type_is_user_defined;
+  }
+  if (column.declared_type_is_assembly !== undefined) {
+    metadata.declared_type_is_assembly = column.declared_type_is_assembly;
   }
   if (column.max_length !== undefined) {
     metadata.max_length = column.max_length;

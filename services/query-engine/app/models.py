@@ -102,6 +102,10 @@ class SchemaColumnMetadata(StrictModel):
     declared_type: str | None = Field(default=None, min_length=1, max_length=255)
     native_type: str | None = Field(default=None, min_length=1, max_length=255)
     normalized_type: str | None = Field(default=None, min_length=1, max_length=255)
+    declared_type_schema: str | None = Field(default=None, min_length=1, max_length=255)
+    declared_type_name: str | None = Field(default=None, min_length=1, max_length=255)
+    declared_type_is_user_defined: bool | None = None
+    declared_type_is_assembly: bool | None = None
     ordinal_position: int = Field(ge=1)
     is_nullable: bool
     max_length: int | None = Field(default=None, ge=-1)
@@ -126,6 +130,25 @@ class SchemaPrimaryKeyMetadata(StrictModel):
     columns: list[NonEmptyString] = Field(min_length=1)
 
 
+class SchemaViewLineageDependency(StrictModel):
+    source: Literal["dm_sql_referenced_entities", "sql_expression_dependencies"]
+    referencing_column: str | None = Field(default=None, min_length=1, max_length=255)
+    referenced_server_name: str | None = Field(default=None, min_length=1, max_length=255)
+    referenced_database_name: str | None = Field(default=None, min_length=1, max_length=255)
+    referenced_schema_name: str | None = Field(default=None, min_length=1, max_length=255)
+    referenced_entity_name: str | None = Field(default=None, min_length=1, max_length=255)
+    referenced_column_name: str | None = Field(default=None, min_length=1, max_length=255)
+    referenced_class: str = Field(min_length=1, max_length=80)
+    is_selected: bool | None = None
+    is_updated: bool | None = None
+    is_select_all: bool | None = None
+    is_all_columns_found: bool | None = None
+    is_caller_dependent: bool | None = None
+    is_ambiguous: bool | None = None
+    is_incomplete: bool | None = None
+    is_schema_bound_reference: bool | None = None
+
+
 class SchemaTableMetadata(StrictModel):
     table_schema: str = Field(alias="schema", min_length=1, max_length=255)
     name: str = Field(min_length=1, max_length=255)
@@ -141,6 +164,7 @@ class SchemaTableMetadata(StrictModel):
     view_definition: str | None = Field(default=None, min_length=1)
     definition_hash: str | None = Field(default=None, min_length=64, max_length=64)
     lineage_available: bool | None = None
+    view_lineage: list[SchemaViewLineageDependency] = Field(default_factory=list)
 
 
 class SchemaForeignKeyMetadata(StrictModel):
@@ -213,7 +237,11 @@ class SchemaCoverageWarning(StrictModel):
         "INDEX_METADATA_UNAVAILABLE",
         "NO_FOREIGN_KEYS_FOUND",
         "VIEW_LINEAGE_NOT_AVAILABLE",
+        "VIEW_LINEAGE_PARTIAL",
+        "VIEW_LINEAGE_PERMISSION_DENIED",
+        "VIEW_LINEAGE_UNRESOLVED_REFERENCE",
         "COLUMN_DECLARED_TYPE_UNAVAILABLE",
+        "COLUMN_DECLARED_TYPE_SCHEMA_UNAVAILABLE",
         "COLUMN_OBJECT_MAPPING_MISSING",
     ]
     severity: Literal["info", "warning"]

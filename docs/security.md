@@ -21,6 +21,7 @@ Without `VIEW DEFINITION`, SQL Server can hide or return partial metadata depend
 metadata visibility rules. The snapshot remains best-effort, but coverage is weaker:
 
 - view definitions may be unavailable;
+- view lineage from `sys.dm_sql_referenced_entities` may be partial or unavailable;
 - computed column definitions may be unavailable;
 - default and check constraint definitions may be unavailable;
 - coverage warnings will indicate partial metadata visibility.

@@ -7,6 +7,10 @@ export type SemanticColumnDisplay = {
   pii: boolean;
   metadata: {
     declared_type?: string;
+    declared_type_schema?: string;
+    declared_type_name?: string;
+    declared_type_is_user_defined?: boolean;
+    declared_type_is_assembly?: boolean;
     is_nullable?: boolean;
     is_primary_key?: boolean;
     is_sensitive?: boolean;
@@ -48,6 +52,16 @@ export function semanticColumnFlags(column: SemanticColumnDisplay) {
 }
 
 export function semanticColumnTypeLabel(column: SemanticColumnDisplay) {
+  if (
+    column.metadata.declared_type_name &&
+    column.metadata.declared_type_name.toLowerCase() !== column.data_type.toLowerCase()
+  ) {
+    const schemaPrefix = column.metadata.declared_type_schema
+      ? `${column.metadata.declared_type_schema}.`
+      : "";
+    return `${column.data_type} (${schemaPrefix}${column.metadata.declared_type_name})`;
+  }
+
   if (
     column.metadata.declared_type &&
     column.metadata.declared_type.toLowerCase() !== column.data_type.toLowerCase()

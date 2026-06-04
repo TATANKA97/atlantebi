@@ -147,6 +147,10 @@ describe("contracts", () => {
               name: "FirstName",
               data_type: "nvarchar",
               declared_type: "Name",
+              declared_type_schema: "SalesLT",
+              declared_type_name: "Name",
+              declared_type_is_user_defined: true,
+              declared_type_is_assembly: false,
               native_type: "nvarchar",
               normalized_type: "nvarchar",
               ordinal_position: 2,
@@ -161,6 +165,30 @@ describe("contracts", () => {
             name: "PK_Customer_CustomerID",
             columns: ["CustomerID"]
           }
+        },
+        {
+          schema: "SalesLT",
+          name: "vCustomer",
+          table_type: "view",
+          columns: [],
+          lineage_available: true,
+          view_lineage: [
+            {
+              source: "dm_sql_referenced_entities",
+              referencing_column: "CustomerID",
+              referenced_schema_name: "SalesLT",
+              referenced_entity_name: "Customer",
+              referenced_column_name: "CustomerID",
+              referenced_class: "OBJECT_OR_COLUMN",
+              is_selected: true,
+              is_updated: false,
+              is_select_all: false,
+              is_all_columns_found: true,
+              is_caller_dependent: false,
+              is_ambiguous: false,
+              is_incomplete: false
+            }
+          ]
         }
       ],
       foreign_keys: [
@@ -218,15 +246,19 @@ describe("contracts", () => {
       ],
       coverage_warnings: [
         {
-          code: "VIEW_LINEAGE_NOT_AVAILABLE",
-          severity: "info",
-          message: "View lineage is not extracted in Technical Snapshot V1."
+          code: "VIEW_LINEAGE_PARTIAL",
+          severity: "warning",
+          message: "SQL Server returned partial view lineage metadata for this view."
         }
       ]
     });
 
     expect(response.tables[0]?.primary_key?.columns).toEqual(["CustomerID"]);
     expect(response.tables[0]?.columns[1]?.declared_type).toBe("Name");
+    expect(response.tables[0]?.columns[1]?.declared_type_schema).toBe("SalesLT");
+    expect(response.tables[1]?.view_lineage[0]?.referenced_entity_name).toBe(
+      "Customer"
+    );
     expect(response.foreign_keys[0]?.source).toBe("db_fk");
     expect(response.indexes[0]?.is_unique).toBe(true);
     expect(() =>

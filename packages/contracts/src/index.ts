@@ -76,6 +76,10 @@ export const SchemaColumnMetadataSchema = z.strictObject({
   declared_type: z.string().min(1).max(255).optional(),
   native_type: z.string().min(1).max(255).optional(),
   normalized_type: z.string().min(1).max(255).optional(),
+  declared_type_schema: z.string().min(1).max(255).optional(),
+  declared_type_name: z.string().min(1).max(255).optional(),
+  declared_type_is_user_defined: z.boolean().optional(),
+  declared_type_is_assembly: z.boolean().optional(),
   ordinal_position: z.number().int().min(1),
   is_nullable: z.boolean(),
   max_length: z.number().int().min(-1).optional(),
@@ -102,6 +106,28 @@ export const SchemaPrimaryKeyMetadataSchema = z.strictObject({
 });
 export type SchemaPrimaryKeyMetadata = z.infer<typeof SchemaPrimaryKeyMetadataSchema>;
 
+export const SchemaViewLineageDependencySchema = z.strictObject({
+  source: z.enum(["dm_sql_referenced_entities", "sql_expression_dependencies"]),
+  referencing_column: z.string().min(1).max(255).optional(),
+  referenced_server_name: z.string().min(1).max(255).optional(),
+  referenced_database_name: z.string().min(1).max(255).optional(),
+  referenced_schema_name: z.string().min(1).max(255).optional(),
+  referenced_entity_name: z.string().min(1).max(255).optional(),
+  referenced_column_name: z.string().min(1).max(255).optional(),
+  referenced_class: z.string().min(1).max(80),
+  is_selected: z.boolean().optional(),
+  is_updated: z.boolean().optional(),
+  is_select_all: z.boolean().optional(),
+  is_all_columns_found: z.boolean().optional(),
+  is_caller_dependent: z.boolean().optional(),
+  is_ambiguous: z.boolean().optional(),
+  is_incomplete: z.boolean().optional(),
+  is_schema_bound_reference: z.boolean().optional()
+});
+export type SchemaViewLineageDependency = z.infer<
+  typeof SchemaViewLineageDependencySchema
+>;
+
 export const SchemaTableMetadataSchema = z.strictObject({
   schema: z.string().min(1).max(255),
   name: z.string().min(1).max(255),
@@ -116,7 +142,8 @@ export const SchemaTableMetadataSchema = z.strictObject({
   view_definition_available: z.boolean().optional(),
   view_definition: z.string().min(1).optional(),
   definition_hash: z.string().length(64).optional(),
-  lineage_available: z.boolean().optional()
+  lineage_available: z.boolean().optional(),
+  view_lineage: z.array(SchemaViewLineageDependencySchema).default([])
 });
 export type SchemaTableMetadata = z.infer<typeof SchemaTableMetadataSchema>;
 
@@ -204,7 +231,11 @@ export const SchemaCoverageWarningSchema = z.strictObject({
     "INDEX_METADATA_UNAVAILABLE",
     "NO_FOREIGN_KEYS_FOUND",
     "VIEW_LINEAGE_NOT_AVAILABLE",
+    "VIEW_LINEAGE_PARTIAL",
+    "VIEW_LINEAGE_PERMISSION_DENIED",
+    "VIEW_LINEAGE_UNRESOLVED_REFERENCE",
     "COLUMN_DECLARED_TYPE_UNAVAILABLE",
+    "COLUMN_DECLARED_TYPE_SCHEMA_UNAVAILABLE",
     "COLUMN_OBJECT_MAPPING_MISSING"
   ]),
   severity: z.enum(["info", "warning"]),

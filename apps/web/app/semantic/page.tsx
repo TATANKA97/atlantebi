@@ -37,6 +37,8 @@ type SemanticTableRow = {
     primary_key_count?: number;
     row_count_estimate?: number;
     view_definition_available?: boolean;
+    lineage_available?: boolean;
+    view_lineage_count?: number;
     has_definition_hash?: boolean;
   };
 };
@@ -301,6 +303,13 @@ export default async function SemanticPage({
                           ? ` - definition ${
                               table.metadata.view_definition_available
                                 ? "available"
+                                : "not available"
+                            }`
+                          : ""}
+                        {table.metadata.table_type === "view"
+                          ? ` - lineage ${
+                              table.metadata.lineage_available
+                                ? `available (${table.metadata.view_lineage_count ?? 0})`
                                 : "not available"
                             }`
                           : ""}

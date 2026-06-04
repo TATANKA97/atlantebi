@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from dataclasses import dataclass
 
 from app.drivers.base import (
     ConnectionMetadata,
@@ -23,12 +24,23 @@ from app.drivers.base import (
     SchemaPrimaryKeyMetadata,
     SchemaTableMetadata,
     SchemaUniqueConstraintMetadata,
+    SchemaViewLineageDependency,
 )
 from app.models import Engine
 
 
 AZURE_SQL_DOMAIN_SUFFIX = ".database.windows.net"
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ViewLineageStatus:
+    available: bool
+    source: str | None = None
+    error_message: str | None = None
+    partial: bool = False
+    permission_denied: bool = False
+    unresolved: bool = False
 
 SQLSERVER_DATABASE_QUERY = """
 select
@@ -118,7 +130,13 @@ select
                 then 1
             else 0
         end as int
-    ) as DECLARED_TYPE_UNAVAILABLE
+    ) as DECLARED_TYPE_UNAVAILABLE,
+    type_schema.name as DECLARED_TYPE_SCHEMA,
+    user_type.name as DECLARED_TYPE_NAME,
+    cast(user_type.is_user_defined as int) as DECLARED_TYPE_IS_USER_DEFINED,
+    cast(user_type.is_assembly_type as int) as DECLARED_TYPE_IS_ASSEMBLY,
+    column_item.user_type_id,
+    column_item.system_type_id
 from sys.objects as object_item
 inner join sys.schemas as object_schema
     on object_schema.schema_id = object_item.schema_id
@@ -126,6 +144,8 @@ inner join sys.columns as column_item
     on column_item.object_id = object_item.object_id
 left join sys.types as user_type
     on user_type.user_type_id = column_item.user_type_id
+left join sys.schemas as type_schema
+    on type_schema.schema_id = user_type.schema_id
 outer apply (
     select top (1)
         base_type.name
@@ -278,6 +298,48 @@ where partition_stats.index_id in (0, 1)
 group by object_schema.name, object_item.name
 """
 
+SQLSERVER_VIEW_REFERENCED_ENTITIES_QUERY = """
+select
+    referencing_minor_id,
+    referenced_server_name,
+    referenced_database_name,
+    referenced_schema_name,
+    referenced_entity_name,
+    referenced_minor_name,
+    referenced_id,
+    referenced_minor_id,
+    referenced_class_desc,
+    cast(is_selected as int) as IS_SELECTED,
+    cast(is_updated as int) as IS_UPDATED,
+    cast(is_select_all as int) as IS_SELECT_ALL,
+    cast(is_all_columns_found as int) as IS_ALL_COLUMNS_FOUND,
+    cast(is_caller_dependent as int) as IS_CALLER_DEPENDENT,
+    cast(is_ambiguous as int) as IS_AMBIGUOUS,
+    cast(is_incomplete as int) as IS_INCOMPLETE
+from sys.dm_sql_referenced_entities(?, 'OBJECT')
+where referenced_class_desc = 'OBJECT_OR_COLUMN'
+order by referenced_schema_name, referenced_entity_name, referenced_minor_name
+"""
+
+SQLSERVER_VIEW_EXPRESSION_DEPENDENCIES_QUERY = """
+select
+    referencing_minor_id,
+    referenced_server_name,
+    referenced_database_name,
+    referenced_schema_name,
+    referenced_entity_name,
+    referenced_id,
+    referenced_minor_id,
+    referenced_class_desc,
+    cast(is_schema_bound_reference as int) as IS_SCHEMA_BOUND_REFERENCE,
+    cast(is_caller_dependent as int) as IS_CALLER_DEPENDENT,
+    cast(is_ambiguous as int) as IS_AMBIGUOUS
+from sys.sql_expression_dependencies
+where referencing_id = ?
+  and referenced_class_desc = 'OBJECT_OR_COLUMN'
+order by referenced_schema_name, referenced_entity_name, referenced_minor_id
+"""
+
 
 class SqlServerDriver(DatabaseDriver):
     engine = Engine.sqlserver
@@ -355,6 +417,14 @@ class SqlServerDriver(DatabaseDriver):
                     SQLSERVER_ROW_COUNTS_QUERY,
                     pyodbc.Error,
                 )
+                view_lineage_by_view, view_lineage_status_by_view = (
+                    await _fetch_view_lineage(
+                        sql_connection=sql_connection,
+                        object_rows=object_rows,
+                        column_rows=column_rows,
+                        error_type=pyodbc.Error,
+                    )
+                )
             finally:
                 await asyncio.to_thread(sql_connection.close)
         except pyodbc.Error as exc:
@@ -378,6 +448,8 @@ class SqlServerDriver(DatabaseDriver):
             foreign_keys,
             indexes,
             row_counts,
+            view_lineage_by_view,
+            view_lineage_status_by_view,
         )
         check_constraints = _build_check_constraints(check_constraint_rows)
         default_constraints = _build_default_constraints(column_rows)
@@ -386,6 +458,7 @@ class SqlServerDriver(DatabaseDriver):
             foreign_keys=foreign_keys,
             indexes_available=indexes_available,
             row_counts_available=row_counts_available,
+            view_lineage_status_by_view=view_lineage_status_by_view,
         )
         coverage_warnings.extend(
             _build_column_coverage_warnings(column_rows=column_rows, tables=tables)
@@ -479,6 +552,15 @@ async def _fetch_all(sql_connection, query: str):
         await asyncio.to_thread(cursor.close)
 
 
+async def _fetch_all_params(sql_connection, query: str, params: tuple):
+    cursor = sql_connection.cursor()
+    try:
+        await asyncio.to_thread(cursor.execute, query, params)
+        return await asyncio.to_thread(cursor.fetchall)
+    finally:
+        await asyncio.to_thread(cursor.close)
+
+
 async def _fetch_one(sql_connection, query: str):
     rows = await _fetch_all(sql_connection, query)
     if not rows:
@@ -494,6 +576,191 @@ async def _fetch_all_best_effort(sql_connection, query: str, error_type):
         return [], False
 
 
+async def _fetch_view_lineage(
+    *,
+    sql_connection,
+    object_rows,
+    column_rows,
+    error_type,
+) -> tuple[
+    dict[tuple[str, str], list[SchemaViewLineageDependency]],
+    dict[tuple[str, str], ViewLineageStatus],
+]:
+    view_rows = [row for row in object_rows if str(row[2]) == "view"]
+    view_column_names = _build_view_column_name_map(column_rows)
+    lineage_by_view: dict[tuple[str, str], list[SchemaViewLineageDependency]] = {}
+    status_by_view: dict[tuple[str, str], ViewLineageStatus] = {}
+
+    for row in view_rows:
+        schema_name, view_name, object_id = str(row[0]), str(row[1]), int(row[3])
+        key = (schema_name, view_name)
+        qualified_name = _bracket_qualified_name(schema_name, view_name)
+        try:
+            dm_rows = await _fetch_all_params(
+                sql_connection,
+                SQLSERVER_VIEW_REFERENCED_ENTITIES_QUERY,
+                (qualified_name,),
+            )
+            dependencies = _build_dm_view_lineage_dependencies(
+                dm_rows,
+                view_column_names.get(key, {}),
+            )
+            lineage_by_view[key] = dependencies
+            status_by_view[key] = ViewLineageStatus(
+                available=True,
+                source="dm_sql_referenced_entities",
+                partial=_lineage_is_partial(dependencies),
+                unresolved=_lineage_has_unresolved_reference(dependencies),
+            )
+            continue
+        except error_type as exc:
+            logger.warning(
+                "SQL Server view lineage DMF query failed for %s.%s.",
+                schema_name,
+                view_name,
+                exc_info=True,
+            )
+            dm_error_message = str(exc)
+
+        try:
+            fallback_rows = await _fetch_all_params(
+                sql_connection,
+                SQLSERVER_VIEW_EXPRESSION_DEPENDENCIES_QUERY,
+                (object_id,),
+            )
+            dependencies = _build_expression_view_lineage_dependencies(
+                fallback_rows,
+                view_column_names.get(key, {}),
+            )
+            lineage_by_view[key] = dependencies
+            status_by_view[key] = ViewLineageStatus(
+                available=True,
+                source="sql_expression_dependencies",
+                partial=True,
+                permission_denied=_lineage_error_is_permission_denied(dm_error_message),
+                unresolved=_lineage_has_unresolved_reference(dependencies),
+                error_message=dm_error_message,
+            )
+        except error_type as exc:
+            error_message = str(exc)
+            logger.warning(
+                "SQL Server view lineage fallback query failed for %s.%s.",
+                schema_name,
+                view_name,
+                exc_info=True,
+            )
+            status_by_view[key] = ViewLineageStatus(
+                available=False,
+                permission_denied=_lineage_error_is_permission_denied(
+                    f"{dm_error_message} {error_message}"
+                ),
+                error_message=error_message,
+            )
+            lineage_by_view[key] = []
+
+    return lineage_by_view, status_by_view
+
+
+def _build_view_column_name_map(column_rows) -> dict[tuple[str, str], dict[int, str]]:
+    view_columns: dict[tuple[str, str], dict[int, str]] = {}
+    for row in column_rows:
+        key = (str(row[0]), str(row[1]))
+        view_columns.setdefault(key, {})[int(row[3])] = str(row[2])
+    return view_columns
+
+
+def _build_dm_view_lineage_dependencies(
+    rows,
+    view_columns_by_id: dict[int, str],
+) -> list[SchemaViewLineageDependency]:
+    dependencies: list[SchemaViewLineageDependency] = []
+    for row in rows:
+        dependencies.append(
+            SchemaViewLineageDependency(
+                source="dm_sql_referenced_entities",
+                referencing_column=view_columns_by_id.get(int(row[0]))
+                if int(row[0]) > 0
+                else None,
+                referenced_server_name=_optional_string(row[1]),
+                referenced_database_name=_optional_string(row[2]),
+                referenced_schema_name=_optional_string(row[3]),
+                referenced_entity_name=_optional_string(row[4]),
+                referenced_column_name=_optional_string(row[5]),
+                referenced_class=str(row[8]),
+                is_selected=_optional_bool(row[9]),
+                is_updated=_optional_bool(row[10]),
+                is_select_all=_optional_bool(row[11]),
+                is_all_columns_found=_optional_bool(row[12]),
+                is_caller_dependent=_optional_bool(row[13]),
+                is_ambiguous=_optional_bool(row[14]),
+                is_incomplete=_optional_bool(row[15]),
+            )
+        )
+    return dependencies
+
+
+def _build_expression_view_lineage_dependencies(
+    rows,
+    view_columns_by_id: dict[int, str],
+) -> list[SchemaViewLineageDependency]:
+    dependencies: list[SchemaViewLineageDependency] = []
+    for row in rows:
+        dependencies.append(
+            SchemaViewLineageDependency(
+                source="sql_expression_dependencies",
+                referencing_column=view_columns_by_id.get(int(row[0]))
+                if int(row[0]) > 0
+                else None,
+                referenced_server_name=_optional_string(row[1]),
+                referenced_database_name=_optional_string(row[2]),
+                referenced_schema_name=_optional_string(row[3]),
+                referenced_entity_name=_optional_string(row[4]),
+                referenced_column_name=None,
+                referenced_class=str(row[7]),
+                is_schema_bound_reference=_optional_bool(row[8]),
+                is_caller_dependent=_optional_bool(row[9]),
+                is_ambiguous=_optional_bool(row[10]),
+            )
+        )
+    return dependencies
+
+
+def _bracket_qualified_name(schema_name: str, object_name: str) -> str:
+    return f"{_bracket_identifier(schema_name)}.{_bracket_identifier(object_name)}"
+
+
+def _bracket_identifier(identifier: str) -> str:
+    return f"[{identifier.replace(']', ']]')}]"
+
+
+def _lineage_error_is_permission_denied(message: str) -> bool:
+    normalized = message.lower()
+    return "permission" in normalized or "view definition" in normalized
+
+
+def _lineage_is_partial(dependencies: list[SchemaViewLineageDependency]) -> bool:
+    return any(
+        dependency.source != "dm_sql_referenced_entities"
+        or dependency.is_all_columns_found is False
+        or dependency.is_incomplete is True
+        or dependency.is_select_all is True
+        or dependency.is_caller_dependent is True
+        or dependency.is_ambiguous is True
+        for dependency in dependencies
+    )
+
+
+def _lineage_has_unresolved_reference(
+    dependencies: list[SchemaViewLineageDependency],
+) -> bool:
+    return any(
+        dependency.referenced_schema_name is None
+        and dependency.referenced_database_name is None
+        and dependency.referenced_server_name is None
+        for dependency in dependencies
+    )
+
+
 def _build_tables(
     database_name: str,
     object_rows,
@@ -503,6 +770,8 @@ def _build_tables(
     foreign_keys: list[SchemaForeignKeyMetadata],
     indexes: list[SchemaIndexMetadata],
     row_counts: dict[tuple[str, str], int],
+    view_lineage_by_view: dict[tuple[str, str], list[SchemaViewLineageDependency]],
+    view_lineage_status_by_view: dict[tuple[str, str], "ViewLineageStatus"],
 ) -> list[SchemaTableMetadata]:
     table_map: dict[tuple[str, str], dict] = {}
 
@@ -532,6 +801,7 @@ def _build_tables(
         table_schema, table_name, table_type = str(row[0]), str(row[1]), str(row[2])
         key = (table_schema, table_name)
         view_definition = _optional_string(row[6])
+        lineage_status = view_lineage_status_by_view.get(key)
         table_map[key] = {
             "table_schema": table_schema,
             "name": table_name,
@@ -550,7 +820,10 @@ def _build_tables(
             "definition_hash": (
                 _hash_string(view_definition) if view_definition is not None else None
             ),
-            "lineage_available": False if table_type == "view" else None,
+            "lineage_available": (
+                lineage_status.available if table_type == "view" and lineage_status else None
+            ),
+            "view_lineage": view_lineage_by_view.get(key, []),
         }
 
     for row in column_rows:
@@ -570,6 +843,14 @@ def _build_tables(
                 native_type=native_type,
                 normalized_type=native_type,
                 declared_type=_declared_type(native_type, declared_type),
+                declared_type_schema=_optional_string(row[21]) if len(row) > 21 else None,
+                declared_type_name=_optional_string(row[22]) if len(row) > 22 else None,
+                declared_type_is_user_defined=(
+                    bool(row[23]) if len(row) > 23 and row[23] is not None else None
+                ),
+                declared_type_is_assembly=(
+                    bool(row[24]) if len(row) > 24 and row[24] is not None else None
+                ),
                 is_nullable=bool(row[6]),
                 max_length=_optional_int(row[7]),
                 numeric_precision=_optional_int(row[8]),
@@ -795,6 +1076,7 @@ def _build_column_coverage_warnings(
 ) -> list[SchemaCoverageWarning]:
     table_keys = {(table.table_schema, table.name) for table in tables}
     unresolved_declared_type_keys: set[tuple[str, str]] = set()
+    missing_declared_type_schema_keys: set[tuple[str, str]] = set()
     unmapped_column_keys: set[tuple[str, str]] = set()
 
     for row in column_rows:
@@ -805,6 +1087,14 @@ def _build_column_coverage_warnings(
         declared_type_unavailable = len(row) > 20 and bool(row[20])
         if declared_type_unavailable:
             unresolved_declared_type_keys.add(table_key)
+        declared_type_name = _optional_string(row[22]) if len(row) > 22 else None
+        declared_type_schema = _optional_string(row[21]) if len(row) > 21 else None
+        declared_type_is_user_defined = (
+            bool(row[23]) if len(row) > 23 and row[23] is not None else False
+        )
+        if declared_type_name is not None and declared_type_is_user_defined:
+            if declared_type_schema is None:
+                missing_declared_type_schema_keys.add(table_key)
 
     warnings: list[SchemaCoverageWarning] = []
     for schema_name, object_name in sorted(unresolved_declared_type_keys):
@@ -835,6 +1125,20 @@ def _build_column_coverage_warnings(
             )
         )
 
+    for schema_name, object_name in sorted(missing_declared_type_schema_keys):
+        warnings.append(
+            SchemaCoverageWarning(
+                code="COLUMN_DECLARED_TYPE_SCHEMA_UNAVAILABLE",
+                severity="warning",
+                object_schema=schema_name,
+                object_name=object_name,
+                message=(
+                    "One or more SQL Server declared type names were visible, "
+                    "but their schemas were not visible."
+                ),
+            )
+        )
+
     return warnings
 
 
@@ -844,6 +1148,7 @@ def _build_coverage_warnings(
     foreign_keys: list[SchemaForeignKeyMetadata],
     indexes_available: bool,
     row_counts_available: bool,
+    view_lineage_status_by_view: dict[tuple[str, str], ViewLineageStatus],
 ) -> list[SchemaCoverageWarning]:
     warnings: list[SchemaCoverageWarning] = []
     if not row_counts_available:
@@ -875,15 +1180,47 @@ def _build_coverage_warnings(
     for table in tables:
         if table.table_type != "view":
             continue
-        warnings.append(
-            SchemaCoverageWarning(
-                code="VIEW_LINEAGE_NOT_AVAILABLE",
-                severity="info",
-                object_schema=table.table_schema,
-                object_name=table.name,
-                message="View lineage is not extracted in Technical Snapshot V1.",
+        lineage_status = view_lineage_status_by_view.get((table.table_schema, table.name))
+        if lineage_status is None or not lineage_status.available:
+            warnings.append(
+                SchemaCoverageWarning(
+                    code="VIEW_LINEAGE_NOT_AVAILABLE",
+                    severity="warning",
+                    object_schema=table.table_schema,
+                    object_name=table.name,
+                    message="SQL Server view lineage metadata was not readable.",
+                )
             )
-        )
+            if lineage_status is not None and lineage_status.permission_denied:
+                warnings.append(
+                    SchemaCoverageWarning(
+                        code="VIEW_LINEAGE_PERMISSION_DENIED",
+                        severity="warning",
+                        object_schema=table.table_schema,
+                        object_name=table.name,
+                        message="VIEW DEFINITION or dependency metadata permissions may be missing for this view.",
+                    )
+                )
+        elif lineage_status.partial:
+            warnings.append(
+                SchemaCoverageWarning(
+                    code="VIEW_LINEAGE_PARTIAL",
+                    severity="warning",
+                    object_schema=table.table_schema,
+                    object_name=table.name,
+                    message="SQL Server returned partial view lineage metadata for this view.",
+                )
+            )
+        if lineage_status is not None and lineage_status.unresolved:
+            warnings.append(
+                SchemaCoverageWarning(
+                    code="VIEW_LINEAGE_UNRESOLVED_REFERENCE",
+                    severity="warning",
+                    object_schema=table.table_schema,
+                    object_name=table.name,
+                    message="One or more view lineage references could not be resolved to a local schema object.",
+                )
+            )
         if not table.view_definition_available:
             missing_view_definition = True
             warnings.append(
@@ -955,6 +1292,12 @@ def _schema_hash(
                         "native_type": column.native_type,
                         "normalized_type": column.normalized_type,
                         "declared_type": column.declared_type,
+                        "declared_type_schema": column.declared_type_schema,
+                        "declared_type_name": column.declared_type_name,
+                        "declared_type_is_user_defined": (
+                            column.declared_type_is_user_defined
+                        ),
+                        "declared_type_is_assembly": column.declared_type_is_assembly,
                         "max_length": column.max_length,
                         "precision": column.numeric_precision,
                         "scale": column.numeric_scale,
@@ -969,6 +1312,38 @@ def _schema_hash(
                     }
                     for column in sorted(
                         table.columns, key=lambda item: item.ordinal_position
+                    )
+                ],
+                "view_lineage": [
+                    {
+                        "source": dependency.source,
+                        "referencing_column": dependency.referencing_column,
+                        "referenced_server_name": dependency.referenced_server_name,
+                        "referenced_database_name": dependency.referenced_database_name,
+                        "referenced_schema_name": dependency.referenced_schema_name,
+                        "referenced_entity_name": dependency.referenced_entity_name,
+                        "referenced_column_name": dependency.referenced_column_name,
+                        "referenced_class": dependency.referenced_class,
+                        "is_selected": dependency.is_selected,
+                        "is_updated": dependency.is_updated,
+                        "is_select_all": dependency.is_select_all,
+                        "is_all_columns_found": dependency.is_all_columns_found,
+                        "is_caller_dependent": dependency.is_caller_dependent,
+                        "is_ambiguous": dependency.is_ambiguous,
+                        "is_incomplete": dependency.is_incomplete,
+                        "is_schema_bound_reference": (
+                            dependency.is_schema_bound_reference
+                        ),
+                    }
+                    for dependency in sorted(
+                        table.view_lineage,
+                        key=lambda item: (
+                            item.source,
+                            item.referencing_column or "",
+                            item.referenced_schema_name or "",
+                            item.referenced_entity_name or "",
+                            item.referenced_column_name or "",
+                        ),
                     )
                 ],
             }
@@ -1045,6 +1420,12 @@ def _optional_int(value) -> int | None:
     if value is None:
         return None
     return int(value)
+
+
+def _optional_bool(value) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)
 
 
 def _optional_string(value) -> str | None:

@@ -63,12 +63,14 @@ describe("semantic column display helpers", () => {
       data_type: "nvarchar",
       metadata: {
         declared_type: "Phone",
+        declared_type_name: "Phone",
+        declared_type_schema: "SalesLT",
         is_nullable: true
       },
       physical_name: "Phone"
     };
 
-    expect(semanticColumnTypeLabel(phone)).toBe("nvarchar (Phone)");
+    expect(semanticColumnTypeLabel(phone)).toBe("nvarchar (SalesLT.Phone)");
     expect(semanticColumnTypeLabel(baseColumn)).toBe("nvarchar");
   });
 });

@@ -234,9 +234,11 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
     class FakeCursor:
         def __init__(self):
             self.query = ""
+            self.params = ()
 
-        def execute(self, query: str):
+        def execute(self, query: str, params=()):
             self.query = query
+            self.params = params
             executed_queries.append(query)
             return self
 
@@ -245,6 +247,46 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
                 return [("AdventureWorksLT", "12.0.2000.8")]
             if "sys.dm_db_partition_stats" in self.query:
                 raise fake_pyodbc.Error("row counts unavailable")
+            if "sys.dm_sql_referenced_entities" in self.query:
+                assert self.params == ("[SalesLT].[vCustomer]",)
+                return [
+                    (
+                        0,
+                        None,
+                        None,
+                        "SalesLT",
+                        "Customer",
+                        None,
+                        1001,
+                        0,
+                        "OBJECT_OR_COLUMN",
+                        1,
+                        0,
+                        0,
+                        1,
+                        0,
+                        0,
+                        0,
+                    ),
+                    (
+                        1,
+                        None,
+                        None,
+                        "SalesLT",
+                        "Customer",
+                        "CustomerID",
+                        1001,
+                        1,
+                        "OBJECT_OR_COLUMN",
+                        1,
+                        0,
+                        0,
+                        1,
+                        0,
+                        0,
+                        0,
+                    ),
+                ]
             if "sys.check_constraints" in self.query:
                 return [
                     (
@@ -371,6 +413,13 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
                         None,
                         None,
                         "Customer first name",
+                        0,
+                        "SalesLT",
+                        "Name",
+                        1,
+                        0,
+                        257,
+                        231,
                     ),
                     (
                         "SalesLT",
@@ -461,11 +510,34 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
                         None,
                         None,
                     ),
+                    (
+                        "SalesLT",
+                        "vCustomer",
+                        "CustomerID",
+                        1,
+                        "int",
+                        "int",
+                        0,
+                        None,
+                        10,
+                        0,
+                        None,
+                        None,
+                        0,
+                        0,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    ),
                 ]
             if "sys.objects" in self.query and "sys.sql_modules" in self.query:
                 return [
                     ("SalesLT", "Customer", "base_table", 1001, 0, None, None),
                     ("SalesLT", "SalesOrderHeader", "base_table", 1002, 0, None, None),
+                    ("SalesLT", "vCustomer", "view", 1003, 0, None, "select CustomerID from SalesLT.Customer"),
                 ]
             raise AssertionError(f"Unexpected query: {self.query}")
 
@@ -503,7 +575,7 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
 
     assert fake_connection.connection_string is not None
     assert "PWD=secret" in fake_connection.connection_string
-    assert len(executed_queries) == 8
+    assert len(executed_queries) == 9
     assert all("sys." in query or "serverproperty" in query for query in executed_queries)
     assert all("select *" not in query.lower() for query in executed_queries)
     assert all("count(*)" not in query.lower() for query in executed_queries)
@@ -517,6 +589,9 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
     customer_columns = {column.name: column for column in result.tables[0].columns}
     assert customer_columns["FirstName"].data_type == "nvarchar"
     assert customer_columns["FirstName"].declared_type == "Name"
+    assert customer_columns["FirstName"].declared_type_schema == "SalesLT"
+    assert customer_columns["FirstName"].declared_type_name == "Name"
+    assert customer_columns["FirstName"].declared_type_is_user_defined is True
     assert customer_columns["MiddleName"].data_type == "nvarchar"
     assert customer_columns["MiddleName"].declared_type is None
     assert customer_columns["EmailAddress"].is_unique_member is True
@@ -527,6 +602,14 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
     assert result.unique_constraints[0].name == "UQ_Customer_Email"
     assert result.indexes[0].included_columns[0].name == "Phone"
     assert result.check_constraints[0].definition == "([TotalDue]>=(0))"
+    view_table = next(table for table in result.tables if table.name == "vCustomer")
+    assert view_table.lineage_available is True
+    assert len(view_table.view_lineage) == 2
+    assert view_table.view_lineage[1].source == "dm_sql_referenced_entities"
+    assert view_table.view_lineage[1].referencing_column == "CustomerID"
+    assert view_table.view_lineage[1].referenced_schema_name == "SalesLT"
+    assert view_table.view_lineage[1].referenced_entity_name == "Customer"
+    assert view_table.view_lineage[1].referenced_column_name == "CustomerID"
     assert result.coverage_warnings[0].code == "ROW_COUNT_ESTIMATE_UNAVAILABLE"
     assert any(
         warning.code == "COLUMN_DECLARED_TYPE_UNAVAILABLE"
