@@ -203,7 +203,9 @@ export const SchemaCoverageWarningSchema = z.strictObject({
     "PARTIAL_METADATA_VISIBILITY_POSSIBLE",
     "INDEX_METADATA_UNAVAILABLE",
     "NO_FOREIGN_KEYS_FOUND",
-    "VIEW_LINEAGE_NOT_AVAILABLE"
+    "VIEW_LINEAGE_NOT_AVAILABLE",
+    "COLUMN_DECLARED_TYPE_UNAVAILABLE",
+    "COLUMN_OBJECT_MAPPING_MISSING"
   ]),
   severity: z.enum(["info", "warning"]),
   message: z.string().min(1).max(500),

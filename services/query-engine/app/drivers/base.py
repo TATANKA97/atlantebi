@@ -189,6 +189,8 @@ class SchemaCoverageWarning:
         "INDEX_METADATA_UNAVAILABLE",
         "NO_FOREIGN_KEYS_FOUND",
         "VIEW_LINEAGE_NOT_AVAILABLE",
+        "COLUMN_DECLARED_TYPE_UNAVAILABLE",
+        "COLUMN_OBJECT_MAPPING_MISSING",
     ]
     severity: Literal["info", "warning"]
     message: str

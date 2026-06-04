@@ -70,8 +70,25 @@ select
     object_item.name as OBJECT_NAME,
     column_item.name as COLUMN_NAME,
     column_item.column_id as ORDINAL_POSITION,
-    coalesce(system_type.name, user_type.name) as NATIVE_TYPE,
-    user_type.name as DECLARED_TYPE,
+    coalesce(
+        system_type.name,
+        type_name(column_item.system_type_id),
+        user_type.name,
+        type_name(column_item.user_type_id),
+        'unknown'
+    ) as NATIVE_TYPE,
+    case
+        when coalesce(user_type.name, type_name(column_item.user_type_id)) is not null
+         and coalesce(user_type.name, type_name(column_item.user_type_id)) <> coalesce(
+                system_type.name,
+                type_name(column_item.system_type_id),
+                user_type.name,
+                type_name(column_item.user_type_id),
+                'unknown'
+            )
+            then coalesce(user_type.name, type_name(column_item.user_type_id))
+        else null
+    end as DECLARED_TYPE,
     cast(column_item.is_nullable as int) as IS_NULLABLE,
     case
         when system_type.name in ('nchar', 'nvarchar') and column_item.max_length > 0
@@ -93,13 +110,21 @@ select
     default_constraint.name as DEFAULT_CONSTRAINT_NAME,
     default_constraint.definition as DEFAULT_DEFINITION,
     computed_column.definition as COMPUTED_DEFINITION,
-    cast(column_description.value as nvarchar(max)) as COLUMN_DESCRIPTION
+    cast(column_description.value as nvarchar(max)) as COLUMN_DESCRIPTION,
+    cast(
+        case
+            when user_type.user_type_id is null
+             and column_item.user_type_id <> column_item.system_type_id
+                then 1
+            else 0
+        end as int
+    ) as DECLARED_TYPE_UNAVAILABLE
 from sys.objects as object_item
 inner join sys.schemas as object_schema
     on object_schema.schema_id = object_item.schema_id
 inner join sys.columns as column_item
     on column_item.object_id = object_item.object_id
-inner join sys.types as user_type
+left join sys.types as user_type
     on user_type.user_type_id = column_item.user_type_id
 outer apply (
     select top (1)
@@ -362,6 +387,9 @@ class SqlServerDriver(DatabaseDriver):
             indexes_available=indexes_available,
             row_counts_available=row_counts_available,
         )
+        coverage_warnings.extend(
+            _build_column_coverage_warnings(column_rows=column_rows, tables=tables)
+        )
         schema_hash = _schema_hash(
             tables=tables,
             foreign_keys=foreign_keys,
@@ -530,8 +558,8 @@ def _build_tables(
         table = table_map.get((table_schema, table_name))
         if table is None:
             continue
-        native_type = str(row[4])
-        declared_type = str(row[5])
+        native_type = _optional_string(row[4]) or "unknown"
+        declared_type = _optional_string(row[5])
         column_name = str(row[2])
 
         table["columns"].append(
@@ -760,6 +788,56 @@ def _build_row_counts(row_count_rows) -> dict[tuple[str, str], int]:
     }
 
 
+def _build_column_coverage_warnings(
+    *,
+    column_rows,
+    tables: list[SchemaTableMetadata],
+) -> list[SchemaCoverageWarning]:
+    table_keys = {(table.table_schema, table.name) for table in tables}
+    unresolved_declared_type_keys: set[tuple[str, str]] = set()
+    unmapped_column_keys: set[tuple[str, str]] = set()
+
+    for row in column_rows:
+        table_key = (str(row[0]), str(row[1]))
+        if table_key not in table_keys:
+            unmapped_column_keys.add(table_key)
+
+        declared_type_unavailable = len(row) > 20 and bool(row[20])
+        if declared_type_unavailable:
+            unresolved_declared_type_keys.add(table_key)
+
+    warnings: list[SchemaCoverageWarning] = []
+    for schema_name, object_name in sorted(unresolved_declared_type_keys):
+        warnings.append(
+            SchemaCoverageWarning(
+                code="COLUMN_DECLARED_TYPE_UNAVAILABLE",
+                severity="warning",
+                object_schema=schema_name,
+                object_name=object_name,
+                message=(
+                    "One or more SQL Server column declared types were not visible; "
+                    "native base types were used where available."
+                ),
+            )
+        )
+
+    for schema_name, object_name in sorted(unmapped_column_keys):
+        warnings.append(
+            SchemaCoverageWarning(
+                code="COLUMN_OBJECT_MAPPING_MISSING",
+                severity="warning",
+                object_schema=schema_name,
+                object_name=object_name,
+                message=(
+                    "SQL Server returned columns for an object that was not present "
+                    "in the visible object metadata."
+                ),
+            )
+        )
+
+    return warnings
+
+
 def _build_coverage_warnings(
     *,
     tables: list[SchemaTableMetadata],
@@ -982,7 +1060,9 @@ def _hash_string(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _declared_type(data_type: str, declared_type: str) -> str | None:
+def _declared_type(data_type: str, declared_type: str | None) -> str | None:
+    if declared_type is None:
+        return None
     if data_type.lower() == declared_type.lower():
         return None
     return declared_type

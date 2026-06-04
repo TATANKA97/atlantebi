@@ -376,7 +376,7 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
                         "SalesLT",
                         "Customer",
                         "EmailAddress",
-                        3,
+                        4,
                         "nvarchar",
                         "nvarchar",
                         1,
@@ -393,6 +393,29 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
                         None,
                         None,
                         None,
+                    ),
+                    (
+                        "SalesLT",
+                        "Customer",
+                        "MiddleName",
+                        3,
+                        "nvarchar",
+                        None,
+                        1,
+                        50,
+                        0,
+                        0,
+                        None,
+                        "SQL_Latin1_General_CP1_CI_AS",
+                        0,
+                        0,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        1,
                     ),
                     (
                         "SalesLT",
@@ -491,10 +514,12 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
     assert result.tables[0].name == "Customer"
     assert result.tables[0].primary_key is not None
     assert result.tables[0].primary_key.columns == ["CustomerID"]
-    assert result.tables[0].columns[1].name == "FirstName"
-    assert result.tables[0].columns[1].data_type == "nvarchar"
-    assert result.tables[0].columns[1].declared_type == "Name"
-    assert result.tables[0].columns[2].is_unique_member is True
+    customer_columns = {column.name: column for column in result.tables[0].columns}
+    assert customer_columns["FirstName"].data_type == "nvarchar"
+    assert customer_columns["FirstName"].declared_type == "Name"
+    assert customer_columns["MiddleName"].data_type == "nvarchar"
+    assert customer_columns["MiddleName"].declared_type is None
+    assert customer_columns["EmailAddress"].is_unique_member is True
     assert result.tables[1].columns[1].name == "CustomerID"
     assert result.foreign_keys[0].from_table == "SalesOrderHeader"
     assert result.foreign_keys[0].to_table == "Customer"
@@ -503,15 +528,23 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
     assert result.indexes[0].included_columns[0].name == "Phone"
     assert result.check_constraints[0].definition == "([TotalDue]>=(0))"
     assert result.coverage_warnings[0].code == "ROW_COUNT_ESTIMATE_UNAVAILABLE"
+    assert any(
+        warning.code == "COLUMN_DECLARED_TYPE_UNAVAILABLE"
+        and warning.object_schema == "SalesLT"
+        and warning.object_name == "Customer"
+        for warning in result.coverage_warnings
+    )
 
 
 def test_sqlserver_columns_query_keeps_alias_type_columns() -> None:
     normalized_query = " ".join(SQLSERVER_COLUMNS_QUERY.lower().split())
 
-    assert "inner join sys.types as user_type" in normalized_query
+    assert "left join sys.types as user_type" in normalized_query
     assert "outer apply" in normalized_query
+    assert "type_name(column_item.system_type_id)" in normalized_query
+    assert "type_name(column_item.user_type_id)" in normalized_query
     assert "base_type.is_user_defined = 0" in normalized_query
-    assert "coalesce(system_type.name, user_type.name) as native_type" in normalized_query
+    assert "as declared_type_unavailable" in normalized_query
 
 
 def test_sqlserver_schema_hash_ignores_unstable_object_id_and_row_count() -> None:
