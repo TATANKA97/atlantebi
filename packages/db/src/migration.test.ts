@@ -125,6 +125,18 @@ describe("Supabase metadata migration", () => {
     );
   });
 
+  it("marks imported credential metadata as sensitive and non-queryable", () => {
+    expect(migration).toContain("mark_sensitive_semantic_columns");
+    expect(migration).toContain("fix_sensitive_semantic_column_tokenization");
+    expect(migration).toContain("sensitive_reason");
+    expect(migration).toContain("'queryable', false");
+    expect(migration).toContain("'credential_name'");
+    expect(migration).toContain("'credential_derivative_name'");
+    expect(migration).toContain("'secret_key_name'");
+    expect(migration).toContain("'contact_identifier'");
+    expect(migration).toContain("'direct_person_identifier'");
+  });
+
   it("uses a non-circular tenant bootstrap function", () => {
     expect(migration).toContain("app_private.create_tenant_with_owner");
     expect(migration).toContain(

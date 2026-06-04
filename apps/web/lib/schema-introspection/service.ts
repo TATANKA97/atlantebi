@@ -543,15 +543,96 @@ function toSemanticColumnInsert({
     metadata.datetime_precision = column.datetime_precision;
   }
 
+  const sensitivity = classifyColumnSensitivity(column.name);
+  if (sensitivity.kind === "credential") {
+    metadata.is_sensitive = true;
+    metadata.queryable = false;
+    metadata.sensitive_reason = sensitivity.reason;
+  } else if (sensitivity.kind === "pii") {
+    metadata.pii_reason = sensitivity.reason;
+  }
+
   return {
     tenant_id: tenantId,
     semantic_table_id: tableId,
     physical_name: column.name,
     data_type: column.data_type,
-    role: inferColumnRole(column, primaryKeyColumns),
-    pii: false,
+    role:
+      sensitivity.kind === "credential"
+        ? "unknown"
+        : inferColumnRole(column, primaryKeyColumns),
+    pii: sensitivity.kind !== "none",
     metadata
   };
+}
+
+export type ColumnSensitivity =
+  | { kind: "none" }
+  | { kind: "pii"; reason: "direct_person_identifier" | "contact_identifier" }
+  | {
+      kind: "credential";
+      reason:
+        | "credential_name"
+        | "credential_derivative_name"
+        | "secret_name"
+        | "secret_key_name";
+    };
+
+export function classifyColumnSensitivity(columnName: string): ColumnSensitivity {
+  const tokens = columnNameTokens(columnName);
+  const tokenSet = new Set(tokens);
+
+  if (tokens.some((token) => ["password", "passwd", "pwd"].includes(token))) {
+    return { kind: "credential", reason: "credential_name" };
+  }
+
+  if (tokens.some((token) => ["hash", "salt"].includes(token))) {
+    return { kind: "credential", reason: "credential_derivative_name" };
+  }
+
+  if (
+    tokens.some((token) =>
+      ["secret", "token", "credential", "credentials"].includes(token)
+    )
+  ) {
+    return { kind: "credential", reason: "secret_name" };
+  }
+
+  if (
+    tokenSet.has("key") &&
+    ["api", "access", "private", "secret"].some((token) =>
+      tokenSet.has(token)
+    )
+  ) {
+    return { kind: "credential", reason: "secret_key_name" };
+  }
+
+  if (tokens.some((token) => ["email", "phone"].includes(token))) {
+    return { kind: "pii", reason: "contact_identifier" };
+  }
+
+  const compactName = tokens.join("");
+  if (
+    compactName === "firstname" ||
+    compactName === "middlename" ||
+    compactName === "lastname" ||
+    compactName === "fullname" ||
+    compactName === "addressline" ||
+    compactName === "addressline1" ||
+    compactName === "addressline2"
+  ) {
+    return { kind: "pii", reason: "direct_person_identifier" };
+  }
+
+  return { kind: "none" };
+}
+
+function columnNameTokens(columnName: string) {
+  return columnName
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length > 0);
 }
 
 function inferColumnRole(
