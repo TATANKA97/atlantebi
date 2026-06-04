@@ -23,8 +23,15 @@ from app.drivers.base import (
     SchemaPrimaryKeyMetadata,
     SchemaTableMetadata,
     SchemaUniqueConstraintMetadata,
+    SchemaViewLineageDependency,
 )
-from app.drivers.sqlserver import SQLSERVER_COLUMNS_QUERY, SqlServerDriver, _schema_hash
+from app.drivers.sqlserver import (
+    SQLSERVER_COLUMNS_QUERY,
+    SqlServerDriver,
+    _build_coverage_warnings,
+    _fetch_view_lineage,
+    _schema_hash,
+)
 from app.main import app
 from app.models import Engine, SchemaIntrospectionRequest, SchemaIntrospectionResponse
 
@@ -630,6 +637,94 @@ def test_sqlserver_columns_query_keeps_alias_type_columns() -> None:
     assert "as declared_type_unavailable" in normalized_query
 
 
+def test_sqlserver_view_lineage_falls_back_when_dmf_permission_denied() -> None:
+    class FakeCursor:
+        def __init__(self):
+            self.query = ""
+
+        def execute(self, query: str, params=()):
+            self.query = query
+            if "sys.dm_sql_referenced_entities" in query:
+                raise PermissionError("VIEW DEFINITION permission was denied")
+            return self
+
+        def fetchall(self):
+            if "sys.sql_expression_dependencies" in self.query:
+                return [
+                    (
+                        1,
+                        None,
+                        None,
+                        "SalesLT",
+                        "Customer",
+                        1001,
+                        1,
+                        "OBJECT_OR_COLUMN",
+                        0,
+                        0,
+                        0,
+                    )
+                ]
+            raise AssertionError(f"Unexpected query: {self.query}")
+
+        def close(self) -> None:
+            return None
+
+    class FakeConnection:
+        def cursor(self) -> FakeCursor:
+            return FakeCursor()
+
+    lineage_by_view, status_by_view = asyncio.run(
+        _fetch_view_lineage(
+            sql_connection=FakeConnection(),
+            object_rows=[("SalesLT", "vLimited", "view", 1003)],
+            column_rows=[("SalesLT", "vLimited", "CustomerID", 1)],
+            error_type=PermissionError,
+        )
+    )
+
+    key = ("SalesLT", "vLimited")
+    assert status_by_view[key].available is True
+    assert status_by_view[key].partial is True
+    assert status_by_view[key].permission_denied is True
+    assert lineage_by_view[key][0].source == "sql_expression_dependencies"
+    assert lineage_by_view[key][0].referencing_column == "CustomerID"
+    assert lineage_by_view[key][0].referenced_entity_name == "Customer"
+
+    warnings = _build_coverage_warnings(
+        tables=[
+            SchemaTableMetadata(
+                table_schema="SalesLT",
+                name="vLimited",
+                table_type="view",
+                columns=[],
+                view_definition_available=True,
+                lineage_available=True,
+                view_lineage=lineage_by_view[key],
+            )
+        ],
+        foreign_keys=[
+            SchemaForeignKeyMetadata(
+                name="FK_Dummy",
+                from_schema="SalesLT",
+                from_table="Child",
+                from_columns=["CustomerID"],
+                to_schema="SalesLT",
+                to_table="Customer",
+                to_columns=["CustomerID"],
+                on_delete="no_action",
+                on_update="no_action",
+            )
+        ],
+        indexes_available=True,
+        row_counts_available=True,
+        view_lineage_status_by_view=status_by_view,
+    )
+    warning_codes = {warning.code for warning in warnings}
+    assert "VIEW_LINEAGE_PARTIAL" in warning_codes
+    assert "VIEW_LINEAGE_PERMISSION_DENIED" in warning_codes
+
+
 def test_sqlserver_schema_hash_ignores_unstable_object_id_and_row_count() -> None:
     base_table = SchemaTableMetadata(
         table_schema="dbo",
@@ -750,6 +845,82 @@ def test_sqlserver_schema_hash_ignores_unstable_object_id_and_row_count() -> Non
         check_constraints=check_constraints,
         default_constraints=default_constraints,
         indexes=indexes,
+    )
+
+    assert first_hash == second_hash
+
+
+def test_sqlserver_schema_hash_canonicalizes_view_lineage_order() -> None:
+    first_dependency = SchemaViewLineageDependency(
+        source="dm_sql_referenced_entities",
+        referencing_column="CustomerID",
+        referenced_server_name="linked-a",
+        referenced_database_name="AdventureWorksLT",
+        referenced_schema_name="SalesLT",
+        referenced_entity_name="Customer",
+        referenced_column_name="CustomerID",
+        referenced_class="OBJECT_OR_COLUMN",
+        is_selected=True,
+        is_updated=False,
+        is_select_all=False,
+        is_all_columns_found=True,
+        is_caller_dependent=False,
+        is_ambiguous=False,
+        is_incomplete=False,
+    )
+    second_dependency = SchemaViewLineageDependency(
+        source="dm_sql_referenced_entities",
+        referencing_column="CustomerID",
+        referenced_server_name="linked-b",
+        referenced_database_name="AdventureWorksLT",
+        referenced_schema_name="SalesLT",
+        referenced_entity_name="Customer",
+        referenced_column_name="CustomerID",
+        referenced_class="OBJECT_OR_COLUMN",
+        is_selected=True,
+        is_updated=False,
+        is_select_all=False,
+        is_all_columns_found=True,
+        is_caller_dependent=False,
+        is_ambiguous=False,
+        is_incomplete=False,
+    )
+    base_view = SchemaTableMetadata(
+        table_schema="SalesLT",
+        name="vCustomer",
+        table_type="view",
+        columns=[
+            SchemaColumnMetadata(
+                name="CustomerID",
+                data_type="int",
+                ordinal_position=1,
+                is_nullable=False,
+            )
+        ],
+        view_lineage=[first_dependency, second_dependency],
+    )
+    reversed_view = SchemaTableMetadata(
+        **{
+            **base_view.__dict__,
+            "view_lineage": [second_dependency, first_dependency],
+        }
+    )
+
+    first_hash = _schema_hash(
+        tables=[base_view],
+        foreign_keys=[],
+        unique_constraints=[],
+        check_constraints=[],
+        default_constraints=[],
+        indexes=[],
+    )
+    second_hash = _schema_hash(
+        tables=[reversed_view],
+        foreign_keys=[],
+        unique_constraints=[],
+        check_constraints=[],
+        default_constraints=[],
+        indexes=[],
     )
 
     assert first_hash == second_hash

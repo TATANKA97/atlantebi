@@ -1191,17 +1191,17 @@ def _build_coverage_warnings(
                     message="SQL Server view lineage metadata was not readable.",
                 )
             )
-            if lineage_status is not None and lineage_status.permission_denied:
-                warnings.append(
-                    SchemaCoverageWarning(
-                        code="VIEW_LINEAGE_PERMISSION_DENIED",
-                        severity="warning",
-                        object_schema=table.table_schema,
-                        object_name=table.name,
-                        message="VIEW DEFINITION or dependency metadata permissions may be missing for this view.",
-                    )
+        if lineage_status is not None and lineage_status.permission_denied:
+            warnings.append(
+                SchemaCoverageWarning(
+                    code="VIEW_LINEAGE_PERMISSION_DENIED",
+                    severity="warning",
+                    object_schema=table.table_schema,
+                    object_name=table.name,
+                    message="VIEW DEFINITION or dependency metadata permissions may be missing for this view.",
                 )
-        elif lineage_status.partial:
+            )
+        if lineage_status is not None and lineage_status.available and lineage_status.partial:
             warnings.append(
                 SchemaCoverageWarning(
                     code="VIEW_LINEAGE_PARTIAL",
@@ -1337,13 +1337,7 @@ def _schema_hash(
                     }
                     for dependency in sorted(
                         table.view_lineage,
-                        key=lambda item: (
-                            item.source,
-                            item.referencing_column or "",
-                            item.referenced_schema_name or "",
-                            item.referenced_entity_name or "",
-                            item.referenced_column_name or "",
-                        ),
+                        key=_view_lineage_sort_key,
                     )
                 ],
             }
@@ -1426,6 +1420,33 @@ def _optional_bool(value) -> bool | None:
     if value is None:
         return None
     return bool(value)
+
+
+def _sort_optional_bool(value: bool | None) -> int:
+    if value is None:
+        return -1
+    return 1 if value else 0
+
+
+def _view_lineage_sort_key(dependency: SchemaViewLineageDependency) -> tuple:
+    return (
+        dependency.source,
+        dependency.referencing_column or "",
+        dependency.referenced_server_name or "",
+        dependency.referenced_database_name or "",
+        dependency.referenced_schema_name or "",
+        dependency.referenced_entity_name or "",
+        dependency.referenced_column_name or "",
+        dependency.referenced_class,
+        _sort_optional_bool(dependency.is_selected),
+        _sort_optional_bool(dependency.is_updated),
+        _sort_optional_bool(dependency.is_select_all),
+        _sort_optional_bool(dependency.is_all_columns_found),
+        _sort_optional_bool(dependency.is_caller_dependent),
+        _sort_optional_bool(dependency.is_ambiguous),
+        _sort_optional_bool(dependency.is_incomplete),
+        _sort_optional_bool(dependency.is_schema_bound_reference),
+    )
 
 
 def _optional_string(value) -> str | None:
