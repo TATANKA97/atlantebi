@@ -1,6 +1,11 @@
 import Link from "next/link";
 
 import { introspectConnectionAction } from "./actions";
+import {
+  semanticColumnFlags,
+  splitSemanticColumns,
+  type SemanticColumnDisplay
+} from "../../lib/semantic/columns";
 import { getActiveTenantContext } from "../../lib/tenant";
 
 type ConnectionRow = {
@@ -32,17 +37,9 @@ type SemanticTableRow = {
   };
 };
 
-type SemanticColumnRow = {
-  id: string;
-  semantic_table_id: string;
-  physical_name: string;
-  data_type: string;
-  role: string;
-  pii: boolean;
-  metadata: {
+type SemanticColumnRow = SemanticColumnDisplay & {
+  metadata: SemanticColumnDisplay["metadata"] & {
     ordinal_position?: number;
-    is_nullable?: boolean;
-    is_primary_key?: boolean;
   };
 };
 
@@ -222,6 +219,8 @@ export default async function SemanticPage({
             <div className="mt-5 grid gap-6">
               {semanticData.tables.map((table) => {
                 const columns = semanticData.columnsByTable.get(table.id) ?? [];
+                const { excludedColumns, queryableColumns } =
+                  splitSemanticColumns(columns);
                 return (
                   <section className="border-t border-[color:var(--border)] pt-4" key={table.id}>
                     <div className="flex flex-wrap items-baseline justify-between gap-3">
@@ -229,7 +228,11 @@ export default async function SemanticPage({
                         {table.physical_schema}.{table.physical_name}
                       </h3>
                       <p className="text-xs text-[color:var(--muted)]">
-                        {table.metadata.table_type ?? "table"} - {columns.length} colonne
+                        {table.metadata.table_type ?? "table"} -{" "}
+                        {queryableColumns.length} colonne queryable
+                        {excludedColumns.length > 0
+                          ? `, ${excludedColumns.length} escluse`
+                          : ""}
                       </p>
                     </div>
                     <div className="mt-3 overflow-x-auto">
@@ -251,7 +254,7 @@ export default async function SemanticPage({
                           </tr>
                         </thead>
                         <tbody>
-                          {columns.map((column) => (
+                          {queryableColumns.map((column) => (
                             <tr key={column.id}>
                               <td className="border-b border-[color:var(--border)] py-2 pr-4">
                                 {column.physical_name}
@@ -263,14 +266,56 @@ export default async function SemanticPage({
                                 {column.role}
                               </td>
                               <td className="border-b border-[color:var(--border)] py-2 text-[color:var(--muted)]">
-                                {column.metadata.is_primary_key ? "PK " : ""}
-                                {column.metadata.is_nullable ? "nullable" : "not null"}
+                                {semanticColumnFlags(column).join(" ")}
                               </td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
+                    {excludedColumns.length > 0 ? (
+                      <div className="mt-3 overflow-x-auto">
+                        <p className="mb-2 text-xs font-medium text-[color:var(--muted)]">
+                          Colonne escluse
+                        </p>
+                        <table className="w-full border-collapse text-left text-xs">
+                          <thead className="text-[color:var(--muted)]">
+                            <tr>
+                              <th className="border-b border-[color:var(--border)] py-2 pr-4 font-medium">
+                                Colonna
+                              </th>
+                              <th className="border-b border-[color:var(--border)] py-2 pr-4 font-medium">
+                                Tipo
+                              </th>
+                              <th className="border-b border-[color:var(--border)] py-2 pr-4 font-medium">
+                                Ruolo
+                              </th>
+                              <th className="border-b border-[color:var(--border)] py-2 font-medium">
+                                Metadata
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {excludedColumns.map((column) => (
+                              <tr key={column.id}>
+                                <td className="border-b border-[color:var(--border)] py-2 pr-4">
+                                  {column.physical_name}
+                                </td>
+                                <td className="border-b border-[color:var(--border)] py-2 pr-4">
+                                  {column.data_type}
+                                </td>
+                                <td className="border-b border-[color:var(--border)] py-2 pr-4">
+                                  {column.role}
+                                </td>
+                                <td className="border-b border-[color:var(--border)] py-2 text-[color:var(--muted)]">
+                                  {semanticColumnFlags(column).join(" ")}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : null}
                   </section>
                 );
               })}
