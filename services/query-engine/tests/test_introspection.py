@@ -24,7 +24,7 @@ from app.drivers.base import (
     SchemaTableMetadata,
     SchemaUniqueConstraintMetadata,
 )
-from app.drivers.sqlserver import SqlServerDriver, _schema_hash
+from app.drivers.sqlserver import SQLSERVER_COLUMNS_QUERY, SqlServerDriver, _schema_hash
 from app.main import app
 from app.models import Engine, SchemaIntrospectionRequest, SchemaIntrospectionResponse
 
@@ -503,6 +503,14 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
     assert result.indexes[0].included_columns[0].name == "Phone"
     assert result.check_constraints[0].definition == "([TotalDue]>=(0))"
     assert result.coverage_warnings[0].code == "ROW_COUNT_ESTIMATE_UNAVAILABLE"
+
+
+def test_sqlserver_columns_query_keeps_alias_type_columns() -> None:
+    normalized_query = " ".join(SQLSERVER_COLUMNS_QUERY.lower().split())
+
+    assert "inner join sys.types as user_type" in normalized_query
+    assert "left join sys.types as system_type" in normalized_query
+    assert "coalesce(system_type.name, user_type.name) as native_type" in normalized_query
 
 
 def test_sqlserver_schema_hash_ignores_unstable_object_id_and_row_count() -> None:

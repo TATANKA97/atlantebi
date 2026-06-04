@@ -70,7 +70,7 @@ select
     object_item.name as OBJECT_NAME,
     column_item.name as COLUMN_NAME,
     column_item.column_id as ORDINAL_POSITION,
-    system_type.name as NATIVE_TYPE,
+    coalesce(system_type.name, user_type.name) as NATIVE_TYPE,
     user_type.name as DECLARED_TYPE,
     cast(column_item.is_nullable as int) as IS_NULLABLE,
     case
@@ -101,8 +101,8 @@ inner join sys.columns as column_item
     on column_item.object_id = object_item.object_id
 inner join sys.types as user_type
     on user_type.user_type_id = column_item.user_type_id
-inner join sys.types as system_type
-    on system_type.user_type_id = column_item.system_type_id
+left join sys.types as system_type
+    on system_type.system_type_id = column_item.system_type_id
    and system_type.user_type_id = system_type.system_type_id
 left join sys.default_constraints as default_constraint
     on default_constraint.parent_object_id = column_item.object_id
