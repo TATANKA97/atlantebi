@@ -58,7 +58,10 @@ class MySqlDriver(DatabaseDriver):
         return ConnectionTestResult(status="ok", message="MySQL connection verified.")
 
     async def introspect_schema(
-        self, connection: ConnectionMetadata
+        self,
+        connection: ConnectionMetadata,
+        credentials: DatabaseCredentials,
+        timeout_ms: int,
     ) -> SchemaIntrospectionResult:
         raise DriverNotImplementedError(
             "MySQL schema introspection is scheduled for the introspection milestone."

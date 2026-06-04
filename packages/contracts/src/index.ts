@@ -62,6 +62,76 @@ export const ConnectionTestResponseSchema = z.strictObject({
 });
 export type ConnectionTestResponse = z.infer<typeof ConnectionTestResponseSchema>;
 
+export const SCHEMA_INTROSPECTION_STATUS_VALUES = ["ok", "failed", "engine_error"] as const;
+export const SchemaIntrospectionStatusSchema = z.enum(
+  SCHEMA_INTROSPECTION_STATUS_VALUES
+);
+export type SchemaIntrospectionStatus = z.infer<
+  typeof SchemaIntrospectionStatusSchema
+>;
+
+export const SchemaColumnMetadataSchema = z.strictObject({
+  name: z.string().min(1).max(255),
+  data_type: z.string().min(1).max(255),
+  ordinal_position: z.number().int().min(1),
+  is_nullable: z.boolean(),
+  max_length: z.number().int().min(-1).optional(),
+  numeric_precision: z.number().int().min(0).optional(),
+  numeric_scale: z.number().int().min(0).optional(),
+  datetime_precision: z.number().int().min(0).optional(),
+  is_identity: z.boolean().default(false),
+  is_computed: z.boolean().default(false)
+});
+export type SchemaColumnMetadata = z.infer<typeof SchemaColumnMetadataSchema>;
+
+export const SchemaPrimaryKeyMetadataSchema = z.strictObject({
+  name: z.string().min(1).max(255),
+  columns: z.array(z.string().min(1).max(255)).min(1)
+});
+export type SchemaPrimaryKeyMetadata = z.infer<typeof SchemaPrimaryKeyMetadataSchema>;
+
+export const SchemaTableMetadataSchema = z.strictObject({
+  schema: z.string().min(1).max(255),
+  name: z.string().min(1).max(255),
+  table_type: z.enum(["base_table", "view"]),
+  columns: z.array(SchemaColumnMetadataSchema),
+  primary_key: SchemaPrimaryKeyMetadataSchema.optional()
+});
+export type SchemaTableMetadata = z.infer<typeof SchemaTableMetadataSchema>;
+
+export const SchemaForeignKeyMetadataSchema = z.strictObject({
+  name: z.string().min(1).max(255),
+  from_schema: z.string().min(1).max(255),
+  from_table: z.string().min(1).max(255),
+  from_columns: z.array(z.string().min(1).max(255)).min(1),
+  to_schema: z.string().min(1).max(255),
+  to_table: z.string().min(1).max(255),
+  to_columns: z.array(z.string().min(1).max(255)).min(1),
+  on_delete: z.string().min(1).max(40),
+  on_update: z.string().min(1).max(40)
+});
+export type SchemaForeignKeyMetadata = z.infer<typeof SchemaForeignKeyMetadataSchema>;
+
+export const SchemaIntrospectionRequestSchema = z.strictObject({
+  connection: ConnectionMetadataSchema,
+  timeout_ms: z.number().int().min(1000).max(120000)
+});
+export type SchemaIntrospectionRequest = z.infer<typeof SchemaIntrospectionRequestSchema>;
+
+export const SchemaIntrospectionResponseSchema = z.strictObject({
+  status: SchemaIntrospectionStatusSchema,
+  message: z.string().min(1).max(500),
+  introspected_at: z.string().datetime({ offset: true }),
+  duration_ms: z.number().int().min(0),
+  engine: EngineSchema.optional(),
+  tables: z.array(SchemaTableMetadataSchema).default([]),
+  foreign_keys: z.array(SchemaForeignKeyMetadataSchema).default([]),
+  sanitized_error: z.string().min(1).max(500).optional()
+});
+export type SchemaIntrospectionResponse = z.infer<
+  typeof SchemaIntrospectionResponseSchema
+>;
+
 export const CHART_TYPE_VALUES = [
   "table",
   "kpi_number",

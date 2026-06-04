@@ -85,6 +85,66 @@ class ConnectionTestResponse(StrictModel):
     sanitized_error: str = Field(default=None, min_length=1, max_length=500)
 
 
+class SchemaIntrospectionStatus(StrEnum):
+    ok = "ok"
+    failed = "failed"
+    engine_error = "engine_error"
+
+
+class SchemaIntrospectionRequest(StrictModel):
+    connection: ConnectionMetadataInput
+    timeout_ms: int = Field(ge=1000, le=120000)
+
+
+class SchemaColumnMetadata(StrictModel):
+    name: str = Field(min_length=1, max_length=255)
+    data_type: str = Field(min_length=1, max_length=255)
+    ordinal_position: int = Field(ge=1)
+    is_nullable: bool
+    max_length: int | None = Field(default=None, ge=-1)
+    numeric_precision: int | None = Field(default=None, ge=0)
+    numeric_scale: int | None = Field(default=None, ge=0)
+    datetime_precision: int | None = Field(default=None, ge=0)
+    is_identity: bool = False
+    is_computed: bool = False
+
+
+class SchemaPrimaryKeyMetadata(StrictModel):
+    name: str = Field(min_length=1, max_length=255)
+    columns: list[NonEmptyString] = Field(min_length=1)
+
+
+class SchemaTableMetadata(StrictModel):
+    table_schema: str = Field(alias="schema", min_length=1, max_length=255)
+    name: str = Field(min_length=1, max_length=255)
+    table_type: Literal["base_table", "view"]
+    columns: list[SchemaColumnMetadata]
+    primary_key: SchemaPrimaryKeyMetadata | None = None
+
+
+class SchemaForeignKeyMetadata(StrictModel):
+    name: str = Field(min_length=1, max_length=255)
+    from_schema: str = Field(min_length=1, max_length=255)
+    from_table: str = Field(min_length=1, max_length=255)
+    from_columns: list[NonEmptyString] = Field(min_length=1)
+    to_schema: str = Field(min_length=1, max_length=255)
+    to_table: str = Field(min_length=1, max_length=255)
+    to_columns: list[NonEmptyString] = Field(min_length=1)
+    on_delete: str = Field(min_length=1, max_length=40)
+    on_update: str = Field(min_length=1, max_length=40)
+
+
+class SchemaIntrospectionResponse(StrictModel):
+    status: SchemaIntrospectionStatus = Field(strict=False)
+    message: str = Field(min_length=1, max_length=500)
+    introspected_at: str
+    duration_ms: int = Field(ge=0)
+    engine: Engine | None = Field(default=None, strict=False)
+    tables: list[SchemaTableMetadata] = Field(default_factory=list)
+    foreign_keys: list[SchemaForeignKeyMetadata] = Field(default_factory=list)
+    sanitized_error: str = Field(default=None, min_length=1, max_length=500)
+
+
 class ChartType(StrEnum):
     table = "table"
     kpi_number = "kpi_number"

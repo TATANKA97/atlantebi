@@ -78,6 +78,7 @@ The web app uses Supabase SSR Auth with cookie-based sessions.
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=https://zzvfjqnfhuvapuvhpxee.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<supabase publishable key>
+SUPABASE_SECRET_KEY=<server-only Supabase secret key>
 GCP_PROJECT_ID=business-intelligence-495312
 QUERY_ENGINE_URL=http://127.0.0.1:8080
 QUERY_ENGINE_AUTH_MODE=
@@ -96,8 +97,10 @@ When the query-engine runs in Cloud Run with the GCP proxy VM, connection
 metadata should use the proxy internal IP `10.128.0.2` rather than the proxy
 external IP. Local Docker tests can use the external static IP.
 
-Use a Supabase publishable key for the browser/BFF auth flow. Do not put
-`service_role`, database passwords, or customer database credentials in web
+Use a Supabase publishable key for the browser/BFF auth flow. `SUPABASE_SECRET_KEY`
+is server-only and is used by the BFF to read connection metadata that must not
+be exposed through browser-safe views, such as `secret_ref`. Do not put Supabase
+secret keys, database passwords, or customer database credentials in `NEXT_PUBLIC_*`
 environment variables.
 
 ## Services
@@ -106,8 +109,10 @@ environment variables.
 - Web auth: `/login`
 - Tenant setup: `/setup`
 - Connections: `/connections`
+- Semantic layer: `/semantic`
 - Query engine health: `GET /health`
 - Query engine connection test: `POST /connections/test`
+- Query engine schema introspection: `POST /schema/introspect`
 - Query engine run boundary: `POST /query/run` validates the request contract and returns `501` until real execution is implemented.
 
 ## Sources Checked

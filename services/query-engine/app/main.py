@@ -1,5 +1,6 @@
 import os
 import secrets
+from dataclasses import asdict
 from datetime import UTC, datetime
 from time import perf_counter
 
@@ -8,6 +9,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from app.drivers.base import (
     ConnectionMetadata,
     DriverConfigurationError,
+    DriverIntrospectionError,
     DriverNotImplementedError,
 )
 from app.drivers.registry import get_driver
@@ -17,6 +19,8 @@ from app.models import (
     HealthResponse,
     QueryRequest,
     QueryResponse,
+    SchemaIntrospectionRequest,
+    SchemaIntrospectionResponse,
 )
 from app.secrets import GcpSecretResolver, SecretResolutionError
 
@@ -71,22 +75,7 @@ async def test_connection(
 ) -> ConnectionTestResponse:
     started = perf_counter()
     checked_at = datetime.now(UTC).isoformat()
-    connection_input = request.connection
-    connection = ConnectionMetadata(
-        tenant_id=str(connection_input.tenant_id),
-        connection_id=str(connection_input.connection_id),
-        name=connection_input.name,
-        engine=connection_input.engine,
-        network_mode=connection_input.network_mode.value,
-        host=connection_input.host,
-        port=connection_input.port,
-        database_name=connection_input.database_name,
-        username=connection_input.username,
-        secret_ref=connection_input.secret_ref,
-        tls_required=connection_input.tls_required,
-        trust_server_certificate=connection_input.trust_server_certificate,
-        tls_server_name=connection_input.tls_server_name,
-    )
+    connection = _connection_metadata_from_request(request.connection)
 
     try:
         credentials = await app.state.secret_resolver.resolve_database_credentials(
@@ -122,6 +111,64 @@ async def test_connection(
         )
 
 
+@app.post(
+    "/schema/introspect",
+    response_model=SchemaIntrospectionResponse,
+    response_model_exclude_none=True,
+)
+async def introspect_schema(
+    request: SchemaIntrospectionRequest,
+    _: None = Depends(require_internal_auth),
+) -> SchemaIntrospectionResponse:
+    started = perf_counter()
+    introspected_at = datetime.now(UTC).isoformat()
+    connection = _connection_metadata_from_request(request.connection)
+
+    try:
+        credentials = await app.state.secret_resolver.resolve_database_credentials(
+            connection.secret_ref
+        )
+        driver = get_driver(connection.engine)
+        result = await driver.introspect_schema(
+            connection=connection,
+            credentials=credentials,
+            timeout_ms=request.timeout_ms,
+        )
+        return SchemaIntrospectionResponse(
+            status="ok",
+            message="Schema introspection completed.",
+            introspected_at=introspected_at,
+            duration_ms=int((perf_counter() - started) * 1000),
+            engine=result.engine,
+            tables=[asdict(table) for table in result.tables],
+            foreign_keys=[asdict(foreign_key) for foreign_key in result.foreign_keys],
+        )
+    except SecretResolutionError as exc:
+        return _schema_introspection_error(
+            introspected_at=introspected_at,
+            started=started,
+            status="engine_error",
+            message="Schema introspection failed before reaching the customer database.",
+            sanitized_error=str(exc),
+        )
+    except (DriverConfigurationError, DriverNotImplementedError) as exc:
+        return _schema_introspection_error(
+            introspected_at=introspected_at,
+            started=started,
+            status="engine_error",
+            message="Schema introspection cannot run with the current engine configuration.",
+            sanitized_error=str(exc),
+        )
+    except DriverIntrospectionError as exc:
+        return _schema_introspection_error(
+            introspected_at=introspected_at,
+            started=started,
+            status="failed",
+            message="Schema introspection failed against the customer database.",
+            sanitized_error=str(exc),
+        )
+
+
 def _connection_test_error(
     checked_at: str,
     started: float,
@@ -133,6 +180,40 @@ def _connection_test_error(
         checked_at=checked_at,
         duration_ms=int((perf_counter() - started) * 1000),
         sanitized_error=message,
+    )
+
+
+def _schema_introspection_error(
+    introspected_at: str,
+    started: float,
+    status: str,
+    message: str,
+    sanitized_error: str,
+) -> SchemaIntrospectionResponse:
+    return SchemaIntrospectionResponse(
+        status=status,
+        message=message,
+        introspected_at=introspected_at,
+        duration_ms=int((perf_counter() - started) * 1000),
+        sanitized_error=sanitized_error,
+    )
+
+
+def _connection_metadata_from_request(connection_input) -> ConnectionMetadata:
+    return ConnectionMetadata(
+        tenant_id=str(connection_input.tenant_id),
+        connection_id=str(connection_input.connection_id),
+        name=connection_input.name,
+        engine=connection_input.engine,
+        network_mode=connection_input.network_mode.value,
+        host=connection_input.host,
+        port=connection_input.port,
+        database_name=connection_input.database_name,
+        username=connection_input.username,
+        secret_ref=connection_input.secret_ref,
+        tls_required=connection_input.tls_required,
+        trust_server_certificate=connection_input.trust_server_certificate,
+        tls_server_name=connection_input.tls_server_name,
     )
 
 

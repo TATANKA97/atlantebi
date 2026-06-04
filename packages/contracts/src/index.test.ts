@@ -9,6 +9,8 @@ import {
   QueryResponseSchema,
   QueryRequestSchema,
   RelationshipSchema,
+  SchemaIntrospectionRequestSchema,
+  SchemaIntrospectionResponseSchema,
   VerificationSummarySchema
 } from "./index";
 
@@ -88,6 +90,72 @@ describe("contracts", () => {
     });
 
     expect(response.status).toBe("failed");
+  });
+
+  it("validates strict schema introspection metadata without raw data", () => {
+    const request = SchemaIntrospectionRequestSchema.parse({
+      connection: {
+        tenant_id: tenantId,
+        connection_id: connectionId,
+        name: "Azure SQL demo",
+        engine: "sqlserver",
+        network_mode: "public_allowlist",
+        host: "136.111.143.3",
+        port: 10002,
+        database_name: "AdventureWorksLT",
+        username: "readonly_user",
+        tls_required: true,
+        tls_server_name: "atlanteadmin.database.windows.net",
+        secret_ref: "gcp-secret-manager://projects/atlantebi/secrets/demo-sql-password",
+        status: "ready"
+      },
+      timeout_ms: 120000
+    });
+    expect(request.timeout_ms).toBe(120000);
+
+    const response = SchemaIntrospectionResponseSchema.parse({
+      status: "ok",
+      message: "Schema introspection completed.",
+      introspected_at: "2026-06-03T12:00:00.000Z",
+      duration_ms: 1000,
+      engine: "sqlserver",
+      tables: [
+        {
+          schema: "SalesLT",
+          name: "Customer",
+          table_type: "base_table",
+          columns: [
+            {
+              name: "CustomerID",
+              data_type: "int",
+              ordinal_position: 1,
+              is_nullable: false,
+              is_identity: true,
+              is_computed: false
+            }
+          ],
+          primary_key: {
+            name: "PK_Customer_CustomerID",
+            columns: ["CustomerID"]
+          }
+        }
+      ],
+      foreign_keys: []
+    });
+
+    expect(response.tables[0]?.primary_key?.columns).toEqual(["CustomerID"]);
+    expect(() =>
+      SchemaIntrospectionResponseSchema.parse({
+        ...response,
+        sample_rows: [{ CustomerID: 1 }]
+      })
+    ).toThrow();
+    expect(() =>
+      SchemaIntrospectionResponseSchema.parse({
+        ...response,
+        duration_ms: "1000"
+      })
+    ).toThrow();
   });
 
   it("keeps chart specs deterministic and strict", () => {

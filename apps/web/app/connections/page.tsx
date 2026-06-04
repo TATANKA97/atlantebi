@@ -56,12 +56,20 @@ export default async function ConnectionsPage({
               Metadata connessioni tenant. Le password restano in GCP Secret Manager.
             </p>
           </div>
-          <Link
-            className="border border-[color:var(--accent)] px-4 py-2 text-sm font-medium"
-            href="/connections/new"
-          >
-            Nuova connessione
-          </Link>
+          <div className="flex gap-3">
+            <Link
+              className="border border-[color:var(--border)] px-4 py-2 text-sm font-medium"
+              href="/semantic"
+            >
+              Semantic layer
+            </Link>
+            <Link
+              className="border border-[color:var(--accent)] px-4 py-2 text-sm font-medium"
+              href="/connections/new"
+            >
+              Nuova connessione
+            </Link>
+          </div>
         </header>
 
         {params.created ? (

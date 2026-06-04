@@ -104,7 +104,10 @@ def test_connection_test_endpoint_uses_secret_resolver_and_driver(monkeypatch: p
             return ConnectionTestResult(status="ok", message="MySQL connection verified.")
 
         async def introspect_schema(
-            self, connection: ConnectionMetadata
+            self,
+            connection: ConnectionMetadata,
+            credentials: DatabaseCredentials,
+            timeout_ms: int,
         ) -> SchemaIntrospectionResult:
             raise DriverNotImplementedError("not implemented")
 
@@ -198,7 +201,10 @@ def test_connection_test_endpoint_accepts_internal_token_header(
             return ConnectionTestResult(status="ok", message="MySQL connection verified.")
 
         async def introspect_schema(
-            self, connection: ConnectionMetadata
+            self,
+            connection: ConnectionMetadata,
+            credentials: DatabaseCredentials,
+            timeout_ms: int,
         ) -> SchemaIntrospectionResult:
             raise DriverNotImplementedError("not implemented")
 
@@ -443,5 +449,12 @@ def test_driver_execute_readonly_raises_until_implemented() -> None:
     with pytest.raises(DriverNotImplementedError):
         asyncio.run(driver.execute_readonly(connection, "select 1", 100, 30000))
 
+    mysql_driver = get_driver(Engine.mysql)
     with pytest.raises(DriverNotImplementedError):
-        asyncio.run(driver.introspect_schema(connection))
+        asyncio.run(
+            mysql_driver.introspect_schema(
+                connection,
+                DatabaseCredentials(password="secret"),
+                30000,
+            )
+        )

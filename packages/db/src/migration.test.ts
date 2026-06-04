@@ -37,7 +37,7 @@ const tenantScopedTables = [
 describe("Supabase metadata migration", () => {
   it("does not define customer database credential columns", () => {
     const forbiddenColumnPattern =
-      /\b(password|db_password|connection_string|dsn|secret_value|private_key)\b/i;
+      /\b(add column|,\s*)\s+(password|db_password|connection_string|dsn|secret_value|private_key)\s+/i;
 
     expect(migration).not.toMatch(forbiddenColumnPattern);
     expect(migration).toMatch(/\bsecret_ref\b/);
@@ -105,8 +105,23 @@ describe("Supabase metadata migration", () => {
     expect(migration).toContain("alter column secret_ref drop not null");
     expect(migration).toContain("db_connections_ready_requires_secret_ref");
     expect(migration).toContain("check (status <> 'ready' or secret_ref is not null)");
+    expect(migration).not.toMatch(/\b(add column|,\s*)\s+(sample_rows|preview_rows|result_rows|data_cache|raw_rows|cached_result)\s+/i);
+  });
+
+  it("keeps schema introspection snapshots metadata-only", () => {
+    expect(migration).toContain("app_private.jsonb_has_forbidden_metadata_key");
+    expect(migration).toContain("schema_snapshots_snapshot_metadata_only");
+    expect(migration).toContain("snapshot ? 'tables'");
+    expect(migration).toContain("snapshot ? 'foreign_keys'");
+    expect(migration).toContain("'secret_ref'");
+    expect(migration).toContain("'sample_rows'");
+    expect(migration).toContain("'result_rows'");
+    expect(migration).toContain("create or replace view public.schema_snapshot_summaries");
+    expect(migration).toContain(
+      "grant select on table public.schema_snapshot_summaries to authenticated;"
+    );
     expect(migration).not.toMatch(
-      /\b(sample_rows|preview_rows|result_rows|data_cache|raw_rows|cached_result)\b/i
+      /\b(customer_rows|customer_values|raw_result|query_result_cache)\b/i
     );
   });
 

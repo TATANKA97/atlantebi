@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 from app.models import Engine
@@ -12,6 +12,10 @@ class DriverNotImplementedError(RuntimeError):
 
 
 class DriverConfigurationError(RuntimeError):
+    pass
+
+
+class DriverIntrospectionError(RuntimeError):
     pass
 
 
@@ -46,7 +50,50 @@ class ConnectionTestResult:
 @dataclass(frozen=True)
 class SchemaIntrospectionResult:
     engine: Engine
-    tables: list[str]
+    tables: list["SchemaTableMetadata"]
+    foreign_keys: list["SchemaForeignKeyMetadata"]
+
+
+@dataclass(frozen=True)
+class SchemaColumnMetadata:
+    name: str
+    data_type: str
+    ordinal_position: int
+    is_nullable: bool
+    max_length: int | None = None
+    numeric_precision: int | None = None
+    numeric_scale: int | None = None
+    datetime_precision: int | None = None
+    is_identity: bool = False
+    is_computed: bool = False
+
+
+@dataclass(frozen=True)
+class SchemaPrimaryKeyMetadata:
+    name: str
+    columns: list[str]
+
+
+@dataclass(frozen=True)
+class SchemaTableMetadata:
+    table_schema: str
+    name: str
+    table_type: Literal["base_table", "view"]
+    columns: list[SchemaColumnMetadata] = field(default_factory=list)
+    primary_key: SchemaPrimaryKeyMetadata | None = None
+
+
+@dataclass(frozen=True)
+class SchemaForeignKeyMetadata:
+    name: str
+    from_schema: str
+    from_table: str
+    from_columns: list[str]
+    to_schema: str
+    to_table: str
+    to_columns: list[str]
+    on_delete: str
+    on_update: str
 
 
 @dataclass(frozen=True)
@@ -70,7 +117,10 @@ class DatabaseDriver(ABC):
 
     @abstractmethod
     async def introspect_schema(
-        self, connection: ConnectionMetadata
+        self,
+        connection: ConnectionMetadata,
+        credentials: DatabaseCredentials,
+        timeout_ms: int,
     ) -> SchemaIntrospectionResult:
         raise NotImplementedError
 

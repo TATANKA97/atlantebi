@@ -1,0 +1,331 @@
+import Link from "next/link";
+
+import { introspectConnectionAction } from "./actions";
+import { getActiveTenantContext } from "../../lib/tenant";
+
+type ConnectionRow = {
+  id: string;
+  name: string;
+  engine: "sqlserver" | "mysql";
+  database_name: string;
+  status: string;
+};
+
+type SemanticVersionRow = {
+  id: string;
+  connection_id: string;
+  schema_snapshot_id: string | null;
+  version: number;
+  status: "draft" | "active" | "archived";
+  created_at: string;
+};
+
+type SemanticTableRow = {
+  id: string;
+  physical_schema: string;
+  physical_name: string;
+  active: boolean;
+  metadata: {
+    table_type?: string;
+    column_count?: number;
+    primary_key_count?: number;
+  };
+};
+
+type SemanticColumnRow = {
+  id: string;
+  semantic_table_id: string;
+  physical_name: string;
+  data_type: string;
+  role: string;
+  pii: boolean;
+  metadata: {
+    ordinal_position?: number;
+    is_nullable?: boolean;
+    is_primary_key?: boolean;
+  };
+};
+
+const MESSAGE_COPY: Record<string, string> = {
+  connection_not_found: "Connessione non trovata.",
+  connection_not_ready: "La connessione deve essere ready prima dell'import schema.",
+  invalid_introspection: "Richiesta introspection non valida.",
+  schema_forbidden: "Il tuo ruolo non consente di importare lo schema.",
+  schema_snapshot_save_failed: "Snapshot schema non salvato.",
+  semantic_columns_save_failed: "Colonne semantiche non salvate.",
+  semantic_relationships_save_failed: "Relazioni semantiche non salvate.",
+  semantic_tables_save_failed: "Tabelle semantiche non salvate.",
+  semantic_version_save_failed: "Versione semantica non salvata."
+};
+
+export const dynamic = "force-dynamic";
+
+export default async function SemanticPage({
+  searchParams
+}: {
+  searchParams: Promise<{ message?: string; version?: string; snapshot?: string }>;
+}) {
+  const params = await searchParams;
+  const { supabase, tenantId } = await getActiveTenantContext();
+  const [connectionsResult, versionsResult] = await Promise.all([
+    supabase
+      .from("db_connection_summaries")
+      .select("id,name,engine,database_name,status")
+      .eq("tenant_id", tenantId)
+      .eq("status", "ready")
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("semantic_versions")
+      .select("id,connection_id,schema_snapshot_id,version,status,created_at")
+      .eq("tenant_id", tenantId)
+      .order("created_at", { ascending: false })
+      .limit(20)
+  ]);
+  const connections = (connectionsResult.data ?? []) as ConnectionRow[];
+  const versions = (versionsResult.data ?? []) as SemanticVersionRow[];
+  const selectedVersionId = params.version ?? versions[0]?.id;
+  const selectedVersion = versions.find((version) => version.id === selectedVersionId);
+  const semanticData = selectedVersion
+    ? await readSemanticVersionData({ semanticVersionId: selectedVersion.id, supabase, tenantId })
+    : { tables: [], columnsByTable: new Map<string, SemanticColumnRow[]>() };
+  const message = params.message ? MESSAGE_COPY[params.message] : undefined;
+
+  return (
+    <main className="min-h-screen px-8 py-10">
+      <section className="mx-auto flex max-w-6xl flex-col gap-8">
+        <header className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-semibold tracking-normal">Semantic layer</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-[color:var(--muted)]">
+              Import schema deterministico da connessioni ready. Le tabelle partono
+              inattive: l'attivazione business arriva dopo revisione.
+            </p>
+          </div>
+          <Link
+            className="border border-[color:var(--border)] px-4 py-2 text-sm font-medium"
+            href="/connections"
+          >
+            Connessioni
+          </Link>
+        </header>
+
+        {message ? (
+          <p className="border border-[color:var(--border)] px-4 py-3 text-sm text-[color:var(--muted)]">
+            {message}
+          </p>
+        ) : null}
+        {params.snapshot ? (
+          <p className="border border-[color:var(--accent)] px-4 py-3 text-sm">
+            Schema importato e versione semantica draft creata.
+          </p>
+        ) : null}
+
+        <section className="border-t border-[color:var(--border)] pt-6">
+          <h2 className="text-base font-semibold">Import schema</h2>
+          {connections.length === 0 ? (
+            <p className="mt-3 text-sm text-[color:var(--muted)]">
+              Nessuna connessione ready. Crea e verifica una connessione prima.
+            </p>
+          ) : (
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full border-collapse text-left text-sm">
+                <thead className="text-[color:var(--muted)]">
+                  <tr>
+                    <th className="border-b border-[color:var(--border)] py-2 pr-4 font-medium">
+                      Connessione
+                    </th>
+                    <th className="border-b border-[color:var(--border)] py-2 pr-4 font-medium">
+                      Engine
+                    </th>
+                    <th className="border-b border-[color:var(--border)] py-2 pr-4 font-medium">
+                      Database
+                    </th>
+                    <th className="border-b border-[color:var(--border)] py-2 font-medium">
+                      Azione
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {connections.map((connection) => (
+                    <tr key={connection.id}>
+                      <td className="border-b border-[color:var(--border)] py-3 pr-4">
+                        {connection.name}
+                      </td>
+                      <td className="border-b border-[color:var(--border)] py-3 pr-4">
+                        {connection.engine}
+                      </td>
+                      <td className="border-b border-[color:var(--border)] py-3 pr-4">
+                        {connection.database_name}
+                      </td>
+                      <td className="border-b border-[color:var(--border)] py-3">
+                        <form>
+                          <input name="tenant_id" type="hidden" value={tenantId} />
+                          <input
+                            name="connection_id"
+                            type="hidden"
+                            value={connection.id}
+                          />
+                          <input name="timeout_ms" type="hidden" value="120000" />
+                          <button
+                            className="border border-[color:var(--accent)] px-3 py-1.5 text-sm"
+                            formAction={introspectConnectionAction}
+                          >
+                            Importa schema
+                          </button>
+                        </form>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
+        <section className="border-t border-[color:var(--border)] pt-6">
+          <h2 className="text-base font-semibold">Versioni draft</h2>
+          {versions.length === 0 ? (
+            <p className="mt-3 text-sm text-[color:var(--muted)]">
+              Nessuna versione semantica importata.
+            </p>
+          ) : (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {versions.map((version) => (
+                <Link
+                  className={`border px-3 py-1.5 text-sm ${
+                    version.id === selectedVersionId
+                      ? "border-[color:var(--accent)]"
+                      : "border-[color:var(--border)]"
+                  }`}
+                  href={`/semantic?version=${version.id}`}
+                  key={version.id}
+                >
+                  v{version.version} {version.status}
+                </Link>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {selectedVersion ? (
+          <section className="border-t border-[color:var(--border)] pt-6">
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <h2 className="text-base font-semibold">Schema importato</h2>
+                <p className="mt-2 text-sm text-[color:var(--muted)]">
+                  {semanticData.tables.length} tabelle nella versione v
+                  {selectedVersion.version}.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5 grid gap-6">
+              {semanticData.tables.map((table) => {
+                const columns = semanticData.columnsByTable.get(table.id) ?? [];
+                return (
+                  <section className="border-t border-[color:var(--border)] pt-4" key={table.id}>
+                    <div className="flex flex-wrap items-baseline justify-between gap-3">
+                      <h3 className="text-sm font-semibold">
+                        {table.physical_schema}.{table.physical_name}
+                      </h3>
+                      <p className="text-xs text-[color:var(--muted)]">
+                        {table.metadata.table_type ?? "table"} - {columns.length} colonne
+                      </p>
+                    </div>
+                    <div className="mt-3 overflow-x-auto">
+                      <table className="w-full border-collapse text-left text-xs">
+                        <thead className="text-[color:var(--muted)]">
+                          <tr>
+                            <th className="border-b border-[color:var(--border)] py-2 pr-4 font-medium">
+                              Colonna
+                            </th>
+                            <th className="border-b border-[color:var(--border)] py-2 pr-4 font-medium">
+                              Tipo
+                            </th>
+                            <th className="border-b border-[color:var(--border)] py-2 pr-4 font-medium">
+                              Ruolo
+                            </th>
+                            <th className="border-b border-[color:var(--border)] py-2 font-medium">
+                              Metadata
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {columns.map((column) => (
+                            <tr key={column.id}>
+                              <td className="border-b border-[color:var(--border)] py-2 pr-4">
+                                {column.physical_name}
+                              </td>
+                              <td className="border-b border-[color:var(--border)] py-2 pr-4">
+                                {column.data_type}
+                              </td>
+                              <td className="border-b border-[color:var(--border)] py-2 pr-4">
+                                {column.role}
+                              </td>
+                              <td className="border-b border-[color:var(--border)] py-2 text-[color:var(--muted)]">
+                                {column.metadata.is_primary_key ? "PK " : ""}
+                                {column.metadata.is_nullable ? "nullable" : "not null"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                );
+              })}
+            </div>
+          </section>
+        ) : null}
+      </section>
+    </main>
+  );
+}
+
+async function readSemanticVersionData({
+  semanticVersionId,
+  supabase,
+  tenantId
+}: {
+  semanticVersionId: string;
+  supabase: Awaited<ReturnType<typeof getActiveTenantContext>>["supabase"];
+  tenantId: string;
+}) {
+  const { data: tableData } = await supabase
+    .from("semantic_tables")
+    .select("id,physical_schema,physical_name,active,metadata")
+    .eq("tenant_id", tenantId)
+    .eq("semantic_version_id", semanticVersionId)
+    .order("physical_schema", { ascending: true })
+    .order("physical_name", { ascending: true });
+  const tables = (tableData ?? []) as SemanticTableRow[];
+  const tableIds = tables.map((table) => table.id);
+
+  if (tableIds.length === 0) {
+    return { tables, columnsByTable: new Map<string, SemanticColumnRow[]>() };
+  }
+
+  const { data: columnData } = await supabase
+    .from("semantic_columns")
+    .select("id,semantic_table_id,physical_name,data_type,role,pii,metadata")
+    .eq("tenant_id", tenantId)
+    .in("semantic_table_id", tableIds)
+    .order("physical_name", { ascending: true });
+  const columns = (columnData ?? []) as SemanticColumnRow[];
+  const columnsByTable = new Map<string, SemanticColumnRow[]>();
+
+  for (const column of columns) {
+    const existing = columnsByTable.get(column.semantic_table_id) ?? [];
+    existing.push(column);
+    columnsByTable.set(column.semantic_table_id, existing);
+  }
+
+  for (const groupedColumns of columnsByTable.values()) {
+    groupedColumns.sort(
+      (left, right) =>
+        (left.metadata.ordinal_position ?? 0) - (right.metadata.ordinal_position ?? 0)
+    );
+  }
+
+  return { tables, columnsByTable };
+}
