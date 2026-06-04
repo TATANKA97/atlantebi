@@ -509,7 +509,8 @@ def test_sqlserver_columns_query_keeps_alias_type_columns() -> None:
     normalized_query = " ".join(SQLSERVER_COLUMNS_QUERY.lower().split())
 
     assert "inner join sys.types as user_type" in normalized_query
-    assert "left join sys.types as system_type" in normalized_query
+    assert "outer apply" in normalized_query
+    assert "base_type.is_user_defined = 0" in normalized_query
     assert "coalesce(system_type.name, user_type.name) as native_type" in normalized_query
 
 

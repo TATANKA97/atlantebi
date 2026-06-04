@@ -101,9 +101,16 @@ inner join sys.columns as column_item
     on column_item.object_id = object_item.object_id
 inner join sys.types as user_type
     on user_type.user_type_id = column_item.user_type_id
-left join sys.types as system_type
-    on system_type.system_type_id = column_item.system_type_id
-   and system_type.user_type_id = system_type.system_type_id
+outer apply (
+    select top (1)
+        base_type.name
+    from sys.types as base_type
+    where base_type.system_type_id = column_item.system_type_id
+      and base_type.is_user_defined = 0
+    order by
+        case when base_type.user_type_id = base_type.system_type_id then 0 else 1 end,
+        base_type.user_type_id
+) as system_type
 left join sys.default_constraints as default_constraint
     on default_constraint.parent_object_id = column_item.object_id
    and default_constraint.parent_column_id = column_item.column_id
