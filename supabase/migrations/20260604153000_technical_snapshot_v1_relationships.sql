@@ -19,18 +19,38 @@ set
 where source = 'database_fk'
   and constraint_name is null;
 
-alter table public.semantic_relationships
-  add constraint semantic_relationships_db_fk_requires_constraint_name
-    check (source <> 'database_fk' or constraint_name is not null),
-  add constraint semantic_relationships_technical_metadata_object
-    check (jsonb_typeof(metadata) = 'object');
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'semantic_relationships_db_fk_requires_constraint_name'
+  ) then
+    alter table public.semantic_relationships
+      add constraint semantic_relationships_db_fk_requires_constraint_name
+        check (source <> 'database_fk' or constraint_name is not null);
+  end if;
+
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'semantic_relationships_technical_metadata_object'
+  ) then
+    alter table public.semantic_relationships
+      add constraint semantic_relationships_technical_metadata_object
+        check (jsonb_typeof(metadata) = 'object');
+  end if;
+end;
+$$;
 
 comment on column public.semantic_relationships.constraint_name is
   'Technical FK constraint name mapped from schema_snapshots.snapshot foreign_keys[].name.';
 comment on column public.semantic_relationships.source is
   'Semantic relationship source. Technical snapshot db_fk maps to database_fk here.';
 
-create or replace view public.schema_snapshot_summaries
+drop view if exists public.schema_snapshot_summaries;
+
+create view public.schema_snapshot_summaries
 with (security_invoker = true)
 as
 select
