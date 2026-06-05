@@ -24,6 +24,11 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
+      - name: Verify triggering SHA is current main
+        run: |
+          CURRENT_MAIN_SHA="$(git ls-remote origin refs/heads/main | cut -f1)"
+          test "${CURRENT_MAIN_SHA}" = "${{ github.event.workflow_run.head_sha }}"
+
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
