@@ -220,6 +220,15 @@ describe("Supabase metadata migration", () => {
     expect(migration).toContain(
       "references public.schema_snapshots(tenant_id, connection_id, id)"
     );
+    expect(migration).toContain(
+      "semantic_relationships_tenant_version_from_table_idx"
+    );
+    expect(migration).toContain(
+      "semantic_relationships_tenant_version_to_table_idx"
+    );
+    expect(migration).toContain(
+      "semantic_versions_tenant_connection_snapshot_idx"
+    );
   });
 
   it("fixes the immutable metadata guard search path", () => {
