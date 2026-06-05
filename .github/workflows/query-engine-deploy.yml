@@ -25,7 +25,6 @@ jobs:
       ARTIFACT_REPOSITORY: atlantebi
       SERVICE_NAME: query-engine
       RUNTIME_SERVICE_ACCOUNT: query-engine-runtime@business-intelligence-495312.iam.gserviceaccount.com
-      DEPLOY_SERVICE_ACCOUNT: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -70,8 +69,23 @@ jobs:
             --max-instances=10 \
             --quiet
 
-      - name: Authenticated smoke test
+      - name: Resolve deployed service URL
+        id: service
         run: |
           SERVICE_URL="$(gcloud run services describe "${SERVICE_NAME}" --project="${GCP_PROJECT_ID}" --region="${GCP_REGION}" --format='value(status.url)')"
-          ID_TOKEN="$(gcloud auth print-identity-token --impersonate-service-account="${DEPLOY_SERVICE_ACCOUNT}" --audiences="${SERVICE_URL}")"
-          curl --fail --silent --show-error -H "Authorization: Bearer ${ID_TOKEN}" "${SERVICE_URL}/health"
+          echo "url=${SERVICE_URL}" >> "${GITHUB_OUTPUT}"
+
+      - name: Mint Cloud Run ID token
+        id: smoke-auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          token_format: id_token
+          id_token_audience: ${{ steps.service.outputs.url }}
+
+      - name: Authenticated smoke test
+        run: |
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${{ steps.smoke-auth.outputs.id_token }}" \
+            "${{ steps.service.outputs.url }}/health"
