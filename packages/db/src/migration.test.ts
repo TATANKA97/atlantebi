@@ -67,7 +67,7 @@ describe("Supabase metadata migration", () => {
       "grant select, insert on table public.query_history to authenticated;"
     );
     expect(migration).toContain(
-      "grant insert, update, delete on table public.db_connections to authenticated;"
+      "revoke insert, update, delete on table public.db_connections from authenticated;"
     );
     expect(migration).toContain("revoke all privileges on table public.db_connections from anon;");
     expect(migration).toContain(
@@ -196,5 +196,35 @@ describe("Supabase metadata migration", () => {
     const latestSummaryView = summaryViews.at(-1) ?? "";
     expect(latestSummaryView).not.toContain("view_definition");
     expect(latestSummaryView).not.toContain("extended_properties");
+  });
+
+  it("moves privileged connection and schema writes behind service-role RPCs", () => {
+    expect(migration).toContain("app_private.save_connection_test_result");
+    expect(migration).toContain("public.save_connection_test_result");
+    expect(migration).toContain(
+      "grant execute on function public.save_connection_test_result(uuid, jsonb) to service_role;"
+    );
+    expect(migration).toContain("app_private.persist_technical_schema_import");
+    expect(migration).toContain("pg_advisory_xact_lock");
+    expect(migration).toContain(
+      "revoke insert, update, delete on table public.schema_snapshots from authenticated;"
+    );
+    expect(migration).toContain(
+      "revoke insert, update, delete on table public.semantic_relationships from authenticated;"
+    );
+    expect(migration).toContain("semantic_relationships_from_table_version_fk");
+    expect(migration).toContain("semantic_relationships_to_table_version_fk");
+    expect(migration).toContain(
+      "semantic_versions_schema_snapshot_connection_fk"
+    );
+    expect(migration).toContain(
+      "references public.schema_snapshots(tenant_id, connection_id, id)"
+    );
+  });
+
+  it("fixes the immutable metadata guard search path", () => {
+    expect(migration).toMatch(
+      /create or replace function app_private\.jsonb_has_forbidden_metadata_key[\s\S]*?set search_path = public, pg_temp/
+    );
   });
 });

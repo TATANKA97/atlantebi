@@ -3,6 +3,8 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass
+from time import monotonic
+from typing import Literal
 
 from app.drivers.base import (
     ConnectionMetadata,
@@ -359,14 +361,20 @@ class SqlServerDriver(DatabaseDriver):
         parts = _connection_string_parts(connection, credentials, timeout_seconds)
 
         try:
-            sql_connection = await _connect(pyodbc, parts, timeout_seconds)
-            try:
-                await asyncio.to_thread(
-                    sql_connection.cursor().execute,
-                    "select 1",
-                )
-            finally:
-                await asyncio.to_thread(sql_connection.close)
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    _test_connection_sync,
+                    pyodbc,
+                    parts,
+                    timeout_seconds,
+                ),
+                timeout=timeout_ms / 1000 + 1,
+            )
+        except TimeoutError:
+            return ConnectionTestResult(
+                status="failed",
+                message="SQL Server connection test timed out.",
+            )
         except pyodbc.Error:
             return ConnectionTestResult(
                 status="failed",
@@ -390,45 +398,34 @@ class SqlServerDriver(DatabaseDriver):
         parts = _connection_string_parts(connection, credentials, timeout_seconds)
 
         try:
-            sql_connection = await _connect(pyodbc, parts, timeout_seconds)
-            try:
-                database_row = await _fetch_one(sql_connection, SQLSERVER_DATABASE_QUERY)
-                object_rows = await _fetch_all(sql_connection, SQLSERVER_OBJECTS_QUERY)
-                column_rows = await _fetch_all(sql_connection, SQLSERVER_COLUMNS_QUERY)
-                key_constraint_rows = await _fetch_all(
-                    sql_connection,
-                    SQLSERVER_KEY_CONSTRAINTS_QUERY,
-                )
-                foreign_key_rows = await _fetch_all(
-                    sql_connection,
-                    SQLSERVER_FOREIGN_KEYS_QUERY,
-                )
-                check_constraint_rows = await _fetch_all(
-                    sql_connection,
-                    SQLSERVER_CHECK_CONSTRAINTS_QUERY,
-                )
-                index_rows, indexes_available = await _fetch_all_best_effort(
-                    sql_connection,
-                    SQLSERVER_INDEXES_QUERY,
-                    pyodbc.Error,
-                )
-                row_count_rows, row_counts_available = await _fetch_all_best_effort(
-                    sql_connection,
-                    SQLSERVER_ROW_COUNTS_QUERY,
-                    pyodbc.Error,
-                )
-                view_lineage_by_view, view_lineage_status_by_view = (
-                    await _fetch_view_lineage(
-                        sql_connection=sql_connection,
-                        object_rows=object_rows,
-                        column_rows=column_rows,
-                        error_type=pyodbc.Error,
-                    )
-                )
-            finally:
-                await asyncio.to_thread(sql_connection.close)
+            (
+                database_row,
+                object_rows,
+                column_rows,
+                key_constraint_rows,
+                foreign_key_rows,
+                check_constraint_rows,
+                index_rows,
+                indexes_available,
+                row_count_rows,
+                row_counts_available,
+                view_lineage_by_view,
+                view_lineage_status_by_view,
+            ) = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _collect_introspection_rows_sync,
+                    pyodbc,
+                    parts,
+                    timeout_seconds,
+                ),
+                timeout=timeout_ms / 1000 + 1,
+            )
+        except TimeoutError as exc:
+            raise DriverIntrospectionError(
+                "SQL Server schema introspection timed out."
+            ) from exc
         except pyodbc.Error as exc:
-            logger.exception("SQL Server schema introspection query failed.")
+            logger.error("SQL Server schema introspection query failed.")
             raise DriverIntrospectionError("SQL Server schema introspection failed.") from exc
 
         database_name = str(database_row[0])
@@ -463,6 +460,7 @@ class SqlServerDriver(DatabaseDriver):
         coverage_warnings.extend(
             _build_column_coverage_warnings(column_rows=column_rows, tables=tables)
         )
+        coverage_state = _coverage_state(coverage_warnings)
         schema_hash = _schema_hash(
             tables=tables,
             foreign_keys=foreign_keys,
@@ -477,6 +475,7 @@ class SqlServerDriver(DatabaseDriver):
             database_name=database_name,
             engine_version=engine_version,
             schema_hash=schema_hash,
+            coverage_state=coverage_state,
             tables=tables,
             foreign_keys=foreign_keys,
             unique_constraints=unique_constraints,
@@ -520,68 +519,169 @@ def _connection_string_parts(
     encrypt = "yes" if connection.tls_required else "no"
     parts = [
         "Driver={ODBC Driver 18 for SQL Server}",
-        f"Server=tcp:{connection.host},{connection.port}",
-        f"Database={connection.database_name}",
-        f"UID={_login_username(connection)}",
-        f"PWD={credentials.password}",
+        f"Server={_odbc_value(f'tcp:{connection.host},{connection.port}')}",
+        f"Database={_odbc_value(connection.database_name)}",
+        f"UID={_odbc_value(_login_username(connection))}",
+        f"PWD={_odbc_value(credentials.password)}",
         f"Encrypt={encrypt}",
         f"TrustServerCertificate={'yes' if connection.trust_server_certificate else 'no'}",
         f"Connection Timeout={timeout_seconds}",
     ]
     if connection.tls_server_name:
-        parts.append(f"HostNameInCertificate={connection.tls_server_name}")
+        parts.append(
+            f"HostNameInCertificate={_odbc_value(connection.tls_server_name)}"
+        )
 
     return parts
 
 
-async def _connect(pyodbc, parts: list[str], timeout_seconds: int):
-    return await asyncio.to_thread(
-        pyodbc.connect,
+def _odbc_value(value: str) -> str:
+    return "{" + value.replace("}", "}}") + "}"
+
+
+def _connect_sync(pyodbc, parts: list[str], timeout_seconds: int):
+    return pyodbc.connect(
         ";".join(parts),
         autocommit=True,
         timeout=timeout_seconds,
     )
 
 
-async def _fetch_all(sql_connection, query: str):
+def _remaining_timeout_seconds(deadline: float) -> int:
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise TimeoutError("SQL Server operation deadline exceeded.")
+    return max(1, int(remaining))
+
+
+def _fetch_all_sync(sql_connection, query: str, deadline: float):
     cursor = sql_connection.cursor()
     try:
-        await asyncio.to_thread(cursor.execute, query)
-        return await asyncio.to_thread(cursor.fetchall)
+        sql_connection.timeout = _remaining_timeout_seconds(deadline)
+        cursor.execute(query)
+        return cursor.fetchall()
     finally:
-        await asyncio.to_thread(cursor.close)
+        cursor.close()
 
 
-async def _fetch_all_params(sql_connection, query: str, params: tuple):
+def _fetch_all_params_sync(
+    sql_connection,
+    query: str,
+    params: tuple,
+    deadline: float,
+):
     cursor = sql_connection.cursor()
     try:
-        await asyncio.to_thread(cursor.execute, query, params)
-        return await asyncio.to_thread(cursor.fetchall)
+        sql_connection.timeout = _remaining_timeout_seconds(deadline)
+        cursor.execute(query, params)
+        return cursor.fetchall()
     finally:
-        await asyncio.to_thread(cursor.close)
+        cursor.close()
 
 
-async def _fetch_one(sql_connection, query: str):
-    rows = await _fetch_all(sql_connection, query)
+def _fetch_one_sync(sql_connection, query: str, deadline: float):
+    rows = _fetch_all_sync(sql_connection, query, deadline)
     if not rows:
         raise DriverIntrospectionError("SQL Server metadata query returned no rows.")
     return rows[0]
 
 
-async def _fetch_all_best_effort(sql_connection, query: str, error_type):
+def _fetch_all_best_effort_sync(
+    sql_connection,
+    query: str,
+    error_type,
+    deadline: float,
+):
     try:
-        return await _fetch_all(sql_connection, query), True
+        return _fetch_all_sync(sql_connection, query, deadline), True
     except error_type:
-        logger.warning("Optional SQL Server metadata query failed.", exc_info=True)
+        logger.warning("Optional SQL Server metadata query failed.")
         return [], False
 
 
-async def _fetch_view_lineage(
+def _test_connection_sync(
+    pyodbc,
+    parts: list[str],
+    timeout_seconds: int,
+) -> None:
+    deadline = monotonic() + timeout_seconds
+    sql_connection = _connect_sync(pyodbc, parts, timeout_seconds)
+    try:
+        cursor = sql_connection.cursor()
+        try:
+            sql_connection.timeout = _remaining_timeout_seconds(deadline)
+            cursor.execute("select 1")
+            cursor.fetchone()
+        finally:
+            cursor.close()
+    finally:
+        sql_connection.close()
+
+
+def _collect_introspection_rows_sync(
+    pyodbc,
+    parts: list[str],
+    timeout_seconds: int,
+):
+    deadline = monotonic() + timeout_seconds
+    sql_connection = _connect_sync(pyodbc, parts, timeout_seconds)
+    try:
+        database_row = _fetch_one_sync(
+            sql_connection, SQLSERVER_DATABASE_QUERY, deadline
+        )
+        object_rows = _fetch_all_sync(
+            sql_connection, SQLSERVER_OBJECTS_QUERY, deadline
+        )
+        column_rows = _fetch_all_sync(
+            sql_connection, SQLSERVER_COLUMNS_QUERY, deadline
+        )
+        key_constraint_rows = _fetch_all_sync(
+            sql_connection, SQLSERVER_KEY_CONSTRAINTS_QUERY, deadline
+        )
+        foreign_key_rows = _fetch_all_sync(
+            sql_connection, SQLSERVER_FOREIGN_KEYS_QUERY, deadline
+        )
+        check_constraint_rows = _fetch_all_sync(
+            sql_connection, SQLSERVER_CHECK_CONSTRAINTS_QUERY, deadline
+        )
+        index_rows, indexes_available = _fetch_all_best_effort_sync(
+            sql_connection, SQLSERVER_INDEXES_QUERY, pyodbc.Error, deadline
+        )
+        row_count_rows, row_counts_available = _fetch_all_best_effort_sync(
+            sql_connection, SQLSERVER_ROW_COUNTS_QUERY, pyodbc.Error, deadline
+        )
+        view_lineage_by_view, view_lineage_status_by_view = _fetch_view_lineage(
+            sql_connection=sql_connection,
+            object_rows=object_rows,
+            column_rows=column_rows,
+            error_type=pyodbc.Error,
+            deadline=deadline,
+        )
+        return (
+            database_row,
+            object_rows,
+            column_rows,
+            key_constraint_rows,
+            foreign_key_rows,
+            check_constraint_rows,
+            index_rows,
+            indexes_available,
+            row_count_rows,
+            row_counts_available,
+            view_lineage_by_view,
+            view_lineage_status_by_view,
+        )
+    finally:
+        sql_connection.close()
+
+
+def _fetch_view_lineage(
     *,
     sql_connection,
     object_rows,
     column_rows,
     error_type,
+    deadline: float,
 ) -> tuple[
     dict[tuple[str, str], list[SchemaViewLineageDependency]],
     dict[tuple[str, str], ViewLineageStatus],
@@ -596,10 +696,11 @@ async def _fetch_view_lineage(
         key = (schema_name, view_name)
         qualified_name = _bracket_qualified_name(schema_name, view_name)
         try:
-            dm_rows = await _fetch_all_params(
+            dm_rows = _fetch_all_params_sync(
                 sql_connection,
                 SQLSERVER_VIEW_REFERENCED_ENTITIES_QUERY,
                 (qualified_name,),
+                deadline,
             )
             dependencies = _build_dm_view_lineage_dependencies(
                 dm_rows,
@@ -614,19 +715,15 @@ async def _fetch_view_lineage(
             )
             continue
         except error_type as exc:
-            logger.warning(
-                "SQL Server view lineage DMF query failed for %s.%s.",
-                schema_name,
-                view_name,
-                exc_info=True,
-            )
+            logger.warning("SQL Server view lineage DMF query failed.")
             dm_error_message = str(exc)
 
         try:
-            fallback_rows = await _fetch_all_params(
+            fallback_rows = _fetch_all_params_sync(
                 sql_connection,
                 SQLSERVER_VIEW_EXPRESSION_DEPENDENCIES_QUERY,
                 (object_id,),
+                deadline,
             )
             dependencies = _build_expression_view_lineage_dependencies(
                 fallback_rows,
@@ -643,12 +740,7 @@ async def _fetch_view_lineage(
             )
         except error_type as exc:
             error_message = str(exc)
-            logger.warning(
-                "SQL Server view lineage fallback query failed for %s.%s.",
-                schema_name,
-                view_name,
-                exc_info=True,
-            )
+            logger.warning("SQL Server view lineage fallback query failed.")
             status_by_view[key] = ViewLineageStatus(
                 available=False,
                 permission_denied=_lineage_error_is_permission_denied(
@@ -1259,6 +1351,31 @@ def _build_coverage_warnings(
         )
 
     return warnings
+
+
+def _coverage_state(
+    warnings: list[SchemaCoverageWarning],
+) -> Literal["complete", "partial"]:
+    incomplete_codes = {
+        "ROW_COUNT_ESTIMATE_UNAVAILABLE",
+        "VIEW_DEFINITION_MISSING",
+        "VIEW_DEFINITION_PERMISSION_DENIED",
+        "NO_VIEW_DEFINITION_PERMISSION",
+        "PARTIAL_METADATA_VISIBILITY_POSSIBLE",
+        "INDEX_METADATA_UNAVAILABLE",
+        "VIEW_LINEAGE_NOT_AVAILABLE",
+        "VIEW_LINEAGE_PARTIAL",
+        "VIEW_LINEAGE_PERMISSION_DENIED",
+        "VIEW_LINEAGE_UNRESOLVED_REFERENCE",
+        "COLUMN_DECLARED_TYPE_UNAVAILABLE",
+        "COLUMN_DECLARED_TYPE_SCHEMA_UNAVAILABLE",
+        "COLUMN_OBJECT_MAPPING_MISSING",
+    }
+    return (
+        "partial"
+        if any(warning.code in incomplete_codes for warning in warnings)
+        else "complete"
+    )
 
 
 def _schema_hash(

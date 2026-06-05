@@ -1,6 +1,8 @@
 import asyncio
 import json
 import sys
+from threading import get_ident
+from time import monotonic
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +16,7 @@ from app.drivers.base import (
     DatabaseDriver,
     ReadonlyQueryResult,
     SchemaColumnMetadata,
+    SchemaCoverageWarning,
     SchemaCheckConstraintMetadata,
     SchemaDefaultConstraintMetadata,
     SchemaForeignKeyMetadata,
@@ -29,6 +32,7 @@ from app.drivers.sqlserver import (
     SQLSERVER_COLUMNS_QUERY,
     SqlServerDriver,
     _build_coverage_warnings,
+    _coverage_state,
     _fetch_view_lineage,
     _schema_hash,
 )
@@ -124,9 +128,13 @@ def test_schema_introspection_response_serializes_schema_alias() -> None:
 def test_schema_introspection_endpoint_uses_secret_resolver_and_driver(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("QUERY_ENGINE_ALLOW_UNAUTHENTICATED", "true")
     class FakeSecretResolver:
-        async def resolve_database_credentials(self, secret_ref: str) -> DatabaseCredentials:
+        async def resolve_database_credentials(
+            self, secret_ref: str, timeout_ms: int
+        ) -> DatabaseCredentials:
             assert secret_ref == "gcp-secret-manager://projects/demo/secrets/customer-db"
+            assert timeout_ms == 30000
             return DatabaseCredentials(password="secret")
 
     class FakeDriver(DatabaseDriver):
@@ -148,12 +156,13 @@ def test_schema_introspection_endpoint_uses_secret_resolver_and_driver(
         ) -> SchemaIntrospectionResult:
             assert connection.database_name == "AdventureWorksLT"
             assert credentials.password == "secret"
-            assert timeout_ms == 30000
+            assert 29000 <= timeout_ms <= 30000
             return SchemaIntrospectionResult(
                 engine=Engine.sqlserver,
                 database_name="AdventureWorksLT",
                 engine_version="12.0.2000.8",
                 schema_hash="a" * 64,
+                coverage_state="complete",
                 tables=[
                     SchemaTableMetadata(
                         table_schema="SalesLT",
@@ -229,6 +238,7 @@ def test_schema_introspection_endpoint_uses_secret_resolver_and_driver(
     assert response.status_code == 200
     assert body["status"] == "ok"
     assert body["engine"] == "sqlserver"
+    assert body["coverage_state"] == "complete"
     assert body["tables"][0]["schema"] == "SalesLT"
     assert body["tables"][0]["primary_key"]["columns"] == ["CustomerID"]
     assert body["foreign_keys"][0]["from_columns"] == ["CustomerID"]
@@ -237,6 +247,7 @@ def test_schema_introspection_endpoint_uses_secret_resolver_and_driver(
 
 def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.MonkeyPatch) -> None:
     executed_queries: list[str] = []
+    thread_ids: list[int] = []
 
     class FakeCursor:
         def __init__(self):
@@ -244,12 +255,14 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
             self.params = ()
 
         def execute(self, query: str, params=()):
+            thread_ids.append(get_ident())
             self.query = query
             self.params = params
             executed_queries.append(query)
             return self
 
         def fetchall(self):
+            thread_ids.append(get_ident())
             if "serverproperty('ProductVersion')" in self.query:
                 return [("AdventureWorksLT", "12.0.2000.8")]
             if "sys.dm_db_partition_stats" in self.query:
@@ -549,6 +562,7 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
             raise AssertionError(f"Unexpected query: {self.query}")
 
         def close(self) -> None:
+            thread_ids.append(get_ident())
             return None
 
     class FakeConnection:
@@ -556,9 +570,11 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
             self.connection_string = None
 
         def cursor(self) -> FakeCursor:
+            thread_ids.append(get_ident())
             return FakeCursor()
 
         def close(self) -> None:
+            thread_ids.append(get_ident())
             return None
 
     fake_connection = FakeConnection()
@@ -581,7 +597,8 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
     )
 
     assert fake_connection.connection_string is not None
-    assert "PWD=secret" in fake_connection.connection_string
+    assert len(set(thread_ids)) == 1
+    assert "PWD={secret}" in fake_connection.connection_string
     assert len(executed_queries) == 9
     assert all("sys." in query or "serverproperty" in query for query in executed_queries)
     assert all("select *" not in query.lower() for query in executed_queries)
@@ -674,13 +691,12 @@ def test_sqlserver_view_lineage_falls_back_when_dmf_permission_denied() -> None:
         def cursor(self) -> FakeCursor:
             return FakeCursor()
 
-    lineage_by_view, status_by_view = asyncio.run(
-        _fetch_view_lineage(
-            sql_connection=FakeConnection(),
-            object_rows=[("SalesLT", "vLimited", "view", 1003)],
-            column_rows=[("SalesLT", "vLimited", "CustomerID", 1)],
-            error_type=PermissionError,
-        )
+    lineage_by_view, status_by_view = _fetch_view_lineage(
+        sql_connection=FakeConnection(),
+        object_rows=[("SalesLT", "vLimited", "view", 1003)],
+        column_rows=[("SalesLT", "vLimited", "CustomerID", 1)],
+        error_type=PermissionError,
+        deadline=monotonic() + 30,
     )
 
     key = ("SalesLT", "vLimited")
@@ -924,3 +940,30 @@ def test_sqlserver_schema_hash_canonicalizes_view_lineage_order() -> None:
     )
 
     assert first_hash == second_hash
+
+
+def test_coverage_state_treats_missing_lineage_as_partial() -> None:
+    assert (
+        _coverage_state(
+            [
+                SchemaCoverageWarning(
+                    code="VIEW_LINEAGE_NOT_AVAILABLE",
+                    severity="info",
+                    message="Lineage unavailable.",
+                )
+            ]
+        )
+        == "partial"
+    )
+    assert (
+        _coverage_state(
+            [
+                SchemaCoverageWarning(
+                    code="NO_FOREIGN_KEYS_FOUND",
+                    severity="info",
+                    message="No foreign keys found.",
+                )
+            ]
+        )
+        == "complete"
+    )

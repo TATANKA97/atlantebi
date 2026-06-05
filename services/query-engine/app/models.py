@@ -61,7 +61,7 @@ class ConnectionMetadataInput(StrictModel):
     username: str = Field(min_length=1, max_length=255)
     tls_required: bool
     trust_server_certificate: bool = False
-    tls_server_name: str = Field(default=None, min_length=1, max_length=255)
+    tls_server_name: str | None = Field(default=None, min_length=1, max_length=255)
     secret_ref: str = Field(
         pattern=r"^gcp-secret-manager://projects/[^/]+/secrets/[^/]+(/versions/[^/]+)?$"
     )
@@ -89,6 +89,12 @@ class SchemaIntrospectionStatus(StrEnum):
     ok = "ok"
     failed = "failed"
     engine_error = "engine_error"
+
+
+class SchemaCoverageState(StrEnum):
+    complete = "complete"
+    partial = "partial"
+    unknown = "unknown"
 
 
 class SchemaIntrospectionRequest(StrictModel):
@@ -259,6 +265,7 @@ class SchemaIntrospectionResponse(StrictModel):
     database_name: str | None = Field(default=None, min_length=1, max_length=255)
     engine_version: str | None = Field(default=None, min_length=1, max_length=500)
     schema_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    coverage_state: SchemaCoverageState | None = Field(default=None, strict=False)
     tables: list[SchemaTableMetadata] = Field(default_factory=list)
     foreign_keys: list[SchemaForeignKeyMetadata] = Field(default_factory=list)
     unique_constraints: list[SchemaUniqueConstraintMetadata] = Field(default_factory=list)

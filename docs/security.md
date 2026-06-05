@@ -29,3 +29,17 @@ metadata visibility rules. The snapshot remains best-effort, but coverage is wea
 View definitions and extended properties are treated as tenant-scoped sensitive
 metadata. They are saved in `schema_snapshots.snapshot` for deterministic technical
 coverage, but they must not be logged in clear text or sent to AI workflows by default.
+
+## Application Metadata Boundaries
+
+- Authenticated users can read only explicit safe columns from `schema_snapshots`;
+  the full `snapshot` JSON is server-only.
+- Connection and technical snapshot writes run through RPCs executable only by the
+  Supabase `service_role`. The RPCs independently verify the actor membership and role.
+- Changing a connection host, port, database, username, or TLS server name requires a
+  new database password. An existing `secret_ref` is never rebound to a new endpoint.
+- Technical imports are one PostgreSQL transaction protected by a per-connection
+  advisory lock. Snapshot, version, tables, columns, relationships, and audit metadata
+  either all commit or all roll back.
+- Query-engine endpoints fail closed unless either an internal token is configured or
+  Cloud Run IAM mode is explicitly enabled.

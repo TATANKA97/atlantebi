@@ -82,7 +82,7 @@ SUPABASE_SECRET_KEY=<server-only Supabase secret key>
 GCP_PROJECT_ID=business-intelligence-495312
 QUERY_ENGINE_URL=http://127.0.0.1:8080
 QUERY_ENGINE_AUTH_MODE=
-QUERY_ENGINE_API_TOKEN=<server-only internal token>
+QUERY_ENGINE_API_TOKEN=<same non-empty server-only token in web and query-engine>
 ```
 
 Production query-engine is deployed as a private Cloud Run service:
@@ -92,6 +92,9 @@ QUERY_ENGINE_URL=https://query-engine-3zsxzvizgq-uc.a.run.app
 QUERY_ENGINE_AUTH_MODE=google_id_token
 QUERY_ENGINE_API_TOKEN=
 ```
+
+The deployed query-engine uses `QUERY_ENGINE_AUTH_MODE=cloud_run_iam`. Protected
+endpoints fail closed unless an internal token or that explicit IAM mode is configured.
 
 When the query-engine runs in Cloud Run with the GCP proxy VM, connection
 metadata should use the proxy internal IP `10.128.0.2` rather than the proxy

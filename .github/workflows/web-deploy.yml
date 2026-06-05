@@ -1,7 +1,10 @@
 name: Deploy Web
 
 on:
-  workflow_dispatch:
+  workflow_run:
+    workflows: ["Supabase Migrations"]
+    branches: ["main"]
+    types: [completed]
 
 permissions:
   contents: read
@@ -9,7 +12,9 @@ permissions:
 
 jobs:
   deploy:
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    environment: production
     env:
       GCP_PROJECT_ID: business-intelligence-495312
       GCP_REGION: us-central1
@@ -20,6 +25,8 @@ jobs:
       QUERY_ENGINE_URL: https://query-engine-3zsxzvizgq-uc.a.run.app
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - uses: google-github-actions/auth@v3
         with:
@@ -32,7 +39,7 @@ jobs:
 
       - name: Build and push image
         run: |
-          IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REPOSITORY}/${SERVICE_NAME}:${GITHUB_SHA}"
+          IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REPOSITORY}/${SERVICE_NAME}:${{ github.event.workflow_run.head_sha }}"
           docker build -f apps/web/Dockerfile -t "${IMAGE}" .
           docker push "${IMAGE}"
           echo "IMAGE=${IMAGE}" >> "${GITHUB_ENV}"
@@ -47,6 +54,11 @@ jobs:
             --port=8080 \
             --allow-unauthenticated \
             --set-env-vars="NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL},NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }},SUPABASE_SECRET_KEY=${{ secrets.SUPABASE_SECRET_KEY }},GCP_PROJECT_ID=${GCP_PROJECT_ID},QUERY_ENGINE_URL=${QUERY_ENGINE_URL},QUERY_ENGINE_AUTH_MODE=google_id_token" \
-            --timeout=120s \
+            --timeout=180s \
             --max-instances=10 \
             --quiet
+
+      - name: Smoke test
+        run: |
+          SERVICE_URL="$(gcloud run services describe "${SERVICE_NAME}" --project="${GCP_PROJECT_ID}" --region="${GCP_REGION}" --format='value(status.url)')"
+          curl --fail --silent --show-error "${SERVICE_URL}/api/health"

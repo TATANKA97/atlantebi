@@ -6,6 +6,34 @@ on:
   pull_request:
 
 jobs:
+  database:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - run: npx -y supabase@2.104.0 start
+      - run: npx -y supabase@2.104.0 db reset --local
+      - run: npx -y supabase@2.104.0 test db
+      - name: Verify concurrent schema version allocation
+        shell: bash
+        run: |
+          docker exec -i supabase_db_atlantebi psql -v ON_ERROR_STOP=1 -U postgres \
+            < .github/fixtures/concurrent-schema-imports.sql
+          docker exec supabase_db_atlantebi psql -At -U postgres \
+            -c "select public.hardening_test_concurrent_import();" > /tmp/import-1 &
+          first_pid=$!
+          docker exec supabase_db_atlantebi psql -At -U postgres \
+            -c "select public.hardening_test_concurrent_import();" > /tmp/import-2 &
+          second_pid=$!
+          wait "$first_pid"
+          wait "$second_pid"
+          test "$(cat /tmp/import-1 /tmp/import-2 | sort -n | tr '\n' ' ')" = "1 2 "
+      - if: always()
+        run: npx -y supabase@2.104.0 stop --no-backup
+
   web-and-packages:
     runs-on: ubuntu-latest
     steps:
@@ -37,5 +65,44 @@ jobs:
         working-directory: services/query-engine
       - run: python -m pytest
         working-directory: services/query-engine
+      - name: Build query-engine integration test image
+        run: docker build --target test -t atlantebi-query-engine-test .
+        working-directory: services/query-engine
+      - name: Start SQL Server fixture
+        run: |
+          docker network create atlantebi-integration
+          docker run -d \
+            --name atlantebi-sqlserver \
+            --network atlantebi-integration \
+            -e ACCEPT_EULA=Y \
+            -e MSSQL_SA_PASSWORD='Fixture-SA-Password-42!' \
+            mcr.microsoft.com/mssql/server:2022-latest
+          for attempt in $(seq 1 60); do
+            if docker exec atlantebi-sqlserver /opt/mssql-tools18/bin/sqlcmd \
+              -S localhost -U sa -P 'Fixture-SA-Password-42!' -C -Q 'select 1' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs atlantebi-sqlserver
+          exit 1
+      - name: Initialize SQL Server fixture
+        run: |
+          docker cp tests/fixtures/sqlserver_snapshot_v1.sql atlantebi-sqlserver:/tmp/fixture.sql
+          docker exec atlantebi-sqlserver /opt/mssql-tools18/bin/sqlcmd -b \
+            -S localhost -U sa -P 'Fixture-SA-Password-42!' -C \
+            -i /tmp/fixture.sql
+        working-directory: services/query-engine
+      - name: Run real SQL Server introspection test
+        run: |
+          docker run --rm \
+            --network atlantebi-integration \
+            -e SQLSERVER_INTEGRATION_HOST=atlantebi-sqlserver \
+            atlantebi-query-engine-test \
+            python -m pytest tests/test_sqlserver_integration.py
       - run: docker build -t atlantebi-query-engine .
         working-directory: services/query-engine
+      - if: always()
+        run: |
+          docker rm -f atlantebi-sqlserver || true
+          docker network rm atlantebi-integration || true

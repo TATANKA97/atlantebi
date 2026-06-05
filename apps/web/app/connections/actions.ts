@@ -40,7 +40,6 @@ export async function createConnection(formData: FormData) {
 
   const result = await createAndTestConnection({
     input: parsed.data,
-    supabase: context.supabase,
     userId: context.userId
   });
 
@@ -84,7 +83,7 @@ export async function updateConnection(formData: FormData) {
 
   const result = await updateAndTestConnection({
     input: parsed.data,
-    supabase: context.supabase
+    userId: context.userId
   });
 
   if (!result.ok) {

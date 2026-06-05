@@ -21,6 +21,8 @@ type ConnectionRow = {
 
 const MESSAGE_COPY: Record<string, string> = {
   connection_save_failed: "Metadata connessione non salvati.",
+  connection_password_required:
+    "Inserisci nuovamente la password quando modifichi endpoint, database o username.",
   connection_update_failed: "Aggiornamento connessione non riuscito.",
   invalid_connection: "Dati connessione non validi."
 };

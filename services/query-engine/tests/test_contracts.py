@@ -1,5 +1,6 @@
 import json
 import asyncio
+from pathlib import Path
 from uuid import UUID
 
 import pytest
@@ -17,7 +18,7 @@ from app.drivers.base import (
     SchemaIntrospectionResult,
 )
 from app.drivers.registry import DRIVER_REGISTRY, get_driver
-from app.drivers.sqlserver import _login_username
+from app.drivers.sqlserver import _connection_string_parts, _login_username
 from app.main import app
 from app.models import (
     ConnectionTestRequest,
@@ -28,6 +29,11 @@ from app.models import (
     VerificationSummary,
 )
 from app.secrets import SecretResolutionError, parse_secret_ref
+
+
+@pytest.fixture(autouse=True)
+def allow_unauthenticated_test_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("QUERY_ENGINE_ALLOW_UNAUTHENTICATED", "true")
 
 
 def test_health_endpoint() -> None:
@@ -83,10 +89,31 @@ def test_connection_test_request_rejects_coercion() -> None:
         ConnectionTestRequest.model_validate_json(json.dumps(payload))
 
 
+def test_shared_nullable_tls_fixture_matches_typescript_contract() -> None:
+    fixture_path = (
+        Path(__file__).parents[3]
+        / "packages"
+        / "contracts"
+        / "src"
+        / "fixtures"
+        / "connection-null-tls.json"
+    )
+    payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    parsed = ConnectionTestRequest.model_validate(
+        {"connection": payload, "timeout_ms": 30000}
+    )
+
+    assert parsed.connection.tls_server_name is None
+
+
 def test_connection_test_endpoint_uses_secret_resolver_and_driver(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeSecretResolver:
-        async def resolve_database_credentials(self, secret_ref: str) -> DatabaseCredentials:
+        async def resolve_database_credentials(
+            self, secret_ref: str, timeout_ms: int
+        ) -> DatabaseCredentials:
             assert secret_ref == "gcp-secret-manager://projects/demo/secrets/customer-db"
+            assert timeout_ms == 30000
             return DatabaseCredentials(password="secret")
 
     class FakeDriver(DatabaseDriver):
@@ -100,7 +127,7 @@ def test_connection_test_endpoint_uses_secret_resolver_and_driver(monkeypatch: p
         ) -> ConnectionTestResult:
             assert connection.username == "readonly_user"
             assert credentials.password == "secret"
-            assert timeout_ms == 30000
+            assert 29000 <= timeout_ms <= 30000
             return ConnectionTestResult(status="ok", message="MySQL connection verified.")
 
         async def introspect_schema(
@@ -182,11 +209,46 @@ def test_connection_test_endpoint_requires_token_when_configured(
     assert response.status_code == 401
 
 
+def test_connection_test_endpoint_fails_closed_without_auth_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("QUERY_ENGINE_API_TOKEN", raising=False)
+    monkeypatch.delenv("QUERY_ENGINE_ALLOW_UNAUTHENTICATED", raising=False)
+    client = TestClient(app)
+
+    response = client.post(
+        "/connections/test",
+        json={
+            "connection": {
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "connection_id": "33333333-3333-4333-8333-333333333333",
+                "name": "SQL Server demo",
+                "engine": "sqlserver",
+                "network_mode": "public_allowlist",
+                "host": "sql.example.com",
+                "port": 1433,
+                "database_name": "demo",
+                "username": "readonly_user",
+                "tls_required": True,
+                "trust_server_certificate": False,
+                "tls_server_name": None,
+                "secret_ref": "gcp-secret-manager://projects/demo/secrets/customer-db",
+                "status": "draft",
+            },
+            "timeout_ms": 30000,
+        },
+    )
+
+    assert response.status_code == 503
+
+
 def test_connection_test_endpoint_accepts_internal_token_header(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeSecretResolver:
-        async def resolve_database_credentials(self, secret_ref: str) -> DatabaseCredentials:
+        async def resolve_database_credentials(
+            self, secret_ref: str, timeout_ms: int
+        ) -> DatabaseCredentials:
             return DatabaseCredentials(password="secret")
 
     class FakeDriver(DatabaseDriver):
@@ -272,6 +334,36 @@ def test_sqlserver_proxy_derives_azure_login_server_name() -> None:
         **{**connection.__dict__, "username": "atlante_demo_ro@atlanteadmin"}
     )
     assert _login_username(already_qualified) == "atlante_demo_ro@atlanteadmin"
+
+
+def test_sqlserver_odbc_values_are_brace_escaped() -> None:
+    connection = ConnectionMetadata(
+        tenant_id="11111111-1111-4111-8111-111111111111",
+        connection_id="33333333-3333-4333-8333-333333333333",
+        name="Escaping test",
+        engine=Engine.sqlserver,
+        network_mode="public_allowlist",
+        host="sql.example.com",
+        port=1433,
+        database_name="demo;Encrypt=no",
+        username="readonly}user",
+        secret_ref="gcp-secret-manager://projects/demo/secrets/customer-db",
+        tls_required=True,
+        trust_server_certificate=False,
+        tls_server_name=None,
+    )
+
+    connection_string = ";".join(
+        _connection_string_parts(
+            connection,
+            DatabaseCredentials(password="secret};UID=attacker"),
+            30,
+        )
+    )
+
+    assert "Database={demo;Encrypt=no}" in connection_string
+    assert "UID={readonly}}user}" in connection_string
+    assert "PWD={secret}};UID=attacker}" in connection_string
 
 
 def test_relationship_confidence_is_not_numeric() -> None:

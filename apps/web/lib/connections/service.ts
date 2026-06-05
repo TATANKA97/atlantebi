@@ -10,9 +10,8 @@ import { GoogleAuth } from "google-auth-library";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
-import type { createSupabaseServerClient } from "../supabase/server";
+import { createSupabaseAdminClient } from "../supabase/admin";
 
-type SupabaseClient = Awaited<ReturnType<typeof createSupabaseServerClient>>;
 type ConnectionTestStatus = "ok" | "failed" | "engine_error";
 
 const BooleanInputSchema = z
@@ -62,11 +61,9 @@ const secretClient = new SecretManagerServiceClient();
 
 export async function createAndTestConnection({
   input,
-  supabase,
   userId
 }: {
   input: ConnectionInput;
-  supabase: NonNullable<SupabaseClient>;
   userId: string;
 }): Promise<CreateConnectionResult> {
   const connectionId = randomUUID();
@@ -95,38 +92,42 @@ export async function createAndTestConnection({
     const test = await runConnectionTest(connection, input.timeout_ms);
     const savedSecretRef = test.status === "ok" ? secretRef : null;
 
-    if (test.status !== "ok") {
-      await deleteSecretIfPresent(secretId);
-    }
-
-    const { error } = await supabase.from("db_connections").insert({
-      id: connectionId,
-      tenant_id: input.tenant_id,
-      name: input.name,
-      engine: input.engine,
-      network_mode: input.network_mode,
-      host: input.host,
-      port: input.port,
-      database_name: input.database_name,
-      username: input.username,
-      tls_required: input.tls_required,
-      tls_server_name: input.tls_server_name ?? null,
-      trust_server_certificate: input.trust_server_certificate,
-      secret_ref: savedSecretRef,
-      status: test.status === "ok" ? "ready" : "failed",
-      last_test_status: test.status,
-      last_test_error: test.status === "ok" ? null : sanitizeTestError(test),
-      last_tested_at: test.checked_at,
-      created_by: userId
-    });
+    const { error } = await createSupabaseAdminClient().rpc(
+      "save_connection_test_result",
+      {
+        actor_user_id: userId,
+        connection_payload: connectionPersistencePayload({
+          connectionId,
+          expectedSecretRef: null,
+          input,
+          secretRef: savedSecretRef,
+          test
+        })
+      }
+    );
 
     if (error) {
+      const persisted = await readExistingConnection(input.tenant_id, connectionId);
+      if (
+        persisted &&
+        connectionMatchesInput(persisted, input) &&
+        persisted.secret_ref === savedSecretRef
+      ) {
+        if (test.status !== "ok") {
+          await deleteSecretIfPresent(secretId);
+        }
+        return { ok: true, connectionId, testStatus: test.status };
+      }
       await deleteSecretIfPresent(secretId);
       return {
         ok: false,
         code: "connection_save_failed",
         message: "Connection metadata could not be saved."
       };
+    }
+
+    if (test.status !== "ok") {
+      await deleteSecretIfPresent(secretId);
     }
 
     return { ok: true, connectionId, testStatus: test.status };
@@ -138,6 +139,162 @@ export async function createAndTestConnection({
       message: "Connection could not be created."
     };
   }
+}
+
+type ExistingConnection = {
+  id: string;
+  tenant_id: string;
+  name: string;
+  engine: "sqlserver";
+  network_mode: "public_allowlist";
+  host: string;
+  port: number;
+  database_name: string;
+  username: string;
+  tls_required: boolean;
+  trust_server_certificate: boolean;
+  tls_server_name: string | null;
+  secret_ref: string | null;
+};
+
+async function readExistingConnection(
+  tenantId: string,
+  connectionId: string
+) {
+  const { data, error } = await createSupabaseAdminClient()
+    .from("db_connections")
+    .select(
+      "id,tenant_id,name,engine,network_mode,host,port,database_name,username,tls_required,trust_server_certificate,tls_server_name,secret_ref"
+    )
+    .eq("tenant_id", tenantId)
+    .eq("id", connectionId)
+    .single();
+
+  if (error || !data) {
+    return null;
+  }
+
+  return data as ExistingConnection;
+}
+
+function connectionPersistencePayload({
+  connectionId,
+  expectedSecretRef,
+  input,
+  secretRef,
+  test
+}: {
+  connectionId: string;
+  expectedSecretRef: string | null;
+  input: ConnectionInput | ConnectionUpdateInput;
+  secretRef: string | null;
+  test: Awaited<ReturnType<typeof runConnectionTest>>;
+}) {
+  return {
+    id: connectionId,
+    tenant_id: input.tenant_id,
+    name: input.name,
+    engine: input.engine,
+    network_mode: input.network_mode,
+    host: input.host,
+    port: input.port,
+    database_name: input.database_name,
+    username: input.username,
+    tls_required: input.tls_required,
+    tls_server_name: input.tls_server_name ?? null,
+    trust_server_certificate: input.trust_server_certificate,
+    expected_secret_ref: expectedSecretRef,
+    secret_ref: secretRef,
+    status: test.status === "ok" ? "ready" : "failed",
+    last_test_status: test.status,
+    last_test_error: test.status === "ok" ? null : sanitizeTestError(test),
+    last_tested_at: test.checked_at
+  };
+}
+
+export function connectionIdentityChanged(
+  existing: ExistingConnection,
+  input: ConnectionUpdateInput
+) {
+  return (
+    existing.host !== input.host ||
+    existing.port !== input.port ||
+    existing.database_name !== input.database_name ||
+    existing.username !== input.username ||
+    existing.tls_server_name !== (input.tls_server_name ?? null)
+  );
+}
+
+function connectionMatchesInput(
+  existing: ExistingConnection,
+  input: ConnectionInput | ConnectionUpdateInput
+) {
+  return (
+    existing.name === input.name &&
+    existing.engine === input.engine &&
+    existing.network_mode === input.network_mode &&
+    existing.host === input.host &&
+    existing.port === input.port &&
+    existing.database_name === input.database_name &&
+    existing.username === input.username &&
+    existing.tls_required === input.tls_required &&
+    existing.trust_server_certificate === input.trust_server_certificate &&
+    existing.tls_server_name === (input.tls_server_name ?? null)
+  );
+}
+
+export function secretRefAfterTest({
+  existingSecretRef,
+  candidateSecretRef,
+  identityChanged,
+  testStatus
+}: {
+  existingSecretRef: string | null;
+  candidateSecretRef: string;
+  identityChanged: boolean;
+  testStatus: ConnectionTestStatus;
+}) {
+  if (testStatus === "ok") {
+    return candidateSecretRef;
+  }
+  return identityChanged ? null : existingSecretRef;
+}
+
+export function shouldDeletePreviousSecret({
+  identityChanged,
+  passwordProvided,
+  testStatus
+}: {
+  identityChanged: boolean;
+  passwordProvided: boolean;
+  testStatus: ConnectionTestStatus;
+}) {
+  return identityChanged || (passwordProvided && testStatus === "ok");
+}
+
+async function persistUpdatedConnection({
+  input,
+  userId,
+  expectedSecretRef,
+  secretRef,
+  test
+}: {
+  input: ConnectionUpdateInput;
+  userId: string;
+  expectedSecretRef: string | null;
+  secretRef: string | null;
+  test: Awaited<ReturnType<typeof runConnectionTest>>;
+}) {
+  return createSupabaseAdminClient().rpc("save_connection_test_result", {
+    actor_user_id: userId,
+    connection_payload: connectionPersistencePayload({
+      connectionId: input.connection_id,
+      expectedSecretRef,
+      input,
+      secretRef,
+      test
+    })
+  });
 }
 
 export const ConnectionUpdateInputSchema = ConnectionInputSchema.extend({
@@ -157,27 +314,21 @@ export type ConnectionUpdateInput = z.infer<typeof ConnectionUpdateInputSchema>;
 
 export async function updateAndTestConnection({
   input,
-  supabase
+  userId
 }: {
   input: ConnectionUpdateInput;
-  supabase: NonNullable<SupabaseClient>;
+  userId: string;
 }): Promise<CreateConnectionResult> {
-  const secretId = `atlantebi-${input.tenant_id}-${input.connection_id}-db-password`;
-  const secretRef = gcpSecretRef(secretId);
-  const testSecretId = input.password
-    ? `atlantebi-${input.tenant_id}-${input.connection_id}-${randomUUID()}-db-password-test`
-    : secretId;
-  const testSecretRef = gcpSecretRef(testSecretId);
+  const stagedSecretId = input.password
+    ? `atlantebi-${input.tenant_id}-${input.connection_id}-${randomUUID()}-db-password`
+    : null;
 
   try {
-    const { data: existing, error: existingError } = await supabase
-      .from("db_connection_summaries")
-      .select("id,status")
-      .eq("tenant_id", input.tenant_id)
-      .eq("id", input.connection_id)
-      .single();
-
-    if (existingError || !existing) {
+    const existing = await readExistingConnection(
+      input.tenant_id,
+      input.connection_id
+    );
+    if (!existing) {
       return {
         ok: false,
         code: "connection_not_found",
@@ -185,10 +336,53 @@ export async function updateAndTestConnection({
       };
     }
 
-    if (input.password) {
-      await setDatabasePasswordSecret(testSecretId, input.password);
+    const identityChanged = connectionIdentityChanged(existing, input);
+    if (!input.password && (identityChanged || !existing.secret_ref)) {
+      const passwordRequiredTest = {
+        status: "engine_error" as const,
+        message: "A new password is required before this connection can be ready.",
+        checked_at: new Date().toISOString(),
+        duration_ms: 0,
+        sanitized_error:
+          "A new password is required before this connection can be ready."
+      };
+      const { error } = await persistUpdatedConnection({
+        input,
+        userId,
+        expectedSecretRef: existing.secret_ref,
+        secretRef: null,
+        test: passwordRequiredTest
+      });
+      if (error) {
+        return {
+          ok: false,
+          code: "connection_save_failed",
+          message: "Connection metadata could not be saved."
+        };
+      }
+      if (identityChanged) {
+        await deleteSecretRefIfPresent(existing.secret_ref);
+      }
+      return {
+        ok: true,
+        connectionId: input.connection_id,
+        testStatus: "engine_error"
+      };
     }
 
+    if (input.password && stagedSecretId) {
+      await setDatabasePasswordSecret(stagedSecretId, input.password);
+    }
+    const candidateSecretRef = stagedSecretId
+      ? gcpSecretRef(stagedSecretId)
+      : existing.secret_ref;
+    if (!candidateSecretRef) {
+      return {
+        ok: false,
+        code: "connection_password_required",
+        message: "A password is required to test this connection."
+      };
+    }
     const connection = ConnectionMetadataSchema.parse({
       tenant_id: input.tenant_id,
       connection_id: input.connection_id,
@@ -202,41 +396,54 @@ export async function updateAndTestConnection({
       tls_required: input.tls_required,
       trust_server_certificate: input.trust_server_certificate,
       tls_server_name: input.tls_server_name ?? null,
-      secret_ref: testSecretRef,
+      secret_ref: candidateSecretRef,
       status: "draft"
     });
     const test = await runConnectionTest(connection, input.timeout_ms);
-    const updatePayload: Record<string, unknown> = {
-      name: input.name,
-      engine: input.engine,
-      network_mode: input.network_mode,
-      host: input.host,
-      port: input.port,
-      database_name: input.database_name,
-      username: input.username,
-      tls_required: input.tls_required,
-      tls_server_name: input.tls_server_name ?? null,
-      trust_server_certificate: input.trust_server_certificate,
-      status: test.status === "ok" ? "ready" : "failed",
-      last_test_status: test.status,
-      last_test_error: test.status === "ok" ? null : sanitizeTestError(test),
-      last_tested_at: test.checked_at
-    };
-
-    if (test.status === "ok") {
-      if (input.password) {
-        await setDatabasePasswordSecret(secretId, input.password);
-      }
-      updatePayload.secret_ref = secretRef;
-    }
-
-    const { error } = await supabase
-      .from("db_connections")
-      .update(updatePayload)
-      .eq("tenant_id", input.tenant_id)
-      .eq("id", input.connection_id);
+    const persistedSecretRef = secretRefAfterTest({
+      existingSecretRef: existing.secret_ref,
+      candidateSecretRef,
+      identityChanged,
+      testStatus: test.status
+    });
+    const deletePreviousSecret = shouldDeletePreviousSecret({
+      identityChanged,
+      passwordProvided: Boolean(input.password),
+      testStatus: test.status
+    });
+    const { error } = await persistUpdatedConnection({
+      input,
+      userId,
+      expectedSecretRef: existing.secret_ref,
+      secretRef: persistedSecretRef,
+      test
+    });
 
     if (error) {
+      const persisted = await readExistingConnection(
+        input.tenant_id,
+        input.connection_id
+      );
+      if (
+        persisted &&
+        connectionMatchesInput(persisted, input) &&
+        persisted.secret_ref === persistedSecretRef
+      ) {
+        if (deletePreviousSecret) {
+          await deleteSecretRefIfPresent(existing.secret_ref);
+        }
+        if (test.status !== "ok" && stagedSecretId) {
+          await deleteSecretIfPresent(stagedSecretId);
+        }
+        return {
+          ok: true,
+          connectionId: input.connection_id,
+          testStatus: test.status
+        };
+      }
+      if (stagedSecretId) {
+        await deleteSecretIfPresent(stagedSecretId);
+      }
       return {
         ok: false,
         code: "connection_save_failed",
@@ -244,17 +451,23 @@ export async function updateAndTestConnection({
       };
     }
 
+    if (deletePreviousSecret) {
+      await deleteSecretRefIfPresent(existing.secret_ref);
+    }
+    if (test.status !== "ok" && stagedSecretId) {
+      await deleteSecretIfPresent(stagedSecretId);
+    }
+
     return { ok: true, connectionId: input.connection_id, testStatus: test.status };
   } catch {
+    if (stagedSecretId) {
+      await deleteSecretIfPresent(stagedSecretId);
+    }
     return {
       ok: false,
       code: "connection_update_failed",
       message: "Connection could not be updated."
     };
-  } finally {
-    if (input.password) {
-      await deleteSecretIfPresent(testSecretId);
-    }
   }
 }
 
@@ -351,6 +564,18 @@ async function deleteSecretIfPresent(secretId: string) {
     });
   } catch {
     // Cleanup is best effort: failed connection metadata is not saved.
+  }
+}
+
+async function deleteSecretRefIfPresent(secretRef: string | null) {
+  if (!secretRef) {
+    return;
+  }
+  const match = /^gcp-secret-manager:\/\/projects\/[^/]+\/secrets\/([^/]+)/.exec(
+    secretRef
+  );
+  if (match?.[1]) {
+    await deleteSecretIfPresent(match[1]);
   }
 }
 

@@ -53,6 +53,7 @@ class SchemaIntrospectionResult:
     database_name: str
     engine_version: str
     schema_hash: str
+    coverage_state: Literal["complete", "partial", "unknown"]
     tables: list["SchemaTableMetadata"]
     foreign_keys: list["SchemaForeignKeyMetadata"]
     unique_constraints: list["SchemaUniqueConstraintMetadata"] = field(default_factory=list)

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import connectionNullTls from "./fixtures/connection-null-tls.json";
 import {
   ChartSpecSchema,
   ConnectionMetadataSchema,
@@ -53,6 +54,10 @@ describe("contracts", () => {
         password: "must-not-be-here"
       })
     ).toThrow();
+  });
+
+  it("accepts the shared nullable TLS fixture", () => {
+    expect(ConnectionMetadataSchema.parse(connectionNullTls).tls_server_name).toBeNull();
   });
 
   it("keeps database secret payload minimal and strict", () => {
@@ -122,6 +127,7 @@ describe("contracts", () => {
       database_name: "AdventureWorksLT",
       engine_version: "12.0.2000.8",
       schema_hash: "a".repeat(64),
+      coverage_state: "partial",
       tables: [
         {
           schema: "SalesLT",

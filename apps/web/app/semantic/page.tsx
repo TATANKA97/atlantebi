@@ -55,6 +55,7 @@ type SnapshotSummaryRow = {
   id: string;
   engine_version: string | null;
   schema_hash: string | null;
+  coverage_state: "complete" | "partial" | "unknown" | null;
   coverage_warnings: SnapshotCoverageWarning[];
 };
 
@@ -70,6 +71,7 @@ const MESSAGE_COPY: Record<string, string> = {
   invalid_introspection: "Richiesta introspection non valida.",
   schema_forbidden: "Il tuo ruolo non consente di importare lo schema.",
   schema_snapshot_save_failed: "Snapshot schema non salvato.",
+  schema_import_save_failed: "Import schema non salvato.",
   semantic_columns_save_failed: "Colonne semantiche non salvate.",
   semantic_relationships_save_failed: "Relazioni semantiche non salvate.",
   semantic_tables_save_failed: "Tabelle semantiche non salvate.",
@@ -248,7 +250,7 @@ export default async function SemanticPage({
 
             {semanticData.snapshot ? (
               <div className="mt-4 grid gap-3 border border-[color:var(--border)] p-4 text-sm">
-                <div className="grid gap-2 sm:grid-cols-2">
+                <div className="grid gap-2 sm:grid-cols-3">
                   <p>
                     <span className="text-[color:var(--muted)]">Engine version:</span>{" "}
                     {semanticData.snapshot.engine_version ?? "non disponibile"}
@@ -256,6 +258,10 @@ export default async function SemanticPage({
                   <p className="break-all">
                     <span className="text-[color:var(--muted)]">Schema hash:</span>{" "}
                     {semanticData.snapshot.schema_hash ?? "non disponibile"}
+                  </p>
+                  <p>
+                    <span className="text-[color:var(--muted)]">Coverage:</span>{" "}
+                    {semanticData.snapshot.coverage_state ?? "unknown"}
                   </p>
                 </div>
                 {semanticData.snapshot.coverage_warnings.length > 0 ? (
@@ -488,7 +494,7 @@ async function readSnapshotSummary({
 
   const { data } = await supabase
     .from("schema_snapshot_summaries")
-    .select("id,engine_version,schema_hash,coverage_warnings")
+    .select("id,engine_version,schema_hash,coverage_state,coverage_warnings")
     .eq("tenant_id", tenantId)
     .eq("id", resolvedSnapshotId)
     .single();

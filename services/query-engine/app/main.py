@@ -43,7 +43,14 @@ def require_internal_auth(
     expected_token = os.getenv("QUERY_ENGINE_API_TOKEN")
 
     if not expected_token:
-        return
+        if os.getenv("QUERY_ENGINE_AUTH_MODE") == "cloud_run_iam":
+            return
+        if os.getenv("QUERY_ENGINE_ALLOW_UNAUTHENTICATED") == "true":
+            return
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Query-engine authentication is not configured.",
+        )
 
     expected_header = f"Bearer {expected_token}"
     authorization_valid = authorization is not None and secrets.compare_digest(
@@ -79,13 +86,14 @@ async def test_connection(
 
     try:
         credentials = await app.state.secret_resolver.resolve_database_credentials(
-            connection.secret_ref
+            connection.secret_ref,
+            timeout_ms=request.timeout_ms,
         )
         driver = get_driver(connection.engine)
         result = await driver.test_connection(
             connection=connection,
             credentials=credentials,
-            timeout_ms=request.timeout_ms,
+            timeout_ms=_remaining_timeout_ms(started, request.timeout_ms),
         )
         duration_ms = int((perf_counter() - started) * 1000)
         response = {
@@ -126,13 +134,14 @@ async def introspect_schema(
 
     try:
         credentials = await app.state.secret_resolver.resolve_database_credentials(
-            connection.secret_ref
+            connection.secret_ref,
+            timeout_ms=request.timeout_ms,
         )
         driver = get_driver(connection.engine)
         result = await driver.introspect_schema(
             connection=connection,
             credentials=credentials,
-            timeout_ms=request.timeout_ms,
+            timeout_ms=_remaining_timeout_ms(started, request.timeout_ms),
         )
         return SchemaIntrospectionResponse(
             status="ok",
@@ -143,6 +152,7 @@ async def introspect_schema(
             database_name=result.database_name,
             engine_version=result.engine_version,
             schema_hash=result.schema_hash,
+            coverage_state=result.coverage_state,
             tables=[asdict(table) for table in result.tables],
             foreign_keys=[asdict(foreign_key) for foreign_key in result.foreign_keys],
             unique_constraints=[
@@ -200,6 +210,13 @@ def _connection_test_error(
         duration_ms=int((perf_counter() - started) * 1000),
         sanitized_error=message,
     )
+
+
+def _remaining_timeout_ms(started: float, timeout_ms: int) -> int:
+    remaining = timeout_ms - int((perf_counter() - started) * 1000)
+    if remaining < 1000:
+        raise SecretResolutionError("Operation deadline exceeded.")
+    return remaining
 
 
 def _schema_introspection_error(

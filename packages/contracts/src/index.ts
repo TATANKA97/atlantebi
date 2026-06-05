@@ -69,6 +69,12 @@ export const SchemaIntrospectionStatusSchema = z.enum(
 export type SchemaIntrospectionStatus = z.infer<
   typeof SchemaIntrospectionStatusSchema
 >;
+export const SchemaCoverageStateSchema = z.enum([
+  "complete",
+  "partial",
+  "unknown"
+]);
+export type SchemaCoverageState = z.infer<typeof SchemaCoverageStateSchema>;
 
 export const SchemaColumnMetadataSchema = z.strictObject({
   name: z.string().min(1).max(255),
@@ -260,6 +266,7 @@ export const SchemaIntrospectionResponseSchema = z.strictObject({
   database_name: z.string().min(1).max(255).optional(),
   engine_version: z.string().min(1).max(500).optional(),
   schema_hash: z.string().length(64).optional(),
+  coverage_state: SchemaCoverageStateSchema.optional(),
   tables: z.array(SchemaTableMetadataSchema).default([]),
   foreign_keys: z.array(SchemaForeignKeyMetadataSchema).default([]),
   unique_constraints: z.array(SchemaUniqueConstraintMetadataSchema).default([]),

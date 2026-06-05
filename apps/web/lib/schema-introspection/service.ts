@@ -40,24 +40,14 @@ type ConnectionSecretRow = {
   status: "draft" | "ready" | "failed" | "disabled";
 };
 
-type SemanticTableInsert = {
-  tenant_id: string;
-  semantic_version_id: string;
+type SemanticTableProjection = {
   physical_schema: string;
   physical_name: string;
-  active: boolean;
   metadata: Record<string, string | number | boolean>;
+  columns: SemanticColumnProjection[];
 };
 
-type SemanticTableRow = {
-  id: string;
-  physical_schema: string;
-  physical_name: string;
-};
-
-type SemanticColumnInsert = {
-  tenant_id: string;
-  semantic_table_id: string;
+type SemanticColumnProjection = {
   physical_name: string;
   data_type: string;
   role: "dimension" | "measure" | "date" | "identifier" | "unknown";
@@ -65,23 +55,20 @@ type SemanticColumnInsert = {
   metadata: Record<string, string | number | boolean>;
 };
 
-type SemanticRelationshipInsert = {
-  tenant_id: string;
-  semantic_version_id: string;
-  from_table_id: string;
+type SemanticRelationshipProjection = {
+  from_schema: string;
+  from_table: string;
   from_columns: string[];
-  to_table_id: string;
+  to_schema: string;
+  to_table: string;
   to_columns: string[];
-  cardinality: "many_to_one";
-  semantic_status: "confirmed";
-  source: "database_fk";
+  cardinality: "one_to_one" | "many_to_one";
   constraint_name: string;
   update_rule: string;
   delete_rule: string;
   is_disabled: boolean;
   is_not_trusted: boolean;
   verified_by_db: boolean;
-  metadata: Record<string, string | number | boolean>;
 };
 
 export async function introspectConnection({
@@ -233,331 +220,51 @@ async function persistSchemaIntrospection({
   context: ActiveTenantContext;
   schema: SchemaIntrospectionResponse;
 }): Promise<IntrospectionResult> {
-  const { supabase, tenantId, userId } = context;
+  const tableProjection = buildSemanticTableProjection(schema);
+  const relationshipProjection = buildRelationshipProjection(schema);
+  const admin = createSupabaseAdminClient();
+  const { data, error } = await admin.rpc("persist_technical_schema_import", {
+    actor_user_id: context.userId,
+    relationship_projection: relationshipProjection,
+    semantic_table_projection: tableProjection,
+    target_column_count: countColumns(schema),
+    target_connection_id: connection.id,
+    target_engine: schema.engine ?? connection.engine,
+    target_introspected_at: schema.introspected_at,
+    target_table_count: schema.tables.length,
+    target_tenant_id: context.tenantId,
+    technical_snapshot: schema
+  });
 
-  const { data: snapshot, error: snapshotError } = await supabase
-    .from("schema_snapshots")
-    .insert({
-      tenant_id: tenantId,
-      connection_id: connection.id,
-      engine: schema.engine ?? connection.engine,
-      snapshot: schema,
-      snapshot_version: 1,
-      table_count: schema.tables.length,
-      column_count: countColumns(schema),
-      introspected_at: schema.introspected_at,
-      created_by: userId
-    })
-    .select("id")
-    .single();
-
-  if (snapshotError || !snapshot) {
+  const result = Array.isArray(data) ? data[0] : data;
+  if (error || !result) {
     return {
       ok: false,
-      code: "schema_snapshot_save_failed",
-      message: "Snapshot schema non salvato."
+      code: "schema_import_save_failed",
+      message: "Import schema non salvato."
     };
   }
 
-  const version = await nextSemanticVersion({
-    connectionId: connection.id,
-    context
-  });
-
-  const { data: semanticVersion, error: versionError } = await supabase
-    .from("semantic_versions")
-    .insert({
-      tenant_id: tenantId,
-      connection_id: connection.id,
-      schema_snapshot_id: (snapshot as { id: string }).id,
-      version,
-      status: "draft",
-      created_by: userId
-    })
-    .select("id")
-    .single();
-
-  if (versionError || !semanticVersion) {
-    return {
-      ok: false,
-      code: "semantic_version_save_failed",
-      message: "Versione semantica non salvata."
-    };
-  }
-
-  const semanticVersionId = (semanticVersion as { id: string }).id;
-  const tableRows = await insertSemanticTables({
-    context,
-    schema,
-    semanticVersionId
-  });
-
-  if (!tableRows.ok) {
-    return tableRows;
-  }
-
-  const columnsResult = await insertSemanticColumns({
-    context,
-    schema,
-    tableRows: tableRows.tables
-  });
-
-  if (!columnsResult.ok) {
-    return columnsResult;
-  }
-
-  const relationshipsResult = await insertSemanticRelationships({
-    context,
-    relationships: schema.foreign_keys,
-    semanticVersionId,
-    tableRows: tableRows.tables
-  });
-
-  if (!relationshipsResult.ok) {
-    return relationshipsResult;
-  }
-
-  await supabase.from("audit_logs").insert({
-    tenant_id: tenantId,
-    actor_user_id: userId,
-    action: "schema.introspected",
-    subject_type: "db_connection",
-    subject_id: connection.id,
-    metadata: {
-      schema_snapshot_id: (snapshot as { id: string }).id,
-      semantic_version_id: semanticVersionId,
-      schema_hash: schema.schema_hash,
-      engine_version: schema.engine_version,
-      table_count: schema.tables.length,
-      column_count: countColumns(schema)
-    }
-  });
-
+  const persisted = result as {
+    schema_snapshot_id: string;
+    semantic_version_id: string;
+  };
   return {
     ok: true,
-    schemaSnapshotId: (snapshot as { id: string }).id,
-    semanticVersionId,
+    schemaSnapshotId: persisted.schema_snapshot_id,
+    semanticVersionId: persisted.semantic_version_id,
     tableCount: schema.tables.length,
     columnCount: countColumns(schema)
   };
 }
 
-async function nextSemanticVersion({
-  connectionId,
-  context
-}: {
-  connectionId: string;
-  context: ActiveTenantContext;
-}) {
-  const { data } = await context.supabase
-    .from("semantic_versions")
-    .select("version")
-    .eq("tenant_id", context.tenantId)
-    .eq("connection_id", connectionId)
-    .order("version", { ascending: false })
-    .limit(1);
-
-  const latest = (data?.[0] as { version: number } | undefined)?.version ?? 0;
-  return latest + 1;
-}
-
-async function insertSemanticTables({
-  context,
-  schema,
-  semanticVersionId
-}: {
-  context: ActiveTenantContext;
-  schema: SchemaIntrospectionResponse;
-  semanticVersionId: string;
-}): Promise<
-  | { ok: true; tables: SemanticTableRow[] }
-  | { ok: false; code: string; message: string }
-> {
-  const rows: SemanticTableInsert[] = schema.tables.map((table) => {
-    const metadata: SemanticTableInsert["metadata"] = {
-      table_type: table.table_type,
-      column_count: table.columns.length,
-      primary_key_count: table.primary_key?.columns.length ?? 0,
-      has_definition_hash: table.definition_hash !== undefined
-    };
-    if (table.row_count_estimate !== undefined) {
-      metadata.row_count_estimate = table.row_count_estimate;
-    }
-    if (table.view_definition_available !== undefined) {
-      metadata.view_definition_available = table.view_definition_available;
-    }
-    if (table.lineage_available !== undefined) {
-      metadata.lineage_available = table.lineage_available;
-    }
-    if (table.table_type === "view") {
-      metadata.view_lineage_count = table.view_lineage.length;
-    }
-
-    return {
-      tenant_id: context.tenantId,
-      semantic_version_id: semanticVersionId,
-      physical_schema: table.schema,
-      physical_name: table.name,
-      active: false,
-      metadata
-    };
-  });
-
-  if (rows.length === 0) {
-    return { ok: true, tables: [] };
-  }
-
-  const { data, error } = await context.supabase
-    .from("semantic_tables")
-    .insert(rows)
-    .select("id,physical_schema,physical_name");
-
-  if (error || !data) {
-    return {
-      ok: false,
-      code: "semantic_tables_save_failed",
-      message: "Tabelle semantiche non salvate."
-    };
-  }
-
-  return { ok: true, tables: data as SemanticTableRow[] };
-}
-
-async function insertSemanticColumns({
-  context,
-  schema,
-  tableRows
-}: {
-  context: ActiveTenantContext;
-  schema: SchemaIntrospectionResponse;
-  tableRows: SemanticTableRow[];
-}): Promise<{ ok: true } | { ok: false; code: string; message: string }> {
-  const tableIds = new Map(
-    tableRows.map((table) => [
-      physicalTableKey(table.physical_schema, table.physical_name),
-      table.id
-    ])
-  );
-  const rows = schema.tables.flatMap((table) =>
-    table.columns.map((column) => {
-      const tableId = tableIds.get(physicalTableKey(table.schema, table.name));
-      if (!tableId) {
-        throw new Error("Semantic table id missing.");
-      }
-      const primaryKeyColumns = new Set(
-        (table.primary_key?.columns ?? []).map((name) => name.toLowerCase())
-      );
-
-      return toSemanticColumnInsert({
-        column,
-        primaryKeyColumns,
-        tableId,
-        tenantId: context.tenantId
-      });
-    })
-  );
-
-  if (rows.length === 0) {
-    return { ok: true };
-  }
-
-  const { error } = await context.supabase.from("semantic_columns").insert(rows);
-
-  if (error) {
-    return {
-      ok: false,
-      code: "semantic_columns_save_failed",
-      message: "Colonne semantiche non salvate."
-    };
-  }
-
-  return { ok: true };
-}
-
-async function insertSemanticRelationships({
-  context,
-  relationships,
-  semanticVersionId,
-  tableRows
-}: {
-  context: ActiveTenantContext;
-  relationships: SchemaIntrospectionResponse["foreign_keys"];
-  semanticVersionId: string;
-  tableRows: SemanticTableRow[];
-}): Promise<{ ok: true } | { ok: false; code: string; message: string }> {
-  const tableIds = new Map(
-    tableRows.map((table) => [
-      physicalTableKey(table.physical_schema, table.physical_name),
-      table.id
-    ])
-  );
-  const rows: SemanticRelationshipInsert[] = [];
-
-  for (const relationship of relationships) {
-    const fromTableId = tableIds.get(
-      physicalTableKey(relationship.from_schema, relationship.from_table)
-    );
-    const toTableId = tableIds.get(
-      physicalTableKey(relationship.to_schema, relationship.to_table)
-    );
-
-    if (!fromTableId || !toTableId) {
-      continue;
-    }
-
-    rows.push({
-      tenant_id: context.tenantId,
-      semantic_version_id: semanticVersionId,
-      from_table_id: fromTableId,
-      from_columns: relationship.from_columns,
-      to_table_id: toTableId,
-      to_columns: relationship.to_columns,
-      cardinality: "many_to_one",
-      semantic_status: "confirmed",
-      source: "database_fk",
-      constraint_name: relationship.name,
-      update_rule: relationship.on_update,
-      delete_rule: relationship.on_delete,
-      is_disabled: relationship.is_disabled,
-      is_not_trusted: relationship.is_not_trusted,
-      verified_by_db: relationship.verified_by_db,
-      metadata: {
-        snapshot_source: relationship.source,
-        source_mapping: "db_fk->database_fk"
-      }
-    });
-  }
-
-  if (rows.length === 0) {
-    return { ok: true };
-  }
-
-  const { error } = await context.supabase
-    .from("semantic_relationships")
-    .insert(rows);
-
-  if (error) {
-    return {
-      ok: false,
-      code: "semantic_relationships_save_failed",
-      message: "Relazioni semantiche non salvate."
-    };
-  }
-
-  return { ok: true };
-}
-
-function toSemanticColumnInsert({
+function toSemanticColumnProjection({
   column,
-  primaryKeyColumns,
-  tableId,
-  tenantId
+  primaryKeyColumns
 }: {
   column: SchemaColumnMetadata;
   primaryKeyColumns: Set<string>;
-  tableId: string;
-  tenantId: string;
-}): SemanticColumnInsert {
+}): SemanticColumnProjection {
   const metadata: Record<string, string | number | boolean> = {
     ordinal_position: column.ordinal_position,
     is_nullable: column.is_nullable,
@@ -630,8 +337,6 @@ function toSemanticColumnInsert({
   }
 
   return {
-    tenant_id: tenantId,
-    semantic_table_id: tableId,
     physical_name: column.name,
     data_type: column.data_type,
     role:
@@ -641,6 +346,94 @@ function toSemanticColumnInsert({
     pii: sensitivity.kind !== "none",
     metadata
   };
+}
+
+function buildSemanticTableProjection(
+  schema: SchemaIntrospectionResponse
+): SemanticTableProjection[] {
+  return schema.tables.map((table) => {
+    const metadata: SemanticTableProjection["metadata"] = {
+      table_type: table.table_type,
+      column_count: table.columns.length,
+      primary_key_count: table.primary_key?.columns.length ?? 0,
+      has_definition_hash: table.definition_hash !== undefined
+    };
+    if (table.row_count_estimate !== undefined) {
+      metadata.row_count_estimate = table.row_count_estimate;
+    }
+    if (table.view_definition_available !== undefined) {
+      metadata.view_definition_available = table.view_definition_available;
+    }
+    if (table.lineage_available !== undefined) {
+      metadata.lineage_available = table.lineage_available;
+    }
+    if (table.table_type === "view") {
+      metadata.view_lineage_count = table.view_lineage.length;
+    }
+
+    const primaryKeyColumns = new Set(
+      (table.primary_key?.columns ?? []).map((name) => name.toLowerCase())
+    );
+    return {
+      physical_schema: table.schema,
+      physical_name: table.name,
+      metadata,
+      columns: table.columns.map((column) =>
+        toSemanticColumnProjection({ column, primaryKeyColumns })
+      )
+    };
+  });
+}
+
+function buildRelationshipProjection(
+  schema: SchemaIntrospectionResponse
+): SemanticRelationshipProjection[] {
+  return schema.foreign_keys.map((relationship) => ({
+    from_schema: relationship.from_schema,
+    from_table: relationship.from_table,
+    from_columns: relationship.from_columns,
+    to_schema: relationship.to_schema,
+    to_table: relationship.to_table,
+    to_columns: relationship.to_columns,
+    cardinality: isUniqueSourceColumns(schema, relationship)
+      ? "one_to_one"
+      : "many_to_one",
+    constraint_name: relationship.name,
+    update_rule: relationship.on_update,
+    delete_rule: relationship.on_delete,
+    is_disabled: relationship.is_disabled,
+    is_not_trusted: relationship.is_not_trusted,
+    verified_by_db: relationship.verified_by_db
+  }));
+}
+
+function isUniqueSourceColumns(
+  schema: SchemaIntrospectionResponse,
+  relationship: SchemaIntrospectionResponse["foreign_keys"][number]
+) {
+  const expected = normalizedColumnSet(relationship.from_columns);
+  const uniqueConstraintMatch = schema.unique_constraints.some(
+    (constraint) =>
+      physicalTableKey(constraint.schema_name, constraint.table_name) ===
+        physicalTableKey(relationship.from_schema, relationship.from_table) &&
+      normalizedColumnSet(constraint.columns) === expected
+  );
+  if (uniqueConstraintMatch) {
+    return true;
+  }
+
+  return schema.indexes.some(
+    (index) =>
+      index.is_unique &&
+      physicalTableKey(index.schema_name, index.table_name) ===
+        physicalTableKey(relationship.from_schema, relationship.from_table) &&
+      normalizedColumnSet(index.key_columns.map((column) => column.name)) ===
+        expected
+  );
+}
+
+function normalizedColumnSet(columns: string[]) {
+  return columns.map((column) => column.toLowerCase()).sort().join("\u0000");
 }
 
 export type ColumnSensitivity =
@@ -715,7 +508,7 @@ function columnNameTokens(columnName: string) {
 function inferColumnRole(
   column: SchemaColumnMetadata,
   primaryKeyColumns: Set<string>
-): SemanticColumnInsert["role"] {
+): SemanticColumnProjection["role"] {
   const name = column.name.toLowerCase();
   const dataType = column.data_type.toLowerCase();
 

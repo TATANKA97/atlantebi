@@ -54,7 +54,6 @@ export async function POST(request: Request) {
 
   const result = await createAndTestConnection({
     input: { ...parsed.data, tenant_id: tenant.context.tenantId },
-    supabase: tenant.context.supabase,
     userId: tenant.context.userId
   });
 
