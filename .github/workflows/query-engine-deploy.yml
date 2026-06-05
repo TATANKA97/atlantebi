@@ -21,6 +21,7 @@ jobs:
       ARTIFACT_REPOSITORY: atlantebi
       SERVICE_NAME: query-engine
       RUNTIME_SERVICE_ACCOUNT: query-engine-runtime@business-intelligence-495312.iam.gserviceaccount.com
+      DEPLOY_SERVICE_ACCOUNT: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -63,5 +64,5 @@ jobs:
       - name: Authenticated smoke test
         run: |
           SERVICE_URL="$(gcloud run services describe "${SERVICE_NAME}" --project="${GCP_PROJECT_ID}" --region="${GCP_REGION}" --format='value(status.url)')"
-          ID_TOKEN="$(gcloud auth print-identity-token --audiences="${SERVICE_URL}")"
+          ID_TOKEN="$(gcloud auth print-identity-token --impersonate-service-account="${DEPLOY_SERVICE_ACCOUNT}" --audiences="${SERVICE_URL}")"
           curl --fail --silent --show-error -H "Authorization: Bearer ${ID_TOKEN}" "${SERVICE_URL}/health"
