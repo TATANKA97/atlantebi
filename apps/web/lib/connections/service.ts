@@ -7,9 +7,13 @@ import {
   DatabaseCredentialsSchema
 } from "@atlantebi/contracts";
 import { GoogleAuth } from "google-auth-library";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 
+import {
+  isSecurityOperationLimitError,
+  withSecurityOperationLease
+} from "../security/operation-lease";
 import { createSupabaseAdminClient } from "../supabase/admin";
 
 type ConnectionTestStatus = "ok" | "failed" | "engine_error";
@@ -66,12 +70,46 @@ export async function createAndTestConnection({
   input: ConnectionInput;
   userId: string;
 }): Promise<CreateConnectionResult> {
+  try {
+    return await withSecurityOperationLease({
+      actorUserId: userId,
+      operation: "connection_test",
+      resourceKey: connectionResourceKey(input.host, input.port),
+      run: () => createAndTestConnectionWithLease({ input, userId }),
+      tenantId: input.tenant_id
+    });
+  } catch (error) {
+    if (isSecurityOperationLimitError(error)) {
+      return rateLimitedResult();
+    }
+    return {
+      ok: false,
+      code: "connection_create_failed",
+      message: "Connection could not be created."
+    };
+  }
+}
+
+async function createAndTestConnectionWithLease({
+  input,
+  userId
+}: {
+  input: ConnectionInput;
+  userId: string;
+}): Promise<CreateConnectionResult> {
   const connectionId = randomUUID();
   const secretId = `atlantebi-${input.tenant_id}-${connectionId}-db-password`;
   const secretRef = gcpSecretRef(secretId);
 
   try {
-    await setDatabasePasswordSecret(secretId, input.password);
+    await setDatabasePasswordSecret(secretId, input.password, {
+      connectionId,
+      databaseName: input.database_name,
+      host: input.host,
+      port: input.port,
+      tenantId: input.tenant_id,
+      username: input.username
+    });
 
     const connection = ConnectionMetadataSchema.parse({
       tenant_id: input.tenant_id,
@@ -131,8 +169,15 @@ export async function createAndTestConnection({
     }
 
     return { ok: true, connectionId, testStatus: test.status };
-  } catch {
+  } catch (error) {
     await deleteSecretIfPresent(secretId);
+    if (isSecurityOperationLimitError(error)) {
+      return {
+        ok: false,
+        code: "connection_rate_limited",
+        message: "Troppe operazioni di connessione in corso. Riprova più tardi."
+      };
+    }
     return {
       ok: false,
       code: "connection_create_failed",
@@ -319,6 +364,33 @@ export async function updateAndTestConnection({
   input: ConnectionUpdateInput;
   userId: string;
 }): Promise<CreateConnectionResult> {
+  try {
+    return await withSecurityOperationLease({
+      actorUserId: userId,
+      operation: "connection_test",
+      resourceKey: connectionResourceKey(input.host, input.port),
+      run: () => updateAndTestConnectionWithLease({ input, userId }),
+      tenantId: input.tenant_id
+    });
+  } catch (error) {
+    if (isSecurityOperationLimitError(error)) {
+      return rateLimitedResult();
+    }
+    return {
+      ok: false,
+      code: "connection_update_failed",
+      message: "Connection could not be updated."
+    };
+  }
+}
+
+async function updateAndTestConnectionWithLease({
+  input,
+  userId
+}: {
+  input: ConnectionUpdateInput;
+  userId: string;
+}): Promise<CreateConnectionResult> {
   const stagedSecretId = input.password
     ? `atlantebi-${input.tenant_id}-${input.connection_id}-${randomUUID()}-db-password`
     : null;
@@ -371,7 +443,14 @@ export async function updateAndTestConnection({
     }
 
     if (input.password && stagedSecretId) {
-      await setDatabasePasswordSecret(stagedSecretId, input.password);
+      await setDatabasePasswordSecret(stagedSecretId, input.password, {
+        connectionId: input.connection_id,
+        databaseName: input.database_name,
+        host: input.host,
+        port: input.port,
+        tenantId: input.tenant_id,
+        username: input.username
+      });
     }
     const candidateSecretRef = stagedSecretId
       ? gcpSecretRef(stagedSecretId)
@@ -459,9 +538,16 @@ export async function updateAndTestConnection({
     }
 
     return { ok: true, connectionId: input.connection_id, testStatus: test.status };
-  } catch {
+  } catch (error) {
     if (stagedSecretId) {
       await deleteSecretIfPresent(stagedSecretId);
+    }
+    if (isSecurityOperationLimitError(error)) {
+      return {
+        ok: false,
+        code: "connection_rate_limited",
+        message: "Troppe operazioni di connessione in corso. Riprova più tardi."
+      };
     }
     return {
       ok: false,
@@ -472,6 +558,30 @@ export async function updateAndTestConnection({
 }
 
 export async function testConnectionWithoutSaving(
+  input: ConnectionInput,
+  userId: string
+): Promise<CreateConnectionResult> {
+  try {
+    return await withSecurityOperationLease({
+      actorUserId: userId,
+      operation: "connection_test",
+      resourceKey: connectionResourceKey(input.host, input.port),
+      run: () => testConnectionWithoutSavingWithLease(input),
+      tenantId: input.tenant_id
+    });
+  } catch (error) {
+    if (isSecurityOperationLimitError(error)) {
+      return rateLimitedResult();
+    }
+    return {
+      ok: false,
+      code: "connection_test_failed",
+      message: "Connection test could not run."
+    };
+  }
+}
+
+async function testConnectionWithoutSavingWithLease(
   input: ConnectionInput
 ): Promise<CreateConnectionResult> {
   const connectionId = randomUUID();
@@ -479,7 +589,14 @@ export async function testConnectionWithoutSaving(
   const secretRef = gcpSecretRef(secretId);
 
   try {
-    await setDatabasePasswordSecret(secretId, input.password);
+    await setDatabasePasswordSecret(secretId, input.password, {
+      connectionId,
+      databaseName: input.database_name,
+      host: input.host,
+      port: input.port,
+      tenantId: input.tenant_id,
+      username: input.username
+    });
     const connection = ConnectionMetadataSchema.parse({
       tenant_id: input.tenant_id,
       connection_id: connectionId,
@@ -496,7 +613,7 @@ export async function testConnectionWithoutSaving(
       secret_ref: secretRef,
       status: "draft"
     });
-    const test = await testConnectionViaQueryEngine(connection, input.timeout_ms);
+    const test = await runConnectionTest(connection, input.timeout_ms);
 
     if (test.status !== "ok") {
       return {
@@ -507,7 +624,14 @@ export async function testConnectionWithoutSaving(
     }
 
     return { ok: true, connectionId, testStatus: "ok" };
-  } catch {
+  } catch (error) {
+    if (isSecurityOperationLimitError(error)) {
+      return {
+        ok: false,
+        code: "connection_rate_limited",
+        message: "Troppe operazioni di connessione in corso. Riprova più tardi."
+      };
+    }
     return {
       ok: false,
       code: "connection_test_failed",
@@ -518,7 +642,11 @@ export async function testConnectionWithoutSaving(
   }
 }
 
-async function setDatabasePasswordSecret(secretId: string, password: string) {
+async function setDatabasePasswordSecret(
+  secretId: string,
+  password: string,
+  binding: SecretBindingInput
+) {
   const projectId = getGcpProjectId();
   const parent = `projects/${projectId}`;
   const name = `${parent}/secrets/${secretId}`;
@@ -529,6 +657,7 @@ async function setDatabasePasswordSecret(secretId: string, password: string) {
       parent,
       secretId,
       secret: {
+        labels: secretBindingLabels(binding),
         replication: {
           automatic: {}
         }
@@ -546,6 +675,36 @@ async function setDatabasePasswordSecret(secretId: string, password: string) {
       data: Buffer.from(JSON.stringify(payload), "utf8")
     }
   });
+}
+
+type SecretBindingInput = {
+  connectionId: string;
+  databaseName: string;
+  host: string;
+  port: number;
+  tenantId: string;
+  username: string;
+};
+
+export function secretBindingFingerprint(binding: SecretBindingInput) {
+  const canonical = [
+    binding.tenantId.toLowerCase(),
+    binding.connectionId.toLowerCase(),
+    binding.host.trim().toLowerCase().replace(/\.$/, ""),
+    String(binding.port),
+    binding.databaseName,
+    binding.username
+  ].join("\n");
+
+  return createHash("sha256").update(canonical, "utf8").digest("hex").slice(0, 32);
+}
+
+function secretBindingLabels(binding: SecretBindingInput) {
+  return {
+    atlantebi_binding: secretBindingFingerprint(binding),
+    atlantebi_connection: binding.connectionId.toLowerCase(),
+    atlantebi_tenant: binding.tenantId.toLowerCase()
+  };
 }
 
 function isAlreadyExistsError(error: unknown) {
@@ -660,6 +819,18 @@ async function runConnectionTest(
       sanitized_error: "Connection test could not run."
     };
   }
+}
+
+function connectionResourceKey(host: string, port: number) {
+  return `${host.trim().toLowerCase().replace(/\.$/, "")}:${port}`;
+}
+
+function rateLimitedResult(): CreateConnectionResult {
+  return {
+    ok: false,
+    code: "connection_rate_limited",
+    message: "Troppe operazioni di connessione in corso. Riprova più tardi."
+  };
 }
 
 function sanitizeTestError(test: {

@@ -159,7 +159,7 @@ class SchemaTableMetadata(StrictModel):
     table_schema: str = Field(alias="schema", min_length=1, max_length=255)
     name: str = Field(min_length=1, max_length=255)
     table_type: Literal["base_table", "view"]
-    columns: list[SchemaColumnMetadata]
+    columns: list[SchemaColumnMetadata] = Field(max_length=50_000)
     primary_key: SchemaPrimaryKeyMetadata | None = None
     database_name: str | None = Field(default=None, min_length=1, max_length=255)
     object_id: int | None = Field(default=None, ge=1)
@@ -170,7 +170,10 @@ class SchemaTableMetadata(StrictModel):
     view_definition: str | None = Field(default=None, min_length=1)
     definition_hash: str | None = Field(default=None, min_length=64, max_length=64)
     lineage_available: bool | None = None
-    view_lineage: list[SchemaViewLineageDependency] = Field(default_factory=list)
+    view_lineage: list[SchemaViewLineageDependency] = Field(
+        default_factory=list,
+        max_length=100_000,
+    )
 
 
 class SchemaForeignKeyMetadata(StrictModel):
@@ -266,13 +269,31 @@ class SchemaIntrospectionResponse(StrictModel):
     engine_version: str | None = Field(default=None, min_length=1, max_length=500)
     schema_hash: str | None = Field(default=None, min_length=64, max_length=64)
     coverage_state: SchemaCoverageState | None = Field(default=None, strict=False)
-    tables: list[SchemaTableMetadata] = Field(default_factory=list)
-    foreign_keys: list[SchemaForeignKeyMetadata] = Field(default_factory=list)
-    unique_constraints: list[SchemaUniqueConstraintMetadata] = Field(default_factory=list)
-    check_constraints: list[SchemaCheckConstraintMetadata] = Field(default_factory=list)
-    default_constraints: list[SchemaDefaultConstraintMetadata] = Field(default_factory=list)
-    indexes: list[SchemaIndexMetadata] = Field(default_factory=list)
-    coverage_warnings: list[SchemaCoverageWarning] = Field(default_factory=list)
+    tables: list[SchemaTableMetadata] = Field(default_factory=list, max_length=5_000)
+    foreign_keys: list[SchemaForeignKeyMetadata] = Field(
+        default_factory=list,
+        max_length=100_000,
+    )
+    unique_constraints: list[SchemaUniqueConstraintMetadata] = Field(
+        default_factory=list,
+        max_length=100_000,
+    )
+    check_constraints: list[SchemaCheckConstraintMetadata] = Field(
+        default_factory=list,
+        max_length=100_000,
+    )
+    default_constraints: list[SchemaDefaultConstraintMetadata] = Field(
+        default_factory=list,
+        max_length=100_000,
+    )
+    indexes: list[SchemaIndexMetadata] = Field(
+        default_factory=list,
+        max_length=100_000,
+    )
+    coverage_warnings: list[SchemaCoverageWarning] = Field(
+        default_factory=list,
+        max_length=20_000,
+    )
     sanitized_error: str = Field(default=None, min_length=1, max_length=500)
 
 

@@ -36,7 +36,7 @@ export async function POST(request: Request) {
   if (!result.ok) {
     return NextResponse.json(
       { error: result.code, message: result.message },
-      { status: 400 }
+      { status: result.code === "schema_rate_limited" ? 429 : 400 }
     );
   }
 

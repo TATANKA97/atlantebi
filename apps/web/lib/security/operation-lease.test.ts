@@ -1,0 +1,54 @@
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("server-only", () => ({}));
+
+const rpc = vi.fn();
+vi.mock("../supabase/admin", () => ({
+  createSupabaseAdminClient: () => ({ rpc })
+}));
+
+const lease = await import("./operation-lease");
+
+describe("security operation leases", () => {
+  it("releases the distributed lease after successful work", async () => {
+    rpc
+      .mockResolvedValueOnce({
+        data: "30000000-0000-4000-8000-000000000001",
+        error: null
+      })
+      .mockResolvedValueOnce({ data: null, error: null });
+
+    const result = await lease.withSecurityOperationLease({
+      actorUserId: "10000000-0000-4000-8000-000000000001",
+      operation: "schema_introspection",
+      resourceKey: "connection-id",
+      run: async () => "ok",
+      tenantId: "20000000-0000-4000-8000-000000000001"
+    });
+
+    expect(result).toBe("ok");
+    expect(rpc).toHaveBeenLastCalledWith(
+      "release_security_operation_lease",
+      {
+        target_lease_id: "30000000-0000-4000-8000-000000000001"
+      }
+    );
+  });
+
+  it("maps database rate limits to a typed application error", async () => {
+    rpc.mockResolvedValueOnce({
+      data: null,
+      error: { message: "security operation rate limit exceeded" }
+    });
+
+    await expect(
+      lease.withSecurityOperationLease({
+        actorUserId: "10000000-0000-4000-8000-000000000001",
+        operation: "connection_test",
+        resourceKey: "sql.example.com:1433",
+        run: async () => "unreachable",
+        tenantId: "20000000-0000-4000-8000-000000000001"
+      })
+    ).rejects.toBeInstanceOf(lease.SecurityOperationLimitError);
+  });
+});

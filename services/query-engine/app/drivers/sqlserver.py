@@ -29,9 +29,14 @@ from app.drivers.base import (
     SchemaViewLineageDependency,
 )
 from app.models import Engine
+from app.network import resolve_database_endpoint
 
 
 AZURE_SQL_DOMAIN_SUFFIX = ".database.windows.net"
+MAX_SCHEMA_OBJECTS = 5_000
+MAX_SCHEMA_COLUMNS = 50_000
+MAX_METADATA_ROWS = 100_000
+MAX_METADATA_QUERY_BYTES = 16 * 1024 * 1024
 logger = logging.getLogger(__name__)
 
 
@@ -358,7 +363,14 @@ class SqlServerDriver(DatabaseDriver):
             raise DriverConfigurationError("SQL Server ODBC driver is not installed.") from exc
 
         timeout_seconds = max(1, timeout_ms // 1000)
-        parts = _connection_string_parts(connection, credentials, timeout_seconds)
+        endpoint = await resolve_database_endpoint(connection, timeout_ms)
+        parts = _connection_string_parts(
+            connection,
+            credentials,
+            timeout_seconds,
+            server_host=endpoint.address,
+            certificate_name=endpoint.certificate_name,
+        )
 
         try:
             await asyncio.wait_for(
@@ -395,7 +407,14 @@ class SqlServerDriver(DatabaseDriver):
             raise DriverConfigurationError("SQL Server ODBC driver is not installed.") from exc
 
         timeout_seconds = max(1, timeout_ms // 1000)
-        parts = _connection_string_parts(connection, credentials, timeout_seconds)
+        endpoint = await resolve_database_endpoint(connection, timeout_ms)
+        parts = _connection_string_parts(
+            connection,
+            credentials,
+            timeout_seconds,
+            server_host=endpoint.address,
+            certificate_name=endpoint.certificate_name,
+        )
 
         try:
             (
@@ -515,11 +534,14 @@ def _connection_string_parts(
     connection: ConnectionMetadata,
     credentials: DatabaseCredentials,
     timeout_seconds: int,
+    *,
+    server_host: str | None = None,
+    certificate_name: str | None = None,
 ) -> list[str]:
     encrypt = "yes" if connection.tls_required else "no"
     parts = [
         "Driver={ODBC Driver 18 for SQL Server}",
-        f"Server={_odbc_value(f'tcp:{connection.host},{connection.port}')}",
+        f"Server={_odbc_value(f'tcp:{server_host or connection.host},{connection.port}')}",
         f"Database={_odbc_value(connection.database_name)}",
         f"UID={_odbc_value(_login_username(connection))}",
         f"PWD={_odbc_value(credentials.password)}",
@@ -527,9 +549,10 @@ def _connection_string_parts(
         f"TrustServerCertificate={'yes' if connection.trust_server_certificate else 'no'}",
         f"Connection Timeout={timeout_seconds}",
     ]
-    if connection.tls_server_name:
+    effective_certificate_name = certificate_name or connection.tls_server_name
+    if effective_certificate_name:
         parts.append(
-            f"HostNameInCertificate={_odbc_value(connection.tls_server_name)}"
+            f"HostNameInCertificate={_odbc_value(effective_certificate_name)}"
         )
 
     return parts
@@ -554,12 +577,42 @@ def _remaining_timeout_seconds(deadline: float) -> int:
     return max(1, int(remaining))
 
 
-def _fetch_all_sync(sql_connection, query: str, deadline: float):
+def _fetch_all_sync(
+    sql_connection,
+    query: str,
+    deadline: float,
+    max_rows: int = MAX_METADATA_ROWS,
+    max_bytes: int = MAX_METADATA_QUERY_BYTES,
+):
     cursor = sql_connection.cursor()
     try:
         sql_connection.timeout = _remaining_timeout_seconds(deadline)
         cursor.execute(query)
-        return cursor.fetchall()
+        if not hasattr(cursor, "fetchmany"):
+            rows = cursor.fetchall()
+            if len(rows) > max_rows:
+                raise DriverIntrospectionError(
+                    "SQL Server metadata row limit exceeded."
+                )
+            if sum(_metadata_row_size(row) for row in rows) > max_bytes:
+                raise DriverIntrospectionError(
+                    "SQL Server metadata size limit exceeded."
+                )
+            return rows
+
+        rows = []
+        total_bytes = 0
+        while len(rows) <= max_rows:
+            batch = cursor.fetchmany(min(1_000, max_rows + 1 - len(rows)))
+            if not batch:
+                return rows
+            total_bytes += sum(_metadata_row_size(row) for row in batch)
+            if total_bytes > max_bytes:
+                raise DriverIntrospectionError(
+                    "SQL Server metadata size limit exceeded."
+                )
+            rows.extend(batch)
+        raise DriverIntrospectionError("SQL Server metadata row limit exceeded.")
     finally:
         cursor.close()
 
@@ -569,21 +622,57 @@ def _fetch_all_params_sync(
     query: str,
     params: tuple,
     deadline: float,
+    max_rows: int = MAX_METADATA_ROWS,
+    max_bytes: int = MAX_METADATA_QUERY_BYTES,
 ):
     cursor = sql_connection.cursor()
     try:
         sql_connection.timeout = _remaining_timeout_seconds(deadline)
         cursor.execute(query, params)
-        return cursor.fetchall()
+        if not hasattr(cursor, "fetchmany"):
+            rows = cursor.fetchall()
+            if len(rows) > max_rows:
+                raise DriverIntrospectionError(
+                    "SQL Server metadata row limit exceeded."
+                )
+            if sum(_metadata_row_size(row) for row in rows) > max_bytes:
+                raise DriverIntrospectionError(
+                    "SQL Server metadata size limit exceeded."
+                )
+            return rows
+
+        rows = []
+        total_bytes = 0
+        while len(rows) <= max_rows:
+            batch = cursor.fetchmany(min(1_000, max_rows + 1 - len(rows)))
+            if not batch:
+                return rows
+            total_bytes += sum(_metadata_row_size(row) for row in batch)
+            if total_bytes > max_bytes:
+                raise DriverIntrospectionError(
+                    "SQL Server metadata size limit exceeded."
+                )
+            rows.extend(batch)
+        raise DriverIntrospectionError("SQL Server metadata row limit exceeded.")
     finally:
         cursor.close()
 
 
 def _fetch_one_sync(sql_connection, query: str, deadline: float):
-    rows = _fetch_all_sync(sql_connection, query, deadline)
+    rows = _fetch_all_sync(sql_connection, query, deadline, max_rows=1)
     if not rows:
         raise DriverIntrospectionError("SQL Server metadata query returned no rows.")
     return rows[0]
+
+
+def _metadata_row_size(row) -> int:
+    return sum(
+        len(value)
+        if isinstance(value, bytes)
+        else len(str(value).encode("utf-8"))
+        for value in row
+        if value is not None
+    )
 
 
 def _fetch_all_best_effort_sync(
@@ -630,10 +719,16 @@ def _collect_introspection_rows_sync(
             sql_connection, SQLSERVER_DATABASE_QUERY, deadline
         )
         object_rows = _fetch_all_sync(
-            sql_connection, SQLSERVER_OBJECTS_QUERY, deadline
+            sql_connection,
+            SQLSERVER_OBJECTS_QUERY,
+            deadline,
+            max_rows=MAX_SCHEMA_OBJECTS,
         )
         column_rows = _fetch_all_sync(
-            sql_connection, SQLSERVER_COLUMNS_QUERY, deadline
+            sql_connection,
+            SQLSERVER_COLUMNS_QUERY,
+            deadline,
+            max_rows=MAX_SCHEMA_COLUMNS,
         )
         key_constraint_rows = _fetch_all_sync(
             sql_connection, SQLSERVER_KEY_CONSTRAINTS_QUERY, deadline

@@ -14,6 +14,7 @@ from app.drivers.base import (
     ConnectionMetadata,
     DatabaseCredentials,
     DatabaseDriver,
+    DriverIntrospectionError,
     ReadonlyQueryResult,
     SchemaColumnMetadata,
     SchemaCoverageWarning,
@@ -34,6 +35,7 @@ from app.drivers.sqlserver import (
     _build_coverage_warnings,
     _coverage_state,
     _fetch_view_lineage,
+    _fetch_all_sync,
     _schema_hash,
 )
 from app.main import app
@@ -80,6 +82,57 @@ def test_schema_introspection_request_rejects_coercion() -> None:
 
     with pytest.raises(ValidationError):
         SchemaIntrospectionRequest.model_validate_json(json.dumps(payload))
+
+
+def test_sqlserver_metadata_fetch_rejects_rows_over_limit() -> None:
+    class FakeCursor:
+        def execute(self, query):
+            return self
+
+        def fetchmany(self, size):
+            return [(index,) for index in range(size)]
+
+        def close(self):
+            return None
+
+    connection = SimpleNamespace(timeout=0, cursor=lambda: FakeCursor())
+
+    with pytest.raises(
+        DriverIntrospectionError,
+        match="metadata row limit exceeded",
+    ):
+        _fetch_all_sync(
+            connection,
+            "select metadata",
+            monotonic() + 10,
+            max_rows=2,
+        )
+
+
+def test_sqlserver_metadata_fetch_rejects_bytes_over_limit() -> None:
+    class FakeCursor:
+        def execute(self, query):
+            return self
+
+        def fetchmany(self, size):
+            return [("x" * 20,)]
+
+        def close(self):
+            return None
+
+    connection = SimpleNamespace(timeout=0, cursor=lambda: FakeCursor())
+
+    with pytest.raises(
+        DriverIntrospectionError,
+        match="metadata size limit exceeded",
+    ):
+        _fetch_all_sync(
+            connection,
+            "select metadata",
+            monotonic() + 10,
+            max_rows=2,
+            max_bytes=10,
+        )
 
 
 def test_schema_introspection_response_serializes_schema_alias() -> None:
@@ -131,9 +184,11 @@ def test_schema_introspection_endpoint_uses_secret_resolver_and_driver(
     monkeypatch.setenv("QUERY_ENGINE_ALLOW_UNAUTHENTICATED", "true")
     class FakeSecretResolver:
         async def resolve_database_credentials(
-            self, secret_ref: str, timeout_ms: int
+            self, connection: ConnectionMetadata, timeout_ms: int
         ) -> DatabaseCredentials:
-            assert secret_ref == "gcp-secret-manager://projects/demo/secrets/customer-db"
+            assert connection.secret_ref == (
+                "gcp-secret-manager://projects/demo/secrets/customer-db"
+            )
             assert timeout_ms == 30000
             return DatabaseCredentials(password="secret")
 
@@ -248,6 +303,17 @@ def test_schema_introspection_endpoint_uses_secret_resolver_and_driver(
 def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.MonkeyPatch) -> None:
     executed_queries: list[str] = []
     thread_ids: list[int] = []
+
+    async def resolve_endpoint(connection, timeout_ms):
+        return SimpleNamespace(
+            address="8.8.8.8",
+            certificate_name=connection.host,
+        )
+
+    monkeypatch.setattr(
+        "app.drivers.sqlserver.resolve_database_endpoint",
+        resolve_endpoint,
+    )
 
     class FakeCursor:
         def __init__(self):

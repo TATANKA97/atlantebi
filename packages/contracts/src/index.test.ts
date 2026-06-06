@@ -439,4 +439,23 @@ describe("contracts", () => {
       })
     ).toThrow();
   });
+
+  it("rejects schema responses above the V1 object cardinality limit", () => {
+    expect(() =>
+      SchemaIntrospectionResponseSchema.parse({
+        status: "ok",
+        message: "Schema introspection completed.",
+        introspected_at: "2026-06-06T12:00:00.000Z",
+        duration_ms: 10,
+        engine: "sqlserver",
+        coverage_state: "complete",
+        tables: Array.from({ length: 5_001 }, (_, index) => ({
+          schema: "dbo",
+          name: `Table${index}`,
+          table_type: "base_table",
+          columns: []
+        }))
+      })
+    ).toThrow();
+  });
 });

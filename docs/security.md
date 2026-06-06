@@ -43,3 +43,32 @@ coverage, but they must not be logged in clear text or sent to AI workflows by d
   either all commit or all roll back.
 - Query-engine endpoints fail closed unless either an internal token is configured or
   Cloud Run IAM mode is explicitly enabled.
+- Connection tests and schema imports acquire server-only PostgreSQL leases with
+  tenant, actor, concurrency, per-resource, and time-window limits. Rejected attempts
+  do not reach the query-engine.
+- Public database destinations are resolved before ODBC connection. Every resolved
+  address must be globally routable, and the selected address is pinned for the
+  connection to prevent DNS rebinding. Private destinations require both `vpn` mode
+  and the explicit runtime opt-in `QUERY_ENGINE_ALLOW_PRIVATE_NETWORKS=true`.
+  The V1 web application creates only `public_allowlist` connections; enabling VPN
+  connections is a separate deployment decision and must include private egress.
+- Database password secrets are bound to tenant, connection, and endpoint metadata
+  through the secret name and labels. The query-engine validates that binding before
+  reading the secret payload.
+- The query-engine runtime uses a custom Secret Manager role containing only
+  `secretmanager.secrets.get` and `secretmanager.versions.access`, conditionally
+  restricted to `atlantebi-*` resources.
+
+## Deployment Controls
+
+- GitHub Actions dependencies are pinned to immutable commit SHAs.
+- Production deploy workflows run only after the exact `main` SHA passes CI and then
+  enter the protected `production` environment.
+- The GitHub OIDC provider accepts only
+  `repo:TATANKA97/atlantebi:environment:production`.
+- Cloud Run receives only the environment required by each service. Query-engine
+  authentication and public-network policy are configured explicitly and fail closed.
+
+Supabase hosted Auth settings are not deployed by `supabase db push`.
+`minimum_password_length`, secure password changes, and leaked-password protection
+must be verified separately in the hosted project Auth configuration.

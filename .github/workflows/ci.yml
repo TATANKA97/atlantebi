@@ -9,8 +9,8 @@ jobs:
   database:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: "24"
           package-manager-cache: false
@@ -37,11 +37,11 @@ jobs:
   web-and-packages:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v6
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6
         with:
           version: 10.32.1
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: "24"
           cache: "pnpm"
@@ -55,8 +55,8 @@ jobs:
   query-engine:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.12"
           cache: "pip"
@@ -98,6 +98,7 @@ jobs:
           docker run --rm \
             --network atlantebi-integration \
             -e SQLSERVER_INTEGRATION_HOST=atlantebi-sqlserver \
+            -e QUERY_ENGINE_ALLOW_PRIVATE_NETWORKS=true \
             atlantebi-query-engine-test \
             python -m pytest tests/test_sqlserver_integration.py
       - run: docker build -t atlantebi-query-engine .

@@ -28,7 +28,7 @@ jobs:
       NEXT_PUBLIC_SUPABASE_URL: https://zzvfjqnfhuvapuvhpxee.supabase.co
       QUERY_ENGINE_URL: https://query-engine-3zsxzvizgq-uc.a.run.app
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
@@ -37,12 +37,12 @@ jobs:
           CURRENT_MAIN_SHA="$(git ls-remote origin refs/heads/main | cut -f1)"
           test "${CURRENT_MAIN_SHA}" = "${{ github.event.workflow_run.head_sha }}"
 
-      - uses: google-github-actions/auth@v3
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
 
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
 
       - run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
 

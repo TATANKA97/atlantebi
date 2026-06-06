@@ -1,6 +1,7 @@
 import json
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -28,7 +29,13 @@ from app.models import (
     Relationship,
     VerificationSummary,
 )
-from app.secrets import SecretResolutionError, parse_secret_ref
+from app.secrets import (
+    SecretResolutionError,
+    GcpSecretResolver,
+    parse_secret_ref,
+    secret_binding_fingerprint,
+    validate_secret_ref_for_connection,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -50,9 +57,10 @@ def test_health_endpoint() -> None:
 
 
 def test_driver_registry_accepts_only_v1_engines() -> None:
-    assert set(DRIVER_REGISTRY.keys()) == {Engine.sqlserver, Engine.mysql}
+    assert set(DRIVER_REGISTRY.keys()) == {Engine.sqlserver}
     assert get_driver(Engine.sqlserver).engine == Engine.sqlserver
-    assert get_driver(Engine.mysql).engine == Engine.mysql
+    with pytest.raises(DriverNotImplementedError):
+        get_driver(Engine.mysql)
 
 
 def test_secret_ref_parser_targets_gcp_secret_manager() -> None:
@@ -90,14 +98,19 @@ def test_connection_test_request_rejects_coercion() -> None:
 
 
 def test_shared_nullable_tls_fixture_matches_typescript_contract() -> None:
-    fixture_path = (
-        Path(__file__).parents[3]
-        / "packages"
-        / "contracts"
-        / "src"
-        / "fixtures"
-        / "connection-null-tls.json"
-    )
+    fixture_path = Path(__file__).parent / "fixtures" / "connection-null-tls.json"
+    test_path = Path(__file__).resolve()
+    if len(test_path.parents) > 3:
+        shared_fixture_path = (
+            test_path.parents[3]
+            / "packages"
+            / "contracts"
+            / "src"
+            / "fixtures"
+            / "connection-null-tls.json"
+        )
+        if shared_fixture_path.exists():
+            fixture_path = shared_fixture_path
     payload = json.loads(fixture_path.read_text(encoding="utf-8"))
 
     parsed = ConnectionTestRequest.model_validate(
@@ -110,9 +123,11 @@ def test_shared_nullable_tls_fixture_matches_typescript_contract() -> None:
 def test_connection_test_endpoint_uses_secret_resolver_and_driver(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeSecretResolver:
         async def resolve_database_credentials(
-            self, secret_ref: str, timeout_ms: int
+            self, connection: ConnectionMetadata, timeout_ms: int
         ) -> DatabaseCredentials:
-            assert secret_ref == "gcp-secret-manager://projects/demo/secrets/customer-db"
+            assert connection.secret_ref == (
+                "gcp-secret-manager://projects/demo/secrets/customer-db"
+            )
             assert timeout_ms == 30000
             return DatabaseCredentials(password="secret")
 
@@ -242,12 +257,48 @@ def test_connection_test_endpoint_fails_closed_without_auth_configuration(
     assert response.status_code == 503
 
 
+def test_unsupported_mysql_is_rejected_before_secret_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingSecretResolver:
+        async def resolve_database_credentials(self, connection, timeout_ms):
+            raise AssertionError("unsupported engines must not access secrets")
+
+    monkeypatch.setattr(app.state, "secret_resolver", FailingSecretResolver())
+    client = TestClient(app)
+
+    response = client.post(
+        "/connections/test",
+        json={
+            "connection": {
+                "tenant_id": "11111111-1111-4111-8111-111111111111",
+                "connection_id": "33333333-3333-4333-8333-333333333333",
+                "name": "Unsupported MySQL",
+                "engine": "mysql",
+                "network_mode": "public_allowlist",
+                "host": "mysql.example.com",
+                "port": 3306,
+                "database_name": "demo",
+                "username": "readonly_user",
+                "tls_required": True,
+                "trust_server_certificate": False,
+                "secret_ref": "gcp-secret-manager://projects/demo/secrets/customer-db",
+                "status": "draft",
+            },
+            "timeout_ms": 30000,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "engine_error"
+
+
 def test_connection_test_endpoint_accepts_internal_token_header(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeSecretResolver:
         async def resolve_database_credentials(
-            self, secret_ref: str, timeout_ms: int
+            self, connection: ConnectionMetadata, timeout_ms: int
         ) -> DatabaseCredentials:
             return DatabaseCredentials(password="secret")
 
@@ -334,6 +385,91 @@ def test_sqlserver_proxy_derives_azure_login_server_name() -> None:
         **{**connection.__dict__, "username": "atlante_demo_ro@atlanteadmin"}
     )
     assert _login_username(already_qualified) == "atlante_demo_ro@atlanteadmin"
+
+
+def test_database_secret_reference_is_bound_to_tenant_connection_and_endpoint() -> None:
+    connection = ConnectionMetadata(
+        tenant_id="11111111-1111-4111-8111-111111111111",
+        connection_id="33333333-3333-4333-8333-333333333333",
+        name="Binding test",
+        engine=Engine.sqlserver,
+        network_mode="public_allowlist",
+        host="SQL.EXAMPLE.COM.",
+        port=1433,
+        database_name="AdventureWorksLT",
+        username="readonly_user",
+        secret_ref=(
+            "gcp-secret-manager://projects/demo/secrets/"
+            "atlantebi-11111111-1111-4111-8111-111111111111-"
+            "33333333-3333-4333-8333-333333333333-db-password"
+        ),
+        tls_required=True,
+        trust_server_certificate=False,
+        tls_server_name=None,
+    )
+    parsed = parse_secret_ref(connection.secret_ref)
+
+    validate_secret_ref_for_connection(parsed, connection, "demo")
+    assert len(secret_binding_fingerprint(connection)) == 32
+    with pytest.raises(SecretResolutionError):
+        validate_secret_ref_for_connection(parsed, connection, "other-project")
+    with pytest.raises(SecretResolutionError):
+        validate_secret_ref_for_connection(
+            parsed,
+            ConnectionMetadata(
+                **{**connection.__dict__, "connection_id": "44444444-4444-4444-8444-444444444444"}
+            ),
+            "demo",
+        )
+
+
+def test_secret_resolver_rejects_endpoint_label_mismatch_before_payload_access() -> None:
+    connection = ConnectionMetadata(
+        tenant_id="11111111-1111-4111-8111-111111111111",
+        connection_id="33333333-3333-4333-8333-333333333333",
+        name="Binding test",
+        engine=Engine.sqlserver,
+        network_mode="public_allowlist",
+        host="sql.example.com",
+        port=1433,
+        database_name="AdventureWorksLT",
+        username="readonly_user",
+        secret_ref=(
+            "gcp-secret-manager://projects/demo/secrets/"
+            "atlantebi-11111111-1111-4111-8111-111111111111-"
+            "33333333-3333-4333-8333-333333333333-db-password"
+        ),
+        tls_required=True,
+        trust_server_certificate=False,
+        tls_server_name=None,
+    )
+
+    class FakeClient:
+        access_called = False
+
+        def get_secret(self, request, timeout):
+            return SimpleNamespace(
+                labels={
+                    "atlantebi_binding": "wrong",
+                    "atlantebi_connection": connection.connection_id,
+                    "atlantebi_tenant": connection.tenant_id,
+                }
+            )
+
+        def access_secret_version(self, request, timeout):
+            self.access_called = True
+            raise AssertionError("payload access must not occur")
+
+    resolver = GcpSecretResolver()
+    resolver._client = FakeClient()
+
+    with pytest.raises(SecretResolutionError, match="endpoint binding"):
+        resolver._access_bound_secret_payload(
+            connection,
+            parse_secret_ref(connection.secret_ref),
+            1,
+        )
+    assert resolver._client.access_called is False
 
 
 def test_sqlserver_odbc_values_are_brace_escaped() -> None:
@@ -541,12 +677,5 @@ def test_driver_execute_readonly_raises_until_implemented() -> None:
     with pytest.raises(DriverNotImplementedError):
         asyncio.run(driver.execute_readonly(connection, "select 1", 100, 30000))
 
-    mysql_driver = get_driver(Engine.mysql)
     with pytest.raises(DriverNotImplementedError):
-        asyncio.run(
-            mysql_driver.introspect_schema(
-                connection,
-                DatabaseCredentials(password="secret"),
-                30000,
-            )
-        )
+        get_driver(Engine.mysql)
