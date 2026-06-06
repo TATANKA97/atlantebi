@@ -22,3 +22,4 @@ work-web-dev*.log
 .next-dev.log
 supabase/.branches
 supabase/.temp
+gha-creds-*.json

@@ -131,4 +131,29 @@ describe("connection input boundary", () => {
     expect(parsed.port).toBe(10002);
     expect(parsed.timeout_ms).toBe(30000);
   });
+
+  it("binds a database secret to tenant, connection, and endpoint identity", () => {
+    const binding = {
+      connectionId: "33333333-3333-4333-8333-333333333333",
+      databaseName: "AdventureWorksLT",
+      host: "SQL.EXAMPLE.COM.",
+      port: 1433,
+      tenantId: baseInput.tenant_id,
+      username: "readonly_user"
+    };
+
+    expect(service.secretBindingFingerprint(binding)).toHaveLength(32);
+    expect(
+      service.secretBindingFingerprint({
+        ...binding,
+        host: "sql.example.com"
+      })
+    ).toBe(service.secretBindingFingerprint(binding));
+    expect(
+      service.secretBindingFingerprint({
+        ...binding,
+        databaseName: "OtherDatabase"
+      })
+    ).not.toBe(service.secretBindingFingerprint(binding));
+  });
 });

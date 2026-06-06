@@ -3,11 +3,24 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createSupabaseServerClient } from "../../../lib/supabase/server";
 
 export function safeNextPath(requestedNext: string | null) {
-  return requestedNext?.startsWith("/") &&
-    !requestedNext.startsWith("//") &&
-    !requestedNext.includes("\\")
-    ? requestedNext
-    : "/setup";
+  const containsControlCharacter =
+    requestedNext?.split("").some((character) => {
+      const codePoint = character.charCodeAt(0);
+      return codePoint <= 31 || codePoint === 127;
+    }) ?? false;
+
+  if (
+    !requestedNext?.startsWith("/") ||
+    requestedNext.startsWith("//") ||
+    requestedNext.includes("\\") ||
+    containsControlCharacter
+  ) {
+    return "/setup";
+  }
+
+  const trustedOrigin = "https://atlante.invalid";
+  const resolved = new URL(requestedNext, trustedOrigin);
+  return resolved.origin === trustedOrigin ? requestedNext : "/setup";
 }
 
 export async function GET(request: NextRequest) {

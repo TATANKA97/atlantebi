@@ -20,7 +20,7 @@ def test_sqlserver_snapshot_v1_against_real_catalog_views() -> None:
         connection_id="33333333-3333-4333-8333-333333333333",
         name="SQL Server integration fixture",
         engine=Engine.sqlserver,
-        network_mode="public_allowlist",
+        network_mode="vpn",
         host=os.environ["SQLSERVER_INTEGRATION_HOST"],
         port=1433,
         database_name="AtlanteBiSnapshotTest",

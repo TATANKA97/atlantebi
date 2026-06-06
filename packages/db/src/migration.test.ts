@@ -15,6 +15,25 @@ const supabaseConfig = readFileSync(
   resolve(import.meta.dirname, "../../../supabase/config.toml"),
   "utf8"
 );
+const workflows = readdirSync(
+  resolve(import.meta.dirname, "../../../.github/workflows")
+)
+  .filter((fileName) => fileName.endsWith(".yml"))
+  .map((fileName) =>
+    readFileSync(
+      resolve(import.meta.dirname, "../../../.github/workflows", fileName),
+      "utf8"
+    )
+  )
+  .join("\n");
+const dockerIgnore = readFileSync(
+  resolve(import.meta.dirname, "../../../.dockerignore"),
+  "utf8"
+);
+const queryEngineDockerfile = readFileSync(
+  resolve(import.meta.dirname, "../../../services/query-engine/Dockerfile"),
+  "utf8"
+);
 
 const tenantScopedTables = [
   "tenants",
@@ -35,6 +54,27 @@ const tenantScopedTables = [
 ];
 
 describe("Supabase metadata migration", () => {
+  it("pins every GitHub Action to an immutable commit SHA", () => {
+    expect(workflows).not.toMatch(/uses:\s*[^\s#]+@v\d+/);
+    const pinnedActions = [
+      ...workflows.matchAll(/uses:\s*[^\s#]+@([0-9a-f]{40})/g)
+    ];
+    expect(pinnedActions.length).toBeGreaterThan(0);
+    for (const match of pinnedActions) {
+      expect(match[1]).toHaveLength(40);
+    }
+  });
+
+  it("keeps local Auth password controls aligned with the application", () => {
+    expect(supabaseConfig).toContain("minimum_password_length = 8");
+    expect(supabaseConfig).toContain("secure_password_change = true");
+  });
+
+  it("keeps CI credentials out of Docker contexts and runs query-engine unprivileged", () => {
+    expect(dockerIgnore).toContain("gha-creds-*.json");
+    expect(queryEngineDockerfile).toContain("USER atlante");
+  });
+
   it("does not define customer database credential columns", () => {
     const forbiddenColumnPattern =
       /\b(add column|,\s*)\s+(password|db_password|connection_string|dsn|secret_value|private_key)\s+/i;
@@ -172,6 +212,24 @@ describe("Supabase metadata migration", () => {
     expect(migration).toContain('create policy "owners can update memberships"');
     expect(migration).toContain('create policy "admins can update non-owner memberships"');
     expect(migration).toContain('create policy "owners can delete memberships"');
+  });
+
+  it("moves audit writes and membership mutations behind server controls", () => {
+    expect(migration).toContain(
+      "revoke insert on table public.audit_logs from anon, authenticated;"
+    );
+    expect(migration).toContain(
+      'drop policy if exists "members can create audit logs" on public.audit_logs;'
+    );
+    expect(migration).toContain(
+      "revoke update, delete on table public.tenant_memberships from authenticated;"
+    );
+    expect(migration).toContain(
+      "app_private.acquire_security_operation_lease"
+    );
+    expect(migration).toContain(
+      "grant execute on function public.acquire_security_operation_lease"
+    );
   });
 
   it("stores technical FK metadata for SQL Server snapshots without raw data", () => {

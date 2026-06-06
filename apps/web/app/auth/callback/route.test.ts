@@ -13,6 +13,9 @@ describe("auth callback redirect boundary", () => {
     expect(safeNextPath("https://attacker.example")).toBe("/setup");
     expect(safeNextPath("//attacker.example")).toBe("/setup");
     expect(safeNextPath("/\\attacker.example")).toBe("/setup");
+    expect(safeNextPath("/\t/attacker.example")).toBe("/setup");
+    expect(safeNextPath("/\n/attacker.example")).toBe("/setup");
+    expect(safeNextPath("/\r/attacker.example")).toBe("/setup");
     expect(safeNextPath(null)).toBe("/setup");
   });
 });

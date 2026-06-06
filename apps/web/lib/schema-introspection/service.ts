@@ -11,6 +11,10 @@ import { GoogleAuth } from "google-auth-library";
 
 import type { ActiveTenantContext } from "../tenant";
 import { canManageConnections } from "../tenant";
+import {
+  isSecurityOperationLimitError,
+  withSecurityOperationLease
+} from "../security/operation-lease";
 import { createSupabaseAdminClient } from "../supabase/admin";
 
 type IntrospectionResult =
@@ -126,12 +130,31 @@ export async function introspectConnection({
     status: connection.status
   });
 
-  const schema = await runSchemaIntrospection(metadata, timeoutMs);
-  return persistSchemaIntrospection({
-    connection,
-    context,
-    schema
-  });
+  try {
+    return await withSecurityOperationLease({
+      actorUserId: context.userId,
+      operation: "schema_introspection",
+      resourceKey: connection.id,
+      run: async () => {
+        const schema = await runSchemaIntrospection(metadata, timeoutMs);
+        return persistSchemaIntrospection({
+          connection,
+          context,
+          schema
+        });
+      },
+      tenantId: context.tenantId
+    });
+  } catch (error) {
+    if (isSecurityOperationLimitError(error)) {
+      return {
+        ok: false,
+        code: "schema_rate_limited",
+        message: "Un import schema è già in corso o il limite è stato superato."
+      };
+    }
+    throw error;
+  }
 }
 
 async function readConnectionForEngine({

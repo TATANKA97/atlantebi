@@ -29,15 +29,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "connection_forbidden" }, { status: 403 });
   }
 
-  const result = await testConnectionWithoutSaving({
-    ...parsed.data,
-    tenant_id: tenant.context.tenantId
-  });
+  const result = await testConnectionWithoutSaving(
+    {
+      ...parsed.data,
+      tenant_id: tenant.context.tenantId
+    },
+    tenant.context.userId
+  );
 
   if (!result.ok) {
     return NextResponse.json(
       { error: result.code, message: result.message },
-      { status: 400 }
+      { status: result.code === "connection_rate_limited" ? 429 : 400 }
     );
   }
 

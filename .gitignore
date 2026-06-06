@@ -16,3 +16,4 @@ work-web-dev*.log
 !.env.example
 supabase/.branches/
 supabase/.temp/
+gha-creds-*.json

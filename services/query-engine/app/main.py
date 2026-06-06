@@ -1,3 +1,4 @@
+import json
 import os
 import secrets
 from dataclasses import asdict
@@ -26,6 +27,7 @@ from app.secrets import GcpSecretResolver, SecretResolutionError
 
 app = FastAPI(title="Atlante BI Query Engine", version="0.1.0")
 app.state.secret_resolver = GcpSecretResolver()
+MAX_SCHEMA_SNAPSHOT_BYTES = 32 * 1024 * 1024
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -85,11 +87,11 @@ async def test_connection(
     connection = _connection_metadata_from_request(request.connection)
 
     try:
+        driver = get_driver(connection.engine)
         credentials = await app.state.secret_resolver.resolve_database_credentials(
-            connection.secret_ref,
+            connection,
             timeout_ms=request.timeout_ms,
         )
-        driver = get_driver(connection.engine)
         result = await driver.test_connection(
             connection=connection,
             credentials=credentials,
@@ -133,45 +135,61 @@ async def introspect_schema(
     connection = _connection_metadata_from_request(request.connection)
 
     try:
+        driver = get_driver(connection.engine)
         credentials = await app.state.secret_resolver.resolve_database_credentials(
-            connection.secret_ref,
+            connection,
             timeout_ms=request.timeout_ms,
         )
-        driver = get_driver(connection.engine)
         result = await driver.introspect_schema(
             connection=connection,
             credentials=credentials,
             timeout_ms=_remaining_timeout_ms(started, request.timeout_ms),
         )
-        return SchemaIntrospectionResponse(
-            status="ok",
-            message="Schema introspection completed.",
-            introspected_at=introspected_at,
-            duration_ms=int((perf_counter() - started) * 1000),
-            engine=result.engine,
-            database_name=result.database_name,
-            engine_version=result.engine_version,
-            schema_hash=result.schema_hash,
-            coverage_state=result.coverage_state,
-            tables=[asdict(table) for table in result.tables],
-            foreign_keys=[asdict(foreign_key) for foreign_key in result.foreign_keys],
-            unique_constraints=[
+        response_payload = {
+            "status": "ok",
+            "message": "Schema introspection completed.",
+            "introspected_at": introspected_at,
+            "duration_ms": int((perf_counter() - started) * 1000),
+            "engine": result.engine,
+            "database_name": result.database_name,
+            "engine_version": result.engine_version,
+            "schema_hash": result.schema_hash,
+            "coverage_state": result.coverage_state,
+            "tables": [asdict(table) for table in result.tables],
+            "foreign_keys": [
+                asdict(foreign_key) for foreign_key in result.foreign_keys
+            ],
+            "unique_constraints": [
                 asdict(unique_constraint)
                 for unique_constraint in result.unique_constraints
             ],
-            check_constraints=[
+            "check_constraints": [
                 asdict(check_constraint) for check_constraint in result.check_constraints
             ],
-            default_constraints=[
+            "default_constraints": [
                 asdict(default_constraint)
                 for default_constraint in result.default_constraints
             ],
-            indexes=[asdict(index) for index in result.indexes],
-            coverage_warnings=[
+            "indexes": [asdict(index) for index in result.indexes],
+            "coverage_warnings": [
                 asdict(coverage_warning)
                 for coverage_warning in result.coverage_warnings
             ],
-        )
+        }
+        if (
+            len(
+                json.dumps(
+                    response_payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+            > MAX_SCHEMA_SNAPSHOT_BYTES
+        ):
+            raise DriverIntrospectionError(
+                "SQL Server schema snapshot size limit exceeded."
+            )
+        return SchemaIntrospectionResponse(**response_payload)
     except SecretResolutionError as exc:
         return _schema_introspection_error(
             introspected_at=introspected_at,

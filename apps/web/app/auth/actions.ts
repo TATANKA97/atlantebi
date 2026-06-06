@@ -64,8 +64,13 @@ export async function signUp(formData: FormData) {
 export async function signOut() {
   const supabase = await createSupabaseServerClient();
 
-  if (supabase) {
-    await supabase.auth.signOut();
+  if (!supabase) {
+    redirect("/setup?message=supabase_not_configured");
+  }
+
+  const { error } = await supabase.auth.signOut();
+  if (error) {
+    redirect("/setup?message=signout_failed");
   }
 
   redirect("/login");

@@ -1,4 +1,4 @@
-FROM python:3.12-slim AS base
+FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -27,7 +27,12 @@ COPY tests ./tests
 
 FROM base AS runtime
 
-COPY app ./app
+RUN groupadd --system --gid 1001 atlante \
+    && useradd --system --uid 1001 --gid atlante atlante
+
+COPY --chown=atlante:atlante app ./app
+
+USER atlante
 
 EXPOSE 8080
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

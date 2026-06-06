@@ -138,7 +138,7 @@ export const SchemaTableMetadataSchema = z.strictObject({
   schema: z.string().min(1).max(255),
   name: z.string().min(1).max(255),
   table_type: z.enum(["base_table", "view"]),
-  columns: z.array(SchemaColumnMetadataSchema),
+  columns: z.array(SchemaColumnMetadataSchema).max(50_000),
   primary_key: SchemaPrimaryKeyMetadataSchema.optional(),
   database_name: z.string().min(1).max(255).optional(),
   object_id: z.number().int().min(1).optional(),
@@ -149,7 +149,10 @@ export const SchemaTableMetadataSchema = z.strictObject({
   view_definition: z.string().min(1).optional(),
   definition_hash: z.string().length(64).optional(),
   lineage_available: z.boolean().optional(),
-  view_lineage: z.array(SchemaViewLineageDependencySchema).default([])
+  view_lineage: z
+    .array(SchemaViewLineageDependencySchema)
+    .max(100_000)
+    .default([])
 });
 export type SchemaTableMetadata = z.infer<typeof SchemaTableMetadataSchema>;
 
@@ -267,13 +270,28 @@ export const SchemaIntrospectionResponseSchema = z.strictObject({
   engine_version: z.string().min(1).max(500).optional(),
   schema_hash: z.string().length(64).optional(),
   coverage_state: SchemaCoverageStateSchema.optional(),
-  tables: z.array(SchemaTableMetadataSchema).default([]),
-  foreign_keys: z.array(SchemaForeignKeyMetadataSchema).default([]),
-  unique_constraints: z.array(SchemaUniqueConstraintMetadataSchema).default([]),
-  check_constraints: z.array(SchemaCheckConstraintMetadataSchema).default([]),
-  default_constraints: z.array(SchemaDefaultConstraintMetadataSchema).default([]),
-  indexes: z.array(SchemaIndexMetadataSchema).default([]),
-  coverage_warnings: z.array(SchemaCoverageWarningSchema).default([]),
+  tables: z.array(SchemaTableMetadataSchema).max(5_000).default([]),
+  foreign_keys: z
+    .array(SchemaForeignKeyMetadataSchema)
+    .max(100_000)
+    .default([]),
+  unique_constraints: z
+    .array(SchemaUniqueConstraintMetadataSchema)
+    .max(100_000)
+    .default([]),
+  check_constraints: z
+    .array(SchemaCheckConstraintMetadataSchema)
+    .max(100_000)
+    .default([]),
+  default_constraints: z
+    .array(SchemaDefaultConstraintMetadataSchema)
+    .max(100_000)
+    .default([]),
+  indexes: z.array(SchemaIndexMetadataSchema).max(100_000).default([]),
+  coverage_warnings: z
+    .array(SchemaCoverageWarningSchema)
+    .max(20_000)
+    .default([]),
   sanitized_error: z.string().min(1).max(500).optional()
 });
 export type SchemaIntrospectionResponse = z.infer<
