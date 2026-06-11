@@ -12,6 +12,7 @@ import {
   splitSemanticColumns,
   type SemanticColumnDisplay
 } from "../../lib/semantic/columns";
+import { coverageWarningsLabel } from "../../lib/semantic/summary";
 import { getActiveTenantContext } from "../../lib/tenant";
 
 type ConnectionRow = {
@@ -564,7 +565,10 @@ function ImportSummary({ summary }: { summary: SchemaImportSummary }) {
       {warningEntries.length > 0 ? (
         <div>
           <p className="text-xs font-medium text-[color:var(--muted)]">
-            Warning aggregati ({summary.coverage_warnings_count})
+            {coverageWarningsLabel(
+              summary.coverage_warnings_count,
+              warningEntries.length
+            )}
           </p>
           <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">
             {warningEntries.map(([code, count]) => (

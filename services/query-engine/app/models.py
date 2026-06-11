@@ -194,15 +194,15 @@ class SchemaTableMetadata(StrictModel):
 
 
 class SchemaForeignKeyMetadata(StrictModel):
-    name: str = Field(min_length=1, max_length=255)
+    constraint_name: str = Field(min_length=1, max_length=255)
     from_schema: str = Field(min_length=1, max_length=255)
     from_table: str = Field(min_length=1, max_length=255)
     from_columns: list[NonEmptyString] = Field(min_length=1)
     to_schema: str = Field(min_length=1, max_length=255)
     to_table: str = Field(min_length=1, max_length=255)
     to_columns: list[NonEmptyString] = Field(min_length=1)
-    on_delete: str = Field(min_length=1, max_length=40)
-    on_update: str = Field(min_length=1, max_length=40)
+    delete_rule: str = Field(min_length=1, max_length=40)
+    update_rule: str = Field(min_length=1, max_length=40)
     is_disabled: bool = False
     is_not_trusted: bool = False
     source: Literal["db_fk"] = "db_fk"

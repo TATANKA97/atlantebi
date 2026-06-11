@@ -253,15 +253,15 @@ def test_schema_introspection_endpoint_uses_secret_resolver_and_driver(
                 ],
                 foreign_keys=[
                     SchemaForeignKeyMetadata(
-                        name="FK_Order_Customer",
+                        constraint_name="FK_Order_Customer",
                         from_schema="SalesLT",
                         from_table="SalesOrderHeader",
                         from_columns=["CustomerID"],
                         to_schema="SalesLT",
                         to_table="Customer",
                         to_columns=["CustomerID"],
-                        on_delete="no_action",
-                        on_update="no_action",
+                        delete_rule="no_action",
+                        update_rule="no_action",
                     )
                 ],
                 coverage_warnings=[],
@@ -311,6 +311,12 @@ def test_schema_introspection_endpoint_uses_secret_resolver_and_driver(
     assert body["tables"][0]["schema"] == "SalesLT"
     assert body["tables"][0]["primary_key"]["columns"] == ["CustomerID"]
     assert body["foreign_keys"][0]["from_columns"] == ["CustomerID"]
+    assert body["foreign_keys"][0]["constraint_name"] == "FK_Order_Customer"
+    assert body["foreign_keys"][0]["delete_rule"] == "no_action"
+    assert body["foreign_keys"][0]["update_rule"] == "no_action"
+    assert "name" not in body["foreign_keys"][0]
+    assert "on_delete" not in body["foreign_keys"][0]
+    assert "on_update" not in body["foreign_keys"][0]
     assert "sanitized_error" not in body
 
 
@@ -710,6 +716,9 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
     assert result.tables[1].columns[1].name == "CustomerID"
     assert result.foreign_keys[0].from_table == "SalesOrderHeader"
     assert result.foreign_keys[0].to_table == "Customer"
+    assert result.foreign_keys[0].constraint_name == "FK_SalesOrderHeader_Customer"
+    assert result.foreign_keys[0].delete_rule == "no_action"
+    assert result.foreign_keys[0].update_rule == "no_action"
     assert result.foreign_keys[0].source == "db_fk"
     assert result.unique_constraints[0].name == "UQ_Customer_Email"
     assert result.indexes[0].included_columns[0].name == "Phone"
@@ -849,15 +858,15 @@ def test_sqlserver_view_lineage_falls_back_when_dmf_permission_denied() -> None:
         ],
         foreign_keys=[
             SchemaForeignKeyMetadata(
-                name="FK_Dummy",
+                constraint_name="FK_Dummy",
                 from_schema="SalesLT",
                 from_table="Child",
                 from_columns=["CustomerID"],
                 to_schema="SalesLT",
                 to_table="Customer",
                 to_columns=["CustomerID"],
-                on_delete="no_action",
-                on_update="no_action",
+                delete_rule="no_action",
+                update_rule="no_action",
             )
         ],
         indexes_available=True,
