@@ -79,9 +79,10 @@ language plpgsql
 as $$
 declare
   captured_at timestamptz := clock_timestamp();
+  imported_version integer;
 begin
-  return query
   select semantic_version_number
+  into imported_version
   from public.persist_technical_schema_import(
     '10000000-0000-4000-8000-000000000002',
     '20000000-0000-4000-8000-000000000002',
@@ -148,5 +149,6 @@ begin
     0,
     captured_at
   );
+  return imported_version;
 end;
 $$;
