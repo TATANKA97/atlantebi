@@ -18,7 +18,6 @@ jobs:
   deploy:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    environment: production
     env:
       GCP_PROJECT_ID: business-intelligence-495312
       GCP_REGION: us-central1
