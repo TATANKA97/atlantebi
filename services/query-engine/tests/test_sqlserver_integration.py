@@ -43,6 +43,7 @@ def test_sqlserver_snapshot_v1_against_real_catalog_views() -> None:
     assert ("fixture", "ParentEntity") in tables
     assert ("fixture", "ChildEntity") in tables
     assert ("fixture", "vActiveChild") in tables
+    assert ("fixture", "vIndexedChild") in tables
 
     parent = tables[("fixture", "ParentEntity")]
     child = tables[("fixture", "ChildEntity")]
@@ -85,10 +86,19 @@ def test_sqlserver_snapshot_v1_against_real_catalog_views() -> None:
         if index.name == "UX_ChildEntity_ExternalCode"
     )
     assert unique_index.is_unique is True
+    assert unique_index.object_type == "table"
     assert [column.name for column in unique_index.key_columns] == [
         "TenantCode",
         "ExternalCode",
     ]
     assert [column.name for column in unique_index.included_columns] == ["EntityCode"]
     assert unique_index.filter_definition is not None
+    indexed_view_index = next(
+        index
+        for index in result.indexes
+        if index.name == "CUX_vIndexedChild_ChildId"
+    )
+    assert indexed_view_index.object_type == "view"
+    assert indexed_view_index.is_unique is True
+    assert indexed_view_index.index_type == "clustered"
     assert len(result.schema_hash) == 64

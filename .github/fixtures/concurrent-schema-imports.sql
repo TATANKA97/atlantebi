@@ -75,25 +75,80 @@ select public.save_connection_test_result(
 
 create or replace function public.hardening_test_concurrent_import()
 returns integer
-language sql
+language plpgsql
 as $$
+declare
+  captured_at timestamptz := clock_timestamp();
+  imported_version integer;
+begin
   select semantic_version_number
+  into imported_version
   from public.persist_technical_schema_import(
     '10000000-0000-4000-8000-000000000002',
     '20000000-0000-4000-8000-000000000002',
     '30000000-0000-4000-8000-000000000002',
     'sqlserver',
-    '{
-      "status":"ok",
-      "engine":"sqlserver",
-      "tables":[],
-      "foreign_keys":[],
-      "coverage_state":"complete"
-    }'::jsonb,
+    jsonb_build_object(
+      'status', 'ok',
+      'engine', 'sqlserver',
+      'engine_version', 'test',
+      'schema_hash', repeat('a', 64),
+      'coverage_status', 'ok',
+      'tables', jsonb_build_array(),
+      'foreign_keys', jsonb_build_array(),
+      'coverage_warnings', jsonb_build_array()
+    ),
+    jsonb_build_object(
+      'database_name', 'demo',
+      'engine', 'sqlserver',
+      'engine_version', 'test',
+      'schema_hash', repeat('a', 64),
+      'coverage_status', 'ok',
+      'captured_at', to_char(captured_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') || 'Z',
+      'duration_ms', 0,
+      'total_objects', 0,
+      'total_tables', 0,
+      'total_views', 0,
+      'total_columns', 0,
+      'queryable_objects', 0,
+      'non_queryable_objects', 0,
+      'queryable_columns', 0,
+      'non_queryable_columns', 0,
+      'primary_keys_count', 0,
+      'foreign_keys_count', 0,
+      'unique_constraints_count', 0,
+      'check_constraints_count', 0,
+      'default_constraints_count', 0,
+      'indexes_total_count', 0,
+      'table_indexes_count', 0,
+      'view_indexes_count', 0,
+      'unique_indexes_count', 0,
+      'filtered_indexes_count', 0,
+      'included_columns_indexes_count', 0,
+      'views_total', 0,
+      'views_with_definition_count', 0,
+      'views_without_definition_count', 0,
+      'views_with_lineage_count', 0,
+      'views_with_partial_lineage_count', 0,
+      'views_without_lineage_count', 0,
+      'view_lineage_dependencies_count', 0,
+      'columns_with_declared_type_count', 0,
+      'columns_without_declared_type_count', 0,
+      'columns_with_default_count', 0,
+      'computed_columns_count', 0,
+      'identity_columns_count', 0,
+      'pii_columns_count', 0,
+      'excluded_columns_count', 0,
+      'sensitive_columns_count', 0,
+      'coverage_warnings_count', 0,
+      'coverage_warnings_by_code', jsonb_build_object()
+    ),
     '[]'::jsonb,
     '[]'::jsonb,
     0,
     0,
-    now()
+    captured_at
   );
+  return imported_version;
+end;
 $$;

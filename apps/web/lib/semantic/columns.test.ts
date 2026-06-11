@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   isSemanticColumnQueryable,
-  semanticColumnFlags,
+  semanticColumnAtlanteFlags,
+  semanticColumnDatabaseFlags,
   semanticColumnTypeLabel,
   splitSemanticColumns,
   type SemanticColumnDisplay
@@ -13,7 +14,11 @@ const baseColumn: SemanticColumnDisplay = {
   id: "column-id",
   metadata: {
     is_nullable: false,
-    is_primary_key: false
+    is_primary_key: false,
+    declared_type_available: true,
+    is_sensitive: false,
+    queryable: true,
+    technical_role: "text"
   },
   physical_name: "Name",
   pii: false,
@@ -26,12 +31,13 @@ describe("semantic column display helpers", () => {
     const passwordHash: SemanticColumnDisplay = {
       ...baseColumn,
       metadata: {
+        ...baseColumn.metadata,
         is_sensitive: true,
         queryable: false,
         sensitive_reason: "credential_name"
       },
       physical_name: "PasswordHash",
-      pii: true,
+      pii: false,
       role: "unknown"
     };
 
@@ -46,6 +52,7 @@ describe("semantic column display helpers", () => {
     const emailAddress: SemanticColumnDisplay = {
       ...baseColumn,
       metadata: {
+        ...baseColumn.metadata,
         is_nullable: true,
         pii_reason: "contact_identifier"
       },
@@ -54,7 +61,29 @@ describe("semantic column display helpers", () => {
     };
 
     expect(isSemanticColumnQueryable(emailAddress)).toBe(true);
-    expect(semanticColumnFlags(emailAddress)).toEqual(["nullable", "PII"]);
+    expect(semanticColumnDatabaseFlags(emailAddress)).toEqual(["nullable"]);
+    expect(semanticColumnAtlanteFlags(emailAddress)).toEqual([
+      "queryable",
+      "PII"
+    ]);
+  });
+
+  it("does not derive queryability from the semantic role", () => {
+    const technicalImport: SemanticColumnDisplay = {
+      ...baseColumn,
+      role: "unknown"
+    };
+    const missingExplicitQueryability: SemanticColumnDisplay = {
+      ...baseColumn,
+      metadata: {
+        ...baseColumn.metadata,
+        is_nullable: false,
+        queryable: undefined as never
+      }
+    };
+
+    expect(isSemanticColumnQueryable(technicalImport)).toBe(true);
+    expect(isSemanticColumnQueryable(missingExplicitQueryability)).toBe(false);
   });
 
   it("shows declared SQL Server alias types without replacing base type", () => {
@@ -62,6 +91,7 @@ describe("semantic column display helpers", () => {
       ...baseColumn,
       data_type: "nvarchar",
       metadata: {
+        ...baseColumn.metadata,
         declared_type: "Phone",
         declared_type_name: "Phone",
         declared_type_schema: "SalesLT",

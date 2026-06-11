@@ -154,7 +154,7 @@ async def introspect_schema(
             "database_name": result.database_name,
             "engine_version": result.engine_version,
             "schema_hash": result.schema_hash,
-            "coverage_state": result.coverage_state,
+            "coverage_status": result.coverage_status,
             "tables": [asdict(table) for table in result.tables],
             "foreign_keys": [
                 asdict(foreign_key) for foreign_key in result.foreign_keys
@@ -249,6 +249,7 @@ def _schema_introspection_error(
         message=message,
         introspected_at=introspected_at,
         duration_ms=int((perf_counter() - started) * 1000),
+        coverage_status="blocked",
         sanitized_error=sanitized_error,
     )
 

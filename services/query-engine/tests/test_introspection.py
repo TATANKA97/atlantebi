@@ -31,15 +31,23 @@ from app.drivers.base import (
 )
 from app.drivers.sqlserver import (
     SQLSERVER_COLUMNS_QUERY,
+    SQLSERVER_INDEXES_QUERY,
     SqlServerDriver,
+    _build_column_coverage_warnings,
     _build_coverage_warnings,
-    _coverage_state,
+    _coverage_status,
     _fetch_view_lineage,
     _fetch_all_sync,
     _schema_hash,
+    _technical_role,
 )
 from app.main import app
-from app.models import Engine, SchemaIntrospectionRequest, SchemaIntrospectionResponse
+from app.models import (
+    Engine,
+    SchemaImportSummary,
+    SchemaIntrospectionRequest,
+    SchemaIntrospectionResponse,
+)
 
 
 def _sqlserver_connection() -> ConnectionMetadata:
@@ -142,6 +150,7 @@ def test_schema_introspection_response_serializes_schema_alias() -> None:
         introspected_at="2026-06-04T10:00:00+00:00",
         duration_ms=12,
         engine="sqlserver",
+        coverage_status="ok",
         tables=[
             {
                 "table_schema": "SalesLT",
@@ -151,6 +160,8 @@ def test_schema_introspection_response_serializes_schema_alias() -> None:
                     {
                         "name": "CustomerID",
                         "data_type": "int",
+                        "declared_type_available": False,
+                        "technical_role": "identifier",
                         "ordinal_position": 1,
                         "is_nullable": False,
                     },
@@ -158,6 +169,8 @@ def test_schema_introspection_response_serializes_schema_alias() -> None:
                         "name": "FirstName",
                         "data_type": "nvarchar",
                         "declared_type": "Name",
+                        "declared_type_available": True,
+                        "technical_role": "text",
                         "ordinal_position": 2,
                         "is_nullable": False,
                     }
@@ -217,7 +230,7 @@ def test_schema_introspection_endpoint_uses_secret_resolver_and_driver(
                 database_name="AdventureWorksLT",
                 engine_version="12.0.2000.8",
                 schema_hash="a" * 64,
-                coverage_state="complete",
+                coverage_status="ok",
                 tables=[
                     SchemaTableMetadata(
                         table_schema="SalesLT",
@@ -293,7 +306,8 @@ def test_schema_introspection_endpoint_uses_secret_resolver_and_driver(
     assert response.status_code == 200
     assert body["status"] == "ok"
     assert body["engine"] == "sqlserver"
-    assert body["coverage_state"] == "complete"
+    assert body["coverage_status"] == "ok"
+    assert "coverage_state" not in body
     assert body["tables"][0]["schema"] == "SalesLT"
     assert body["tables"][0]["primary_key"]["columns"] == ["CustomerID"]
     assert body["foreign_keys"][0]["from_columns"] == ["CustomerID"]
@@ -400,6 +414,7 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
                         0,
                         None,
                         0,
+                        "table",
                     ),
                     (
                         "SalesLT",
@@ -415,6 +430,7 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
                         1,
                         None,
                         0,
+                        "table",
                     ),
                 ]
             if "sys.foreign_keys" in self.query:
@@ -682,8 +698,14 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
     assert customer_columns["FirstName"].declared_type_schema == "SalesLT"
     assert customer_columns["FirstName"].declared_type_name == "Name"
     assert customer_columns["FirstName"].declared_type_is_user_defined is True
+    assert customer_columns["FirstName"].declared_type_available is True
+    assert customer_columns["FirstName"].technical_role == "text"
     assert customer_columns["MiddleName"].data_type == "nvarchar"
     assert customer_columns["MiddleName"].declared_type is None
+    assert customer_columns["MiddleName"].declared_type_available is False
+    assert customer_columns["CustomerID"].declared_type_available is True
+    assert customer_columns["EmailAddress"].declared_type_available is True
+    assert customer_columns["CustomerID"].technical_role == "identifier"
     assert customer_columns["EmailAddress"].is_unique_member is True
     assert result.tables[1].columns[1].name == "CustomerID"
     assert result.foreign_keys[0].from_table == "SalesOrderHeader"
@@ -691,6 +713,7 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
     assert result.foreign_keys[0].source == "db_fk"
     assert result.unique_constraints[0].name == "UQ_Customer_Email"
     assert result.indexes[0].included_columns[0].name == "Phone"
+    assert result.indexes[0].object_type == "table"
     assert result.check_constraints[0].definition == "([TotalDue]>=(0))"
     view_table = next(table for table in result.tables if table.name == "vCustomer")
     assert view_table.lineage_available is True
@@ -705,8 +728,10 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
         warning.code == "COLUMN_DECLARED_TYPE_UNAVAILABLE"
         and warning.object_schema == "SalesLT"
         and warning.object_name == "Customer"
+        and "MiddleName" in warning.message
         for warning in result.coverage_warnings
     )
+    assert result.coverage_status == "partial"
 
 
 def test_sqlserver_columns_query_keeps_alias_type_columns() -> None:
@@ -718,6 +743,43 @@ def test_sqlserver_columns_query_keeps_alias_type_columns() -> None:
     assert "type_name(column_item.user_type_id)" in normalized_query
     assert "base_type.is_user_defined = 0" in normalized_query
     assert "as declared_type_unavailable" in normalized_query
+
+
+def test_sqlserver_indexes_query_includes_tables_and_views() -> None:
+    normalized_query = " ".join(SQLSERVER_INDEXES_QUERY.lower().split())
+
+    assert "object_item.type in ('u', 'v')" in normalized_query
+    assert "as object_type" in normalized_query
+
+
+def test_declared_type_warnings_are_detailed_and_aggregated_per_object() -> None:
+    def hidden_declared_type_row(column_name: str):
+        row = [None] * 25
+        row[0] = "SalesLT"
+        row[1] = "Customer"
+        row[2] = column_name
+        row[20] = 1
+        return tuple(row)
+
+    warnings = _build_column_coverage_warnings(
+        column_rows=[
+            hidden_declared_type_row("FirstName"),
+            hidden_declared_type_row("LastName"),
+        ],
+        tables=[
+            SchemaTableMetadata(
+                table_schema="SalesLT",
+                name="Customer",
+                table_type="base_table",
+            )
+        ],
+    )
+
+    assert len(warnings) == 1
+    assert warnings[0].code == "COLUMN_DECLARED_TYPE_UNAVAILABLE"
+    assert "2 columns" in warnings[0].message
+    assert "FirstName" in warnings[0].message
+    assert "LastName" in warnings[0].message
 
 
 def test_sqlserver_view_lineage_falls_back_when_dmf_permission_denied() -> None:
@@ -873,6 +935,7 @@ def test_sqlserver_schema_hash_ignores_unstable_object_id_and_row_count() -> Non
             name="IX_Synthetic_Total",
             schema_name="dbo",
             table_name="Synthetic",
+            object_type="table",
             is_unique=True,
             is_primary_key=False,
             index_type="nonclustered",
@@ -1008,9 +1071,9 @@ def test_sqlserver_schema_hash_canonicalizes_view_lineage_order() -> None:
     assert first_hash == second_hash
 
 
-def test_coverage_state_treats_missing_lineage_as_partial() -> None:
+def test_coverage_status_is_deterministic() -> None:
     assert (
-        _coverage_state(
+        _coverage_status(
             [
                 SchemaCoverageWarning(
                     code="VIEW_LINEAGE_NOT_AVAILABLE",
@@ -1019,10 +1082,10 @@ def test_coverage_state_treats_missing_lineage_as_partial() -> None:
                 )
             ]
         )
-        == "partial"
+        == "warning"
     )
     assert (
-        _coverage_state(
+        _coverage_status(
             [
                 SchemaCoverageWarning(
                     code="NO_FOREIGN_KEYS_FOUND",
@@ -1031,5 +1094,134 @@ def test_coverage_state_treats_missing_lineage_as_partial() -> None:
                 )
             ]
         )
-        == "complete"
+        == "partial"
     )
+    assert (
+        _coverage_status(
+            [
+                SchemaCoverageWarning(
+                    code="COLUMN_OBJECT_MAPPING_MISSING",
+                    severity="warning",
+                    message="Column mapping missing.",
+                )
+            ]
+        )
+        == "blocked"
+    )
+    assert _coverage_status([]) == "ok"
+
+
+@pytest.mark.parametrize(
+    ("column_name", "native_type", "expected"),
+    [
+        ("CustomerID", "int", "identifier"),
+        ("OrderDate", "datetime", "date"),
+        ("IsActive", "bit", "boolean"),
+        ("OrderQty", "smallint", "quantity_candidate"),
+        ("TotalDue", "money", "money_candidate"),
+        ("UnitPrice", "decimal", "money_candidate"),
+        ("RevisionNumber", "tinyint", "numeric"),
+        ("DisplayName", "nvarchar", "text"),
+        ("Document", "varbinary", "binary"),
+        ("Payload", "xml", "xml"),
+        ("Geography", "geography", "unknown"),
+        ("Paid", "bit", "boolean"),
+        ("SyntaxScore", "decimal", "numeric"),
+        ("AccountNumber", "int", "numeric"),
+    ],
+)
+def test_technical_role_is_deterministic(
+    column_name: str,
+    native_type: str,
+    expected: str,
+) -> None:
+    assert (
+        _technical_role(
+            column_name=column_name,
+            native_type=native_type,
+            is_primary_key=False,
+            is_foreign_key=False,
+            is_identity=False,
+        )
+        == expected
+    )
+
+
+def test_schema_import_summary_is_strict_and_has_no_legacy_coverage() -> None:
+    payload = {
+        "database_name": "AdventureWorksLT",
+        "engine": "sqlserver",
+        "engine_version": "12.0.2000.8",
+        "schema_hash": "b" * 64,
+        "coverage_status": "partial",
+        "captured_at": "2026-06-11T12:00:00+00:00",
+        "duration_ms": 1200,
+        "total_objects": 13,
+        "total_tables": 10,
+        "total_views": 3,
+        "total_columns": 129,
+        "queryable_objects": 13,
+        "non_queryable_objects": 0,
+        "queryable_columns": 125,
+        "non_queryable_columns": 4,
+        "primary_keys_count": 10,
+        "foreign_keys_count": 12,
+        "unique_constraints_count": 3,
+        "check_constraints_count": 2,
+        "default_constraints_count": 8,
+        "indexes_total_count": 31,
+        "table_indexes_count": 30,
+        "view_indexes_count": 1,
+        "unique_indexes_count": 12,
+        "filtered_indexes_count": 0,
+        "included_columns_indexes_count": 1,
+        "views_total": 3,
+        "views_with_definition_count": 3,
+        "views_without_definition_count": 0,
+        "views_with_lineage_count": 3,
+        "views_with_partial_lineage_count": 1,
+        "views_without_lineage_count": 0,
+        "view_lineage_dependencies_count": 25,
+        "columns_with_declared_type_count": 110,
+        "columns_without_declared_type_count": 19,
+        "columns_with_default_count": 8,
+        "computed_columns_count": 4,
+        "identity_columns_count": 5,
+        "pii_columns_count": 8,
+        "excluded_columns_count": 4,
+        "sensitive_columns_count": 2,
+        "coverage_warnings_count": 1,
+        "coverage_warnings_by_code": {
+            "COLUMN_DECLARED_TYPE_UNAVAILABLE": 19,
+        },
+    }
+
+    summary = SchemaImportSummary.model_validate(payload)
+    assert summary.view_indexes_count == 1
+    with pytest.raises(ValidationError):
+        SchemaImportSummary.model_validate({**payload, "coverage_state": "partial"})
+    with pytest.raises(ValidationError):
+        SchemaImportSummary.model_validate(
+            {**payload, "captured_at": "2026-06-11T12:00:00"}
+        )
+
+
+def test_schema_introspection_response_requires_new_coverage_contract() -> None:
+    payload = {
+        "status": "failed",
+        "message": "Schema introspection failed.",
+        "introspected_at": "2026-06-11T12:00:00+00:00",
+        "duration_ms": 10,
+        "sanitized_error": "Connection failed.",
+    }
+
+    with pytest.raises(ValidationError):
+        SchemaIntrospectionResponse.model_validate(payload)
+    blocked = SchemaIntrospectionResponse.model_validate(
+        {**payload, "coverage_status": "blocked"}
+    )
+    assert blocked.coverage_status == "blocked"
+    with pytest.raises(ValidationError):
+        SchemaIntrospectionResponse.model_validate(
+            {**payload, "coverage_status": "blocked", "coverage_state": "unknown"}
+        )

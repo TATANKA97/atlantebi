@@ -69,12 +69,27 @@ export const SchemaIntrospectionStatusSchema = z.enum(
 export type SchemaIntrospectionStatus = z.infer<
   typeof SchemaIntrospectionStatusSchema
 >;
-export const SchemaCoverageStateSchema = z.enum([
-  "complete",
+export const SchemaCoverageStatusSchema = z.enum([
+  "ok",
   "partial",
+  "warning",
+  "blocked"
+]);
+export type SchemaCoverageStatus = z.infer<typeof SchemaCoverageStatusSchema>;
+
+export const SchemaTechnicalRoleSchema = z.enum([
+  "identifier",
+  "date",
+  "boolean",
+  "quantity_candidate",
+  "money_candidate",
+  "numeric",
+  "text",
+  "binary",
+  "xml",
   "unknown"
 ]);
-export type SchemaCoverageState = z.infer<typeof SchemaCoverageStateSchema>;
+export type SchemaTechnicalRole = z.infer<typeof SchemaTechnicalRoleSchema>;
 
 export const SchemaColumnMetadataSchema = z.strictObject({
   name: z.string().min(1).max(255),
@@ -86,6 +101,8 @@ export const SchemaColumnMetadataSchema = z.strictObject({
   declared_type_name: z.string().min(1).max(255).optional(),
   declared_type_is_user_defined: z.boolean().optional(),
   declared_type_is_assembly: z.boolean().optional(),
+  declared_type_available: z.boolean(),
+  technical_role: SchemaTechnicalRoleSchema,
   ordinal_position: z.number().int().min(1),
   is_nullable: z.boolean(),
   max_length: z.number().int().min(-1).optional(),
@@ -220,6 +237,7 @@ export const SchemaIndexMetadataSchema = z.strictObject({
   name: z.string().min(1).max(255),
   schema_name: z.string().min(1).max(255),
   table_name: z.string().min(1).max(255),
+  object_type: z.enum(["table", "view"]),
   is_unique: z.boolean(),
   is_primary_key: z.boolean(),
   index_type: z.string().min(1).max(80),
@@ -230,29 +248,87 @@ export const SchemaIndexMetadataSchema = z.strictObject({
 });
 export type SchemaIndexMetadata = z.infer<typeof SchemaIndexMetadataSchema>;
 
+export const SCHEMA_COVERAGE_WARNING_CODES = [
+  "ROW_COUNT_ESTIMATE_UNAVAILABLE",
+  "VIEW_DEFINITION_MISSING",
+  "VIEW_DEFINITION_PERMISSION_DENIED",
+  "NO_VIEW_DEFINITION_PERMISSION",
+  "PARTIAL_METADATA_VISIBILITY_POSSIBLE",
+  "INDEX_METADATA_UNAVAILABLE",
+  "NO_FOREIGN_KEYS_FOUND",
+  "VIEW_LINEAGE_NOT_AVAILABLE",
+  "VIEW_LINEAGE_PARTIAL",
+  "VIEW_LINEAGE_PERMISSION_DENIED",
+  "VIEW_LINEAGE_UNRESOLVED_REFERENCE",
+  "COLUMN_DECLARED_TYPE_UNAVAILABLE",
+  "COLUMN_DECLARED_TYPE_SCHEMA_UNAVAILABLE",
+  "COLUMN_OBJECT_MAPPING_MISSING"
+] as const;
+export const SchemaCoverageWarningCodeSchema = z.enum(
+  SCHEMA_COVERAGE_WARNING_CODES
+);
+export type SchemaCoverageWarningCode = z.infer<
+  typeof SchemaCoverageWarningCodeSchema
+>;
+
 export const SchemaCoverageWarningSchema = z.strictObject({
-  code: z.enum([
-    "ROW_COUNT_ESTIMATE_UNAVAILABLE",
-    "VIEW_DEFINITION_MISSING",
-    "VIEW_DEFINITION_PERMISSION_DENIED",
-    "NO_VIEW_DEFINITION_PERMISSION",
-    "PARTIAL_METADATA_VISIBILITY_POSSIBLE",
-    "INDEX_METADATA_UNAVAILABLE",
-    "NO_FOREIGN_KEYS_FOUND",
-    "VIEW_LINEAGE_NOT_AVAILABLE",
-    "VIEW_LINEAGE_PARTIAL",
-    "VIEW_LINEAGE_PERMISSION_DENIED",
-    "VIEW_LINEAGE_UNRESOLVED_REFERENCE",
-    "COLUMN_DECLARED_TYPE_UNAVAILABLE",
-    "COLUMN_DECLARED_TYPE_SCHEMA_UNAVAILABLE",
-    "COLUMN_OBJECT_MAPPING_MISSING"
-  ]),
+  code: SchemaCoverageWarningCodeSchema,
   severity: z.enum(["info", "warning"]),
   message: z.string().min(1).max(500),
   object_schema: z.string().min(1).max(255).optional(),
   object_name: z.string().min(1).max(255).optional()
 });
 export type SchemaCoverageWarning = z.infer<typeof SchemaCoverageWarningSchema>;
+
+export const SchemaImportSummarySchema = z.strictObject({
+  database_name: z.string().min(1).max(255),
+  engine: EngineSchema,
+  engine_version: z.string().min(1).max(500),
+  schema_hash: z.string().length(64),
+  coverage_status: SchemaCoverageStatusSchema,
+  captured_at: z.string().datetime({ offset: true }),
+  duration_ms: z.number().int().min(0),
+  total_objects: z.number().int().min(0),
+  total_tables: z.number().int().min(0),
+  total_views: z.number().int().min(0),
+  total_columns: z.number().int().min(0),
+  queryable_objects: z.number().int().min(0),
+  non_queryable_objects: z.number().int().min(0),
+  queryable_columns: z.number().int().min(0),
+  non_queryable_columns: z.number().int().min(0),
+  primary_keys_count: z.number().int().min(0),
+  foreign_keys_count: z.number().int().min(0),
+  unique_constraints_count: z.number().int().min(0),
+  check_constraints_count: z.number().int().min(0),
+  default_constraints_count: z.number().int().min(0),
+  indexes_total_count: z.number().int().min(0),
+  table_indexes_count: z.number().int().min(0),
+  view_indexes_count: z.number().int().min(0),
+  unique_indexes_count: z.number().int().min(0),
+  filtered_indexes_count: z.number().int().min(0),
+  included_columns_indexes_count: z.number().int().min(0),
+  views_total: z.number().int().min(0),
+  views_with_definition_count: z.number().int().min(0),
+  views_without_definition_count: z.number().int().min(0),
+  views_with_lineage_count: z.number().int().min(0),
+  views_with_partial_lineage_count: z.number().int().min(0),
+  views_without_lineage_count: z.number().int().min(0),
+  view_lineage_dependencies_count: z.number().int().min(0),
+  columns_with_declared_type_count: z.number().int().min(0),
+  columns_without_declared_type_count: z.number().int().min(0),
+  columns_with_default_count: z.number().int().min(0),
+  computed_columns_count: z.number().int().min(0),
+  identity_columns_count: z.number().int().min(0),
+  pii_columns_count: z.number().int().min(0),
+  excluded_columns_count: z.number().int().min(0),
+  sensitive_columns_count: z.number().int().min(0),
+  coverage_warnings_count: z.number().int().min(0),
+  coverage_warnings_by_code: z.record(
+    z.string().min(1).max(100),
+    z.number().int().min(1)
+  )
+});
+export type SchemaImportSummary = z.infer<typeof SchemaImportSummarySchema>;
 
 export const SchemaIntrospectionRequestSchema = z.strictObject({
   connection: ConnectionMetadataSchema,
@@ -269,7 +345,7 @@ export const SchemaIntrospectionResponseSchema = z.strictObject({
   database_name: z.string().min(1).max(255).optional(),
   engine_version: z.string().min(1).max(500).optional(),
   schema_hash: z.string().length(64).optional(),
-  coverage_state: SchemaCoverageStateSchema.optional(),
+  coverage_status: SchemaCoverageStatusSchema,
   tables: z.array(SchemaTableMetadataSchema).max(5_000).default([]),
   foreign_keys: z
     .array(SchemaForeignKeyMetadataSchema)
