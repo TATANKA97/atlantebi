@@ -204,15 +204,15 @@ describe("contracts", () => {
       ],
       foreign_keys: [
         {
-          name: "FK_Order_Customer",
+          constraint_name: "FK_Order_Customer",
           from_schema: "SalesLT",
           from_table: "SalesOrderHeader",
           from_columns: ["CustomerID"],
           to_schema: "SalesLT",
           to_table: "Customer",
           to_columns: ["CustomerID"],
-          on_delete: "no_action",
-          on_update: "no_action",
+          delete_rule: "no_action",
+          update_rule: "no_action",
           is_disabled: false,
           is_not_trusted: false,
           source: "db_fk",
@@ -272,6 +272,21 @@ describe("contracts", () => {
       "Customer"
     );
     expect(response.foreign_keys[0]?.source).toBe("db_fk");
+    expect(response.foreign_keys[0]?.constraint_name).toBe(
+      "FK_Order_Customer"
+    );
+    expect(() =>
+      SchemaIntrospectionResponseSchema.parse({
+        ...response,
+        foreign_keys: [
+          {
+            ...response.foreign_keys[0],
+            constraint_name: undefined,
+            name: "FK_Order_Customer"
+          }
+        ]
+      })
+    ).toThrow();
     expect(response.indexes[0]?.is_unique).toBe(true);
     expect(() =>
       SchemaIntrospectionResponseSchema.parse({

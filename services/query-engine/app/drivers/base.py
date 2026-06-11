@@ -153,15 +153,15 @@ class SchemaTableMetadata:
 
 @dataclass(frozen=True)
 class SchemaForeignKeyMetadata:
-    name: str
+    constraint_name: str
     from_schema: str
     from_table: str
     from_columns: list[str]
     to_schema: str
     to_table: str
     to_columns: list[str]
-    on_delete: str
-    on_update: str
+    delete_rule: str
+    update_rule: str
     is_disabled: bool = False
     is_not_trusted: bool = False
     source: Literal["db_fk"] = "db_fk"

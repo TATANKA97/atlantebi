@@ -1153,23 +1153,23 @@ def _build_foreign_keys(foreign_key_rows) -> list[SchemaForeignKeyMetadata]:
             from_table,
             to_schema,
             to_table,
-            on_delete,
-            on_update,
+            delete_rule,
+            update_rule,
             is_disabled,
             is_not_trusted,
         ) = key
         ordered_columns = sorted(columns)
         foreign_keys.append(
             SchemaForeignKeyMetadata(
-                name=name,
+                constraint_name=name,
                 from_schema=from_schema,
                 from_table=from_table,
                 from_columns=[column[1] for column in ordered_columns],
                 to_schema=to_schema,
                 to_table=to_table,
                 to_columns=[column[2] for column in ordered_columns],
-                on_delete=on_delete.lower(),
-                on_update=on_update.lower(),
+                delete_rule=delete_rule.lower(),
+                update_rule=update_rule.lower(),
                 is_disabled=is_disabled,
                 is_not_trusted=is_not_trusted,
                 source="db_fk",
@@ -1604,21 +1604,25 @@ def _schema_hash(
         ],
         "foreign_keys": [
             {
-                "name": foreign_key.name,
+                "constraint_name": foreign_key.constraint_name,
                 "from_schema": foreign_key.from_schema,
                 "from_table": foreign_key.from_table,
                 "from_columns": foreign_key.from_columns,
                 "to_schema": foreign_key.to_schema,
                 "to_table": foreign_key.to_table,
                 "to_columns": foreign_key.to_columns,
-                "on_delete": foreign_key.on_delete,
-                "on_update": foreign_key.on_update,
+                "delete_rule": foreign_key.delete_rule,
+                "update_rule": foreign_key.update_rule,
                 "is_disabled": foreign_key.is_disabled,
                 "is_not_trusted": foreign_key.is_not_trusted,
             }
             for foreign_key in sorted(
                 foreign_keys,
-                key=lambda item: (item.from_schema, item.from_table, item.name),
+                key=lambda item: (
+                    item.from_schema,
+                    item.from_table,
+                    item.constraint_name,
+                ),
             )
         ],
         "unique_constraints": [
