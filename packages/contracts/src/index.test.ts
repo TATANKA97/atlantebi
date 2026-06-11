@@ -10,6 +10,7 @@ import {
   QueryResponseSchema,
   QueryRequestSchema,
   RelationshipSchema,
+  SchemaImportSummarySchema,
   SchemaIntrospectionRequestSchema,
   SchemaIntrospectionResponseSchema,
   VerificationSummarySchema
@@ -127,7 +128,7 @@ describe("contracts", () => {
       database_name: "AdventureWorksLT",
       engine_version: "12.0.2000.8",
       schema_hash: "a".repeat(64),
-      coverage_state: "partial",
+      coverage_status: "partial",
       tables: [
         {
           schema: "SalesLT",
@@ -143,6 +144,8 @@ describe("contracts", () => {
               data_type: "int",
               native_type: "int",
               normalized_type: "int",
+              declared_type_available: false,
+              technical_role: "identifier",
               ordinal_position: 1,
               is_nullable: false,
               is_identity: true,
@@ -157,6 +160,8 @@ describe("contracts", () => {
               declared_type_name: "Name",
               declared_type_is_user_defined: true,
               declared_type_is_assembly: false,
+              declared_type_available: true,
+              technical_role: "text",
               native_type: "nvarchar",
               normalized_type: "nvarchar",
               ordinal_position: 2,
@@ -237,6 +242,7 @@ describe("contracts", () => {
           name: "IX_Customer_Email",
           schema_name: "SalesLT",
           table_name: "Customer",
+          object_type: "table",
           is_unique: true,
           is_primary_key: false,
           index_type: "nonclustered",
@@ -277,6 +283,66 @@ describe("contracts", () => {
       SchemaIntrospectionResponseSchema.parse({
         ...response,
         duration_ms: "1000"
+      })
+    ).toThrow();
+  });
+
+  it("validates the persisted import summary without legacy coverage fields", () => {
+    const summary = SchemaImportSummarySchema.parse({
+      database_name: "AdventureWorksLT",
+      engine: "sqlserver",
+      engine_version: "12.0.2000.8",
+      schema_hash: "b".repeat(64),
+      coverage_status: "partial",
+      captured_at: "2026-06-11T12:00:00.000Z",
+      duration_ms: 1200,
+      total_objects: 13,
+      total_tables: 10,
+      total_views: 3,
+      total_columns: 129,
+      queryable_objects: 13,
+      non_queryable_objects: 0,
+      queryable_columns: 125,
+      non_queryable_columns: 4,
+      primary_keys_count: 10,
+      foreign_keys_count: 12,
+      unique_constraints_count: 3,
+      check_constraints_count: 2,
+      default_constraints_count: 8,
+      indexes_total_count: 31,
+      table_indexes_count: 30,
+      view_indexes_count: 1,
+      unique_indexes_count: 12,
+      filtered_indexes_count: 0,
+      included_columns_indexes_count: 1,
+      views_total: 3,
+      views_with_definition_count: 3,
+      views_without_definition_count: 0,
+      views_with_lineage_count: 3,
+      views_with_partial_lineage_count: 1,
+      views_without_lineage_count: 0,
+      view_lineage_dependencies_count: 25,
+      columns_with_declared_type_count: 110,
+      columns_without_declared_type_count: 19,
+      columns_with_default_count: 8,
+      computed_columns_count: 4,
+      identity_columns_count: 5,
+      pii_columns_count: 8,
+      excluded_columns_count: 4,
+      sensitive_columns_count: 2,
+      coverage_warnings_count: 3,
+      coverage_warnings_by_code: {
+        ROW_COUNT_ESTIMATE_UNAVAILABLE: 1,
+        COLUMN_DECLARED_TYPE_UNAVAILABLE: 19,
+        VIEW_LINEAGE_PARTIAL: 1
+      }
+    });
+
+    expect(summary.indexes_total_count).toBe(31);
+    expect(() =>
+      SchemaImportSummarySchema.parse({
+        ...summary,
+        coverage_state: "partial"
       })
     ).toThrow();
   });
@@ -448,7 +514,7 @@ describe("contracts", () => {
         introspected_at: "2026-06-06T12:00:00.000Z",
         duration_ms: 10,
         engine: "sqlserver",
-        coverage_state: "complete",
+        coverage_status: "ok",
         tables: Array.from({ length: 5_001 }, (_, index) => ({
           schema: "dbo",
           name: `Table${index}`,

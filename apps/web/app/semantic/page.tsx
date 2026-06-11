@@ -1,8 +1,13 @@
 import Link from "next/link";
+import {
+  SchemaImportSummarySchema,
+  type SchemaImportSummary
+} from "@atlantebi/contracts";
 
 import { introspectConnectionAction } from "./actions";
 import {
-  semanticColumnFlags,
+  semanticColumnAtlanteFlags,
+  semanticColumnDatabaseFlags,
   semanticColumnTypeLabel,
   splitSemanticColumns,
   type SemanticColumnDisplay
@@ -43,20 +48,9 @@ type SemanticTableRow = {
   };
 };
 
-type SnapshotCoverageWarning = {
-  code: string;
-  severity: "info" | "warning";
-  message: string;
-  object_schema?: string;
-  object_name?: string;
-};
-
 type SnapshotSummaryRow = {
   id: string;
-  engine_version: string | null;
-  schema_hash: string | null;
-  coverage_state: "complete" | "partial" | "unknown" | null;
-  coverage_warnings: SnapshotCoverageWarning[];
+  summary: unknown;
 };
 
 type SemanticColumnRow = SemanticColumnDisplay & {
@@ -249,40 +243,7 @@ export default async function SemanticPage({
             </div>
 
             {semanticData.snapshot ? (
-              <div className="mt-4 grid gap-3 border border-[color:var(--border)] p-4 text-sm">
-                <div className="grid gap-2 sm:grid-cols-3">
-                  <p>
-                    <span className="text-[color:var(--muted)]">Engine version:</span>{" "}
-                    {semanticData.snapshot.engine_version ?? "non disponibile"}
-                  </p>
-                  <p className="break-all">
-                    <span className="text-[color:var(--muted)]">Schema hash:</span>{" "}
-                    {semanticData.snapshot.schema_hash ?? "non disponibile"}
-                  </p>
-                  <p>
-                    <span className="text-[color:var(--muted)]">Coverage:</span>{" "}
-                    {semanticData.snapshot.coverage_state ?? "unknown"}
-                  </p>
-                </div>
-                {semanticData.snapshot.coverage_warnings.length > 0 ? (
-                  <div>
-                    <p className="text-xs font-medium text-[color:var(--muted)]">
-                      Coverage warnings
-                    </p>
-                    <ul className="mt-2 grid gap-1 text-xs text-[color:var(--muted)]">
-                      {semanticData.snapshot.coverage_warnings.map((warning, index) => (
-                        <li key={`${warning.code}-${index}`}>
-                          {warning.severity.toUpperCase()} {warning.code}
-                          {warning.object_schema && warning.object_name
-                            ? ` (${warning.object_schema}.${warning.object_name})`
-                            : ""}
-                          : {warning.message}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-              </div>
+              <ImportSummary summary={semanticData.snapshot.summary} />
             ) : null}
 
             <div className="mt-5 grid gap-6">
@@ -329,13 +290,19 @@ export default async function SemanticPage({
                               Colonna
                             </th>
                             <th className="border-b border-[color:var(--border)] py-2 pr-4 font-medium">
-                              Tipo
+                              Tipo DB
                             </th>
                             <th className="border-b border-[color:var(--border)] py-2 pr-4 font-medium">
-                              Ruolo
+                              Metadata DB
+                            </th>
+                            <th className="border-b border-[color:var(--border)] py-2 pr-4 font-medium">
+                              Ruolo tecnico
+                            </th>
+                            <th className="border-b border-[color:var(--border)] py-2 pr-4 font-medium">
+                              Ruolo Atlante
                             </th>
                             <th className="border-b border-[color:var(--border)] py-2 font-medium">
-                              Metadata
+                              Classificazione Atlante
                             </th>
                           </tr>
                         </thead>
@@ -349,10 +316,16 @@ export default async function SemanticPage({
                                 {semanticColumnTypeLabel(column)}
                               </td>
                               <td className="border-b border-[color:var(--border)] py-2 pr-4">
+                                {semanticColumnDatabaseFlags(column).join(" ")}
+                              </td>
+                              <td className="border-b border-[color:var(--border)] py-2 pr-4">
+                                {column.metadata.technical_role}
+                              </td>
+                              <td className="border-b border-[color:var(--border)] py-2 pr-4">
                                 {column.role}
                               </td>
                               <td className="border-b border-[color:var(--border)] py-2 text-[color:var(--muted)]">
-                                {semanticColumnFlags(column).join(" ")}
+                                {semanticColumnAtlanteFlags(column).join(" ")}
                               </td>
                             </tr>
                           ))}
@@ -371,13 +344,19 @@ export default async function SemanticPage({
                                 Colonna
                               </th>
                               <th className="border-b border-[color:var(--border)] py-2 pr-4 font-medium">
-                                Tipo
+                                Tipo DB
                               </th>
                               <th className="border-b border-[color:var(--border)] py-2 pr-4 font-medium">
-                                Ruolo
+                                Metadata DB
+                              </th>
+                              <th className="border-b border-[color:var(--border)] py-2 pr-4 font-medium">
+                                Ruolo tecnico
+                              </th>
+                              <th className="border-b border-[color:var(--border)] py-2 pr-4 font-medium">
+                                Ruolo Atlante
                               </th>
                               <th className="border-b border-[color:var(--border)] py-2 font-medium">
-                                Metadata
+                                Classificazione Atlante
                               </th>
                             </tr>
                           </thead>
@@ -391,10 +370,16 @@ export default async function SemanticPage({
                                   {semanticColumnTypeLabel(column)}
                                 </td>
                                 <td className="border-b border-[color:var(--border)] py-2 pr-4">
+                                  {semanticColumnDatabaseFlags(column).join(" ")}
+                                </td>
+                                <td className="border-b border-[color:var(--border)] py-2 pr-4">
+                                  {column.metadata.technical_role}
+                                </td>
+                                <td className="border-b border-[color:var(--border)] py-2 pr-4">
                                   {column.role}
                                 </td>
                                 <td className="border-b border-[color:var(--border)] py-2 text-[color:var(--muted)]">
-                                  {semanticColumnFlags(column).join(" ")}
+                                  {semanticColumnAtlanteFlags(column).join(" ")}
                                 </td>
                               </tr>
                             ))}
@@ -494,10 +479,127 @@ async function readSnapshotSummary({
 
   const { data } = await supabase
     .from("schema_snapshot_summaries")
-    .select("id,engine_version,schema_hash,coverage_state,coverage_warnings")
+    .select("id,summary")
     .eq("tenant_id", tenantId)
     .eq("id", resolvedSnapshotId)
     .single();
 
-  return (data as SnapshotSummaryRow | null) ?? null;
+  const snapshot = data as SnapshotSummaryRow | null;
+  if (!snapshot) {
+    return null;
+  }
+
+  return {
+    id: snapshot.id,
+    summary: SchemaImportSummarySchema.parse(snapshot.summary)
+  };
+}
+
+function ImportSummary({ summary }: { summary: SchemaImportSummary }) {
+  const overview = [
+    ["Database", summary.database_name],
+    ["Engine", `${summary.engine} ${summary.engine_version}`],
+    ["Coverage", summary.coverage_status],
+    ["Acquisito", new Date(summary.captured_at).toLocaleString("it-IT")],
+    ["Durata", `${summary.duration_ms} ms`],
+    ["Oggetti", summary.total_objects],
+    ["Tabelle", summary.total_tables],
+    ["View", summary.total_views],
+    ["Colonne", summary.total_columns],
+    ["Oggetti queryable", summary.queryable_objects],
+    ["Oggetti non queryable", summary.non_queryable_objects],
+    ["Colonne queryable", summary.queryable_columns],
+    ["Colonne non queryable", summary.non_queryable_columns]
+  ] as const;
+  const constraints = [
+    ["Primary key", summary.primary_keys_count],
+    ["Foreign key", summary.foreign_keys_count],
+    ["Unique constraint", summary.unique_constraints_count],
+    ["Check constraint", summary.check_constraints_count],
+    ["Default constraint", summary.default_constraints_count]
+  ] as const;
+  const indexes = [
+    ["Indici totali", summary.indexes_total_count],
+    ["Su tabelle", summary.table_indexes_count],
+    ["Su view", summary.view_indexes_count],
+    ["Unici", summary.unique_indexes_count],
+    ["Filtrati", summary.filtered_indexes_count],
+    ["Con colonne incluse", summary.included_columns_indexes_count]
+  ] as const;
+  const viewCoverage = [
+    ["View totali", summary.views_total],
+    ["Con definizione", summary.views_with_definition_count],
+    ["Senza definizione", summary.views_without_definition_count],
+    ["Con lineage", summary.views_with_lineage_count],
+    ["Lineage parziale", summary.views_with_partial_lineage_count],
+    ["Senza lineage", summary.views_without_lineage_count],
+    ["Dipendenze lineage", summary.view_lineage_dependencies_count]
+  ] as const;
+  const columns = [
+    ["Tipo dichiarato disponibile", summary.columns_with_declared_type_count],
+    ["Tipo dichiarato assente", summary.columns_without_declared_type_count],
+    ["Con default", summary.columns_with_default_count],
+    ["Calcolate", summary.computed_columns_count],
+    ["Identity", summary.identity_columns_count],
+    ["PII", summary.pii_columns_count],
+    ["Escluse", summary.excluded_columns_count],
+    ["Sensitive", summary.sensitive_columns_count]
+  ] as const;
+  const warningEntries = Object.entries(summary.coverage_warnings_by_code).sort(
+    ([left], [right]) => left.localeCompare(right)
+  );
+
+  return (
+    <div className="mt-4 grid gap-5 border border-[color:var(--border)] p-4 text-sm">
+      <SummaryValues title="Import" values={overview} />
+      <div className="grid gap-5 md:grid-cols-2">
+        <SummaryValues title="Vincoli" values={constraints} />
+        <SummaryValues title="Indici" values={indexes} />
+        <SummaryValues title="Copertura view" values={viewCoverage} />
+        <SummaryValues title="Colonne" values={columns} />
+      </div>
+      <p className="break-all text-xs text-[color:var(--muted)]">
+        Schema hash: {summary.schema_hash}
+      </p>
+      {warningEntries.length > 0 ? (
+        <div>
+          <p className="text-xs font-medium text-[color:var(--muted)]">
+            Warning aggregati ({summary.coverage_warnings_count})
+          </p>
+          <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">
+            {warningEntries.map(([code, count]) => (
+              <li key={code}>
+                {code}:{" "}
+                {code === "COLUMN_DECLARED_TYPE_UNAVAILABLE"
+                  ? `${summary.columns_without_declared_type_count}/${summary.total_columns} colonne hanno declared type non visibile; usati native/base types.`
+                  : count}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SummaryValues({
+  title,
+  values
+}: {
+  title: string;
+  values: ReadonlyArray<readonly [string, string | number]>;
+}) {
+  return (
+    <div>
+      <h3 className="text-xs font-medium text-[color:var(--muted)]">{title}</h3>
+      <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
+        {values.map(([label, value]) => (
+          <div className="flex justify-between gap-3" key={label}>
+            <dt className="text-[color:var(--muted)]">{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
 }

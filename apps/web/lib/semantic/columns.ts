@@ -11,17 +11,20 @@ export type SemanticColumnDisplay = {
     declared_type_name?: string;
     declared_type_is_user_defined?: boolean;
     declared_type_is_assembly?: boolean;
+    declared_type_available: boolean;
+    technical_role: string;
     is_nullable?: boolean;
     is_primary_key?: boolean;
-    is_sensitive?: boolean;
+    is_sensitive: boolean;
     pii_reason?: string;
-    queryable?: boolean;
+    queryable: boolean;
+    exclusion_reason?: string;
     sensitive_reason?: string;
   };
 };
 
 export function isSemanticColumnQueryable(column: SemanticColumnDisplay) {
-  return column.metadata.queryable !== false && column.role !== "unknown";
+  return column.metadata.queryable === true;
 }
 
 export function splitSemanticColumns(columns: SemanticColumnDisplay[]) {
@@ -29,26 +32,6 @@ export function splitSemanticColumns(columns: SemanticColumnDisplay[]) {
     excludedColumns: columns.filter((column) => !isSemanticColumnQueryable(column)),
     queryableColumns: columns.filter(isSemanticColumnQueryable)
   };
-}
-
-export function semanticColumnFlags(column: SemanticColumnDisplay) {
-  const flags: string[] = [];
-
-  if (column.metadata.is_primary_key) {
-    flags.push("PK");
-  }
-
-  flags.push(column.metadata.is_nullable ? "nullable" : "not null");
-
-  if (column.pii) {
-    flags.push("PII");
-  }
-
-  if (column.metadata.queryable === false) {
-    flags.push("excluded");
-  }
-
-  return flags;
 }
 
 export function semanticColumnTypeLabel(column: SemanticColumnDisplay) {
@@ -70,4 +53,35 @@ export function semanticColumnTypeLabel(column: SemanticColumnDisplay) {
   }
 
   return column.data_type;
+}
+
+export function semanticColumnDatabaseFlags(column: SemanticColumnDisplay) {
+  const flags: string[] = [];
+
+  if (column.metadata.is_primary_key) {
+    flags.push("PK");
+  }
+
+  flags.push(column.metadata.is_nullable ? "nullable" : "not null");
+  return flags;
+}
+
+export function semanticColumnAtlanteFlags(column: SemanticColumnDisplay) {
+  const flags: string[] = [];
+
+  flags.push(column.metadata.queryable === true ? "queryable" : "excluded");
+
+  if (column.pii) {
+    flags.push("PII");
+  }
+
+  if (column.metadata.is_sensitive === true) {
+    flags.push("sensitive");
+  }
+
+  if (column.metadata.exclusion_reason) {
+    flags.push(column.metadata.exclusion_reason);
+  }
+
+  return flags;
 }

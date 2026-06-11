@@ -12,7 +12,9 @@
     "lint": "eslint .",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
-    "build": "pnpm -r --if-present build"
+    "build": "pnpm -r --if-present build",
+    "db:purge-demo-schema": "pnpm --filter @atlantebi/db purge:adventureworkslt-plan",
+    "schema:audit:adventureworks": "python services/query-engine/scripts/audit_adventureworkslt.py"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

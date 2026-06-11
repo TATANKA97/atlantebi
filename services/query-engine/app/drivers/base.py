@@ -53,7 +53,7 @@ class SchemaIntrospectionResult:
     database_name: str
     engine_version: str
     schema_hash: str
-    coverage_state: Literal["complete", "partial", "unknown"]
+    coverage_status: Literal["ok", "partial", "warning", "blocked"]
     tables: list["SchemaTableMetadata"]
     foreign_keys: list["SchemaForeignKeyMetadata"]
     unique_constraints: list["SchemaUniqueConstraintMetadata"] = field(default_factory=list)
@@ -75,6 +75,19 @@ class SchemaColumnMetadata:
     declared_type_name: str | None = None
     declared_type_is_user_defined: bool | None = None
     declared_type_is_assembly: bool | None = None
+    declared_type_available: bool = False
+    technical_role: Literal[
+        "identifier",
+        "date",
+        "boolean",
+        "quantity_candidate",
+        "money_candidate",
+        "numeric",
+        "text",
+        "binary",
+        "xml",
+        "unknown",
+    ] = "unknown"
     max_length: int | None = None
     numeric_precision: int | None = None
     numeric_scale: int | None = None
@@ -195,6 +208,7 @@ class SchemaIndexMetadata:
     name: str
     schema_name: str
     table_name: str
+    object_type: Literal["table", "view"]
     is_unique: bool
     is_primary_key: bool
     index_type: str

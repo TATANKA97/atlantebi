@@ -1,8 +1,9 @@
+from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 NonEmptyString = Annotated[str, Field(min_length=1)]
@@ -91,9 +92,23 @@ class SchemaIntrospectionStatus(StrEnum):
     engine_error = "engine_error"
 
 
-class SchemaCoverageState(StrEnum):
-    complete = "complete"
+class SchemaCoverageStatus(StrEnum):
+    ok = "ok"
     partial = "partial"
+    warning = "warning"
+    blocked = "blocked"
+
+
+class SchemaTechnicalRole(StrEnum):
+    identifier = "identifier"
+    date = "date"
+    boolean = "boolean"
+    quantity_candidate = "quantity_candidate"
+    money_candidate = "money_candidate"
+    numeric = "numeric"
+    text = "text"
+    binary = "binary"
+    xml = "xml"
     unknown = "unknown"
 
 
@@ -112,6 +127,8 @@ class SchemaColumnMetadata(StrictModel):
     declared_type_name: str | None = Field(default=None, min_length=1, max_length=255)
     declared_type_is_user_defined: bool | None = None
     declared_type_is_assembly: bool | None = None
+    declared_type_available: bool
+    technical_role: SchemaTechnicalRole = Field(strict=False)
     ordinal_position: int = Field(ge=1)
     is_nullable: bool
     max_length: int | None = Field(default=None, ge=-1)
@@ -227,6 +244,7 @@ class SchemaIndexMetadata(StrictModel):
     name: str = Field(min_length=1, max_length=255)
     schema_name: str = Field(min_length=1, max_length=255)
     table_name: str = Field(min_length=1, max_length=255)
+    object_type: Literal["table", "view"]
     is_unique: bool
     is_primary_key: bool
     index_type: str = Field(min_length=1, max_length=80)
@@ -259,6 +277,66 @@ class SchemaCoverageWarning(StrictModel):
     object_name: str | None = Field(default=None, min_length=1, max_length=255)
 
 
+class SchemaImportSummary(StrictModel):
+    database_name: str = Field(min_length=1, max_length=255)
+    engine: Engine = Field(strict=False)
+    engine_version: str = Field(min_length=1, max_length=500)
+    schema_hash: str = Field(min_length=64, max_length=64)
+    coverage_status: SchemaCoverageStatus = Field(strict=False)
+    captured_at: str
+    duration_ms: int = Field(ge=0)
+    total_objects: int = Field(ge=0)
+    total_tables: int = Field(ge=0)
+    total_views: int = Field(ge=0)
+    total_columns: int = Field(ge=0)
+    queryable_objects: int = Field(ge=0)
+    non_queryable_objects: int = Field(ge=0)
+    queryable_columns: int = Field(ge=0)
+    non_queryable_columns: int = Field(ge=0)
+    primary_keys_count: int = Field(ge=0)
+    foreign_keys_count: int = Field(ge=0)
+    unique_constraints_count: int = Field(ge=0)
+    check_constraints_count: int = Field(ge=0)
+    default_constraints_count: int = Field(ge=0)
+    indexes_total_count: int = Field(ge=0)
+    table_indexes_count: int = Field(ge=0)
+    view_indexes_count: int = Field(ge=0)
+    unique_indexes_count: int = Field(ge=0)
+    filtered_indexes_count: int = Field(ge=0)
+    included_columns_indexes_count: int = Field(ge=0)
+    views_total: int = Field(ge=0)
+    views_with_definition_count: int = Field(ge=0)
+    views_without_definition_count: int = Field(ge=0)
+    views_with_lineage_count: int = Field(ge=0)
+    views_with_partial_lineage_count: int = Field(ge=0)
+    views_without_lineage_count: int = Field(ge=0)
+    view_lineage_dependencies_count: int = Field(ge=0)
+    columns_with_declared_type_count: int = Field(ge=0)
+    columns_without_declared_type_count: int = Field(ge=0)
+    columns_with_default_count: int = Field(ge=0)
+    computed_columns_count: int = Field(ge=0)
+    identity_columns_count: int = Field(ge=0)
+    pii_columns_count: int = Field(ge=0)
+    excluded_columns_count: int = Field(ge=0)
+    sensitive_columns_count: int = Field(ge=0)
+    coverage_warnings_count: int = Field(ge=0)
+    coverage_warnings_by_code: dict[
+        Annotated[str, Field(min_length=1, max_length=100)],
+        Annotated[int, Field(ge=1)],
+    ]
+
+    @field_validator("captured_at")
+    @classmethod
+    def validate_captured_at(cls, value: str) -> str:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("captured_at must be an ISO 8601 datetime") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("captured_at must include a UTC offset")
+        return value
+
+
 class SchemaIntrospectionResponse(StrictModel):
     status: SchemaIntrospectionStatus = Field(strict=False)
     message: str = Field(min_length=1, max_length=500)
@@ -268,7 +346,7 @@ class SchemaIntrospectionResponse(StrictModel):
     database_name: str | None = Field(default=None, min_length=1, max_length=255)
     engine_version: str | None = Field(default=None, min_length=1, max_length=500)
     schema_hash: str | None = Field(default=None, min_length=64, max_length=64)
-    coverage_state: SchemaCoverageState | None = Field(default=None, strict=False)
+    coverage_status: SchemaCoverageStatus = Field(strict=False)
     tables: list[SchemaTableMetadata] = Field(default_factory=list, max_length=5_000)
     foreign_keys: list[SchemaForeignKeyMetadata] = Field(
         default_factory=list,

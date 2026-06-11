@@ -83,6 +83,22 @@ inner join fixture.ParentEntity as parent
 where child.IsActive = 1;
 go
 
+create view fixture.vIndexedChild
+with schemabinding
+as
+select
+  ChildId,
+  TenantCode,
+  EntityCode,
+  ExternalCode,
+  IsActive
+from fixture.ChildEntity;
+go
+
+create unique clustered index CUX_vIndexedChild_ChildId
+on fixture.vIndexedChild(ChildId);
+go
+
 execute sys.sp_addextendedproperty
   @name = N'MS_Description',
   @value = N'Synthetic deterministic metadata fixture',

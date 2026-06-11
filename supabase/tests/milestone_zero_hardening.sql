@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(12);
+select plan(15);
 
 select ok(
   not has_table_privilege('authenticated', 'public.schema_snapshots', 'INSERT'),
@@ -162,6 +162,90 @@ select is(
   'rejected secret rebinding leaves connection metadata unchanged'
 );
 
+create temporary table import_summary_fixture (
+  summary jsonb not null
+) on commit drop;
+
+insert into import_summary_fixture (summary)
+values (
+  '{
+    "database_name":"demo",
+    "engine":"sqlserver",
+    "engine_version":"16.0.1000.6",
+    "schema_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "coverage_status":"ok",
+    "captured_at":"2026-06-05T09:00:00Z",
+    "duration_ms":10,
+    "total_objects":0,
+    "total_tables":0,
+    "total_views":0,
+    "total_columns":0,
+    "queryable_objects":0,
+    "non_queryable_objects":0,
+    "queryable_columns":0,
+    "non_queryable_columns":0,
+    "primary_keys_count":0,
+    "foreign_keys_count":0,
+    "unique_constraints_count":0,
+    "check_constraints_count":0,
+    "default_constraints_count":0,
+    "indexes_total_count":0,
+    "table_indexes_count":0,
+    "view_indexes_count":0,
+    "unique_indexes_count":0,
+    "filtered_indexes_count":0,
+    "included_columns_indexes_count":0,
+    "views_total":0,
+    "views_with_definition_count":0,
+    "views_without_definition_count":0,
+    "views_with_lineage_count":0,
+    "views_with_partial_lineage_count":0,
+    "views_without_lineage_count":0,
+    "view_lineage_dependencies_count":0,
+    "columns_with_declared_type_count":0,
+    "columns_without_declared_type_count":0,
+    "columns_with_default_count":0,
+    "computed_columns_count":0,
+    "identity_columns_count":0,
+    "pii_columns_count":0,
+    "excluded_columns_count":0,
+    "sensitive_columns_count":0,
+    "coverage_warnings_count":0,
+    "coverage_warnings_by_code":{}
+  }'::jsonb
+);
+
+select throws_ok(
+  $$
+    select *
+    from public.persist_technical_schema_import(
+      '10000000-0000-4000-8000-000000000001',
+      '20000000-0000-4000-8000-000000000001',
+      '30000000-0000-4000-8000-000000000001',
+      'sqlserver',
+      '{
+        "status":"ok",
+        "engine":"sqlserver",
+        "engine_version":"16.0.1000.6",
+        "schema_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tables":[],
+        "foreign_keys":[],
+        "coverage_state":"complete",
+        "coverage_warnings":[]
+      }'::jsonb,
+      (select summary from import_summary_fixture),
+      '[]'::jsonb,
+      '[]'::jsonb,
+      0,
+      0,
+      '2026-06-05T09:00:00Z'
+    )
+  $$,
+  '22023',
+  'technical snapshot coverage_status is invalid',
+  'legacy coverage_state imports are rejected'
+);
+
 select is(
   (
     select semantic_version_number
@@ -173,10 +257,14 @@ select is(
       '{
         "status":"ok",
         "engine":"sqlserver",
+        "engine_version":"16.0.1000.6",
+        "schema_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "tables":[],
         "foreign_keys":[],
-        "coverage_state":"complete"
+        "coverage_status":"ok",
+        "coverage_warnings":[]
       }'::jsonb,
+      (select summary from import_summary_fixture),
       '[]'::jsonb,
       '[]'::jsonb,
       0,
@@ -199,10 +287,17 @@ select is(
       '{
         "status":"ok",
         "engine":"sqlserver",
+        "engine_version":"16.0.1000.6",
+        "schema_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "tables":[],
         "foreign_keys":[],
-        "coverage_state":"complete"
+        "coverage_status":"ok",
+        "coverage_warnings":[]
       }'::jsonb,
+      (
+        select summary || '{"captured_at":"2026-06-05T09:01:00Z"}'::jsonb
+        from import_summary_fixture
+      ),
       '[]'::jsonb,
       '[]'::jsonb,
       0,
@@ -225,10 +320,17 @@ select throws_ok(
       '{
         "status":"ok",
         "engine":"sqlserver",
+        "engine_version":"16.0.1000.6",
+        "schema_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "tables":[],
         "foreign_keys":[],
-        "coverage_state":"complete"
+        "coverage_status":"ok",
+        "coverage_warnings":[]
       }'::jsonb,
+      (
+        select summary || '{"captured_at":"2026-06-05T09:02:00Z"}'::jsonb
+        from import_summary_fixture
+      ),
       '[]'::jsonb,
       '[{
         "from_schema":"dbo",
@@ -263,6 +365,30 @@ select is(
   ),
   2,
   'failed import leaves no orphan snapshot'
+);
+
+select is(
+  (
+    select coverage_status::text
+    from public.schema_snapshot_summaries
+    where connection_id = '30000000-0000-4000-8000-000000000001'
+    order by created_at desc
+    limit 1
+  ),
+  'ok',
+  'snapshot summary exposes strict coverage status'
+);
+
+select is(
+  (
+    select summary->>'database_name'
+    from public.schema_snapshot_summaries
+    where connection_id = '30000000-0000-4000-8000-000000000001'
+    order by created_at desc
+    limit 1
+  ),
+  'demo',
+  'snapshot summary exposes the persisted sanitized import summary'
 );
 
 select * from finish();

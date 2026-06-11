@@ -2,9 +2,11 @@ import "server-only";
 
 import {
   ConnectionMetadataSchema,
+  SchemaImportSummarySchema,
   SchemaIntrospectionResponseSchema,
   type ConnectionMetadata,
   type SchemaColumnMetadata,
+  type SchemaImportSummary,
   type SchemaIntrospectionResponse
 } from "@atlantebi/contracts";
 import { GoogleAuth } from "google-auth-library";
@@ -245,6 +247,7 @@ async function persistSchemaIntrospection({
 }): Promise<IntrospectionResult> {
   const tableProjection = buildSemanticTableProjection(schema);
   const relationshipProjection = buildRelationshipProjection(schema);
+  const summary = buildSchemaImportSummary(schema, tableProjection);
   const admin = createSupabaseAdminClient();
   const { data, error } = await admin.rpc("persist_technical_schema_import", {
     actor_user_id: context.userId,
@@ -254,7 +257,8 @@ async function persistSchemaIntrospection({
     target_connection_id: connection.id,
     target_engine: schema.engine ?? connection.engine,
     target_introspected_at: schema.introspected_at,
-    target_table_count: schema.tables.length,
+    target_summary: summary,
+    target_table_count: summary.total_tables,
     target_tenant_id: context.tenantId,
     technical_snapshot: schema
   });
@@ -276,8 +280,8 @@ async function persistSchemaIntrospection({
     ok: true,
     schemaSnapshotId: persisted.schema_snapshot_id,
     semanticVersionId: persisted.semantic_version_id,
-    tableCount: schema.tables.length,
-    columnCount: countColumns(schema)
+    tableCount: summary.total_tables,
+    columnCount: summary.total_columns
   };
 }
 
@@ -290,12 +294,16 @@ function toSemanticColumnProjection({
 }): SemanticColumnProjection {
   const metadata: Record<string, string | number | boolean> = {
     ordinal_position: column.ordinal_position,
+    technical_role: column.technical_role,
+    declared_type_available: column.declared_type_available,
     is_nullable: column.is_nullable,
     is_primary_key: primaryKeyColumns.has(column.name.toLowerCase()),
     is_foreign_key: column.is_foreign_key,
     is_unique_member: column.is_unique_member,
     is_identity: column.is_identity,
-    is_computed: column.is_computed
+    is_computed: column.is_computed,
+    queryable: true,
+    is_sensitive: false
   };
 
   if (column.declared_type !== undefined) {
@@ -358,20 +366,24 @@ function toSemanticColumnProjection({
   } else if (sensitivity.kind === "pii") {
     metadata.pii_reason = sensitivity.reason;
   }
+  if (column.technical_role === "binary") {
+    metadata.queryable = false;
+    metadata.exclusion_reason = "unsupported_binary_type";
+  } else if (column.technical_role === "xml") {
+    metadata.queryable = false;
+    metadata.exclusion_reason = "unsupported_complex_type";
+  }
 
   return {
     physical_name: column.name,
     data_type: column.data_type,
-    role:
-      sensitivity.kind === "credential"
-        ? "unknown"
-        : inferColumnRole(column, primaryKeyColumns),
-    pii: sensitivity.kind !== "none",
+    role: "unknown",
+    pii: sensitivity.kind === "pii",
     metadata
   };
 }
 
-function buildSemanticTableProjection(
+export function buildSemanticTableProjection(
   schema: SchemaIntrospectionResponse
 ): SemanticTableProjection[] {
   return schema.tables.map((table) => {
@@ -379,7 +391,8 @@ function buildSemanticTableProjection(
       table_type: table.table_type,
       column_count: table.columns.length,
       primary_key_count: table.primary_key?.columns.length ?? 0,
-      has_definition_hash: table.definition_hash !== undefined
+      has_definition_hash: table.definition_hash !== undefined,
+      queryable: false
     };
     if (table.row_count_estimate !== undefined) {
       metadata.row_count_estimate = table.row_count_estimate;
@@ -397,14 +410,147 @@ function buildSemanticTableProjection(
     const primaryKeyColumns = new Set(
       (table.primary_key?.columns ?? []).map((name) => name.toLowerCase())
     );
+    const columns = table.columns.map((column) =>
+      toSemanticColumnProjection({ column, primaryKeyColumns })
+    );
+    metadata.queryable = columns.some(
+      (column) => column.metadata.queryable === true
+    );
+
     return {
       physical_schema: table.schema,
       physical_name: table.name,
       metadata,
-      columns: table.columns.map((column) =>
-        toSemanticColumnProjection({ column, primaryKeyColumns })
-      )
+      columns
     };
+  });
+}
+
+export function buildSchemaImportSummary(
+  schema: SchemaIntrospectionResponse,
+  tableProjection = buildSemanticTableProjection(schema)
+): SchemaImportSummary {
+  const allColumns = tableProjection.flatMap((table) => table.columns);
+  const views = schema.tables.filter((table) => table.table_type === "view");
+  const warningCounts = schema.coverage_warnings.reduce<Record<string, number>>(
+    (counts, warning) => {
+      counts[warning.code] = (counts[warning.code] ?? 0) + 1;
+      return counts;
+    },
+    {}
+  );
+  const viewHasPartialLineage = (schemaName: string, objectName: string) =>
+    schema.coverage_warnings.some(
+      (warning) =>
+        ["VIEW_LINEAGE_PARTIAL", "VIEW_LINEAGE_UNRESOLVED_REFERENCE"].includes(
+          warning.code
+        ) &&
+        warning.object_schema === schemaName &&
+        warning.object_name === objectName
+    );
+
+  return SchemaImportSummarySchema.parse({
+    database_name: schema.database_name,
+    engine: schema.engine,
+    engine_version: schema.engine_version,
+    schema_hash: schema.schema_hash,
+    coverage_status: schema.coverage_status,
+    captured_at: schema.introspected_at,
+    duration_ms: schema.duration_ms,
+    total_objects: schema.tables.length,
+    total_tables: schema.tables.filter(
+      (table) => table.table_type === "base_table"
+    ).length,
+    total_views: views.length,
+    total_columns: allColumns.length,
+    queryable_objects: tableProjection.filter(
+      (table) => table.metadata.queryable === true
+    ).length,
+    non_queryable_objects: tableProjection.filter(
+      (table) => table.metadata.queryable !== true
+    ).length,
+    queryable_columns: allColumns.filter(
+      (column) => column.metadata.queryable === true
+    ).length,
+    non_queryable_columns: allColumns.filter(
+      (column) => column.metadata.queryable !== true
+    ).length,
+    primary_keys_count: schema.tables.filter((table) => table.primary_key).length,
+    foreign_keys_count: schema.foreign_keys.length,
+    unique_constraints_count: schema.unique_constraints.length,
+    check_constraints_count: schema.check_constraints.length,
+    default_constraints_count: schema.default_constraints.length,
+    indexes_total_count: schema.indexes.length,
+    table_indexes_count: schema.indexes.filter(
+      (index) => index.object_type === "table"
+    ).length,
+    view_indexes_count: schema.indexes.filter(
+      (index) => index.object_type === "view"
+    ).length,
+    unique_indexes_count: schema.indexes.filter((index) => index.is_unique).length,
+    filtered_indexes_count: schema.indexes.filter(
+      (index) => index.filter_definition !== undefined
+    ).length,
+    included_columns_indexes_count: schema.indexes.filter(
+      (index) => index.included_columns.length > 0
+    ).length,
+    views_total: views.length,
+    views_with_definition_count: views.filter(
+      (view) => view.view_definition_available === true
+    ).length,
+    views_without_definition_count: views.filter(
+      (view) => view.view_definition_available !== true
+    ).length,
+    views_with_lineage_count: views.filter(
+      (view) => view.lineage_available === true
+    ).length,
+    views_with_partial_lineage_count: views.filter((view) =>
+      viewHasPartialLineage(view.schema, view.name)
+    ).length,
+    views_without_lineage_count: views.filter(
+      (view) => view.lineage_available !== true
+    ).length,
+    view_lineage_dependencies_count: views.reduce(
+      (count, view) => count + view.view_lineage.length,
+      0
+    ),
+    columns_with_declared_type_count: schema.tables.reduce(
+      (count, table) =>
+        count +
+        table.columns.filter((column) => column.declared_type_available).length,
+      0
+    ),
+    columns_without_declared_type_count: schema.tables.reduce(
+      (count, table) =>
+        count +
+        table.columns.filter((column) => !column.declared_type_available).length,
+      0
+    ),
+    columns_with_default_count: schema.tables.reduce(
+      (count, table) =>
+        count +
+        table.columns.filter((column) => column.default_value !== undefined).length,
+      0
+    ),
+    computed_columns_count: schema.tables.reduce(
+      (count, table) =>
+        count + table.columns.filter((column) => column.is_computed).length,
+      0
+    ),
+    identity_columns_count: schema.tables.reduce(
+      (count, table) =>
+        count + table.columns.filter((column) => column.is_identity).length,
+      0
+    ),
+    pii_columns_count: allColumns.filter((column) => column.pii).length,
+    excluded_columns_count: allColumns.filter(
+      (column) => column.metadata.queryable !== true
+    ).length,
+    sensitive_columns_count: allColumns.filter(
+      (column) => column.metadata.is_sensitive === true
+    ).length,
+    coverage_warnings_count: schema.coverage_warnings.length,
+    coverage_warnings_by_code: warningCounts
   });
 }
 
@@ -526,38 +672,6 @@ function columnNameTokens(columnName: string) {
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter((token) => token.length > 0);
-}
-
-function inferColumnRole(
-  column: SchemaColumnMetadata,
-  primaryKeyColumns: Set<string>
-): SemanticColumnProjection["role"] {
-  const name = column.name.toLowerCase();
-  const dataType = column.data_type.toLowerCase();
-
-  if (primaryKeyColumns.has(name) || name === "id" || name.endsWith("id")) {
-    return "identifier";
-  }
-
-  if (dataType.includes("date") || dataType.includes("time")) {
-    return "date";
-  }
-
-  if (
-    ["money", "decimal", "numeric", "float", "real"].some((type) =>
-      dataType.includes(type)
-    )
-  ) {
-    return "measure";
-  }
-
-  if (["int", "bit", "char", "text", "uniqueidentifier"].some((type) =>
-    dataType.includes(type)
-  )) {
-    return "dimension";
-  }
-
-  return "unknown";
 }
 
 function physicalTableKey(schema: string, table: string) {

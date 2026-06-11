@@ -6,11 +6,23 @@ const migrationsDirectory = resolve(
   import.meta.dirname,
   "../../../supabase/migrations"
 );
-const migration = readdirSync(migrationsDirectory)
+const migrationFileNames = readdirSync(migrationsDirectory)
   .filter((fileName) => fileName.endsWith(".sql"))
-  .sort()
+  .sort();
+const migration = migrationFileNames
   .map((fileName) => readFileSync(resolve(migrationsDirectory, fileName), "utf8"))
   .join("\n");
+const latestMigration = readFileSync(
+  resolve(migrationsDirectory, migrationFileNames.at(-1) ?? ""),
+  "utf8"
+);
+const purgeAdventureWorksPlanScript = readFileSync(
+  resolve(
+    import.meta.dirname,
+    "../scripts/purge-adventureworkslt-plan.mjs"
+  ),
+  "utf8"
+);
 const supabaseConfig = readFileSync(
   resolve(import.meta.dirname, "../../../supabase/config.toml"),
   "utf8"
@@ -254,6 +266,65 @@ describe("Supabase metadata migration", () => {
     const latestSummaryView = summaryViews.at(-1) ?? "";
     expect(latestSummaryView).not.toContain("view_definition");
     expect(latestSummaryView).not.toContain("extended_properties");
+  });
+
+  it("requires a pre-migration purge before replacing legacy coverage state", () => {
+    expect(latestMigration).toContain(
+      "legacy schema snapshots must be purged before this migration"
+    );
+    expect(latestMigration).toContain("drop column coverage_state");
+    expect(latestMigration).toContain(
+      "add column coverage_status public.schema_coverage_status not null"
+    );
+    expect(latestMigration).toContain("add column summary jsonb not null");
+    expect(latestMigration).not.toContain(
+      "technical_snapshot->>'coverage_state'"
+    );
+  });
+
+  it("persists a strict sanitized import summary through the service-role RPC", () => {
+    expect(latestMigration).toContain(
+      "target_summary jsonb"
+    );
+    expect(latestMigration).toContain(
+      "app_private.sanitize_schema_import_summary"
+    );
+    expect(latestMigration).toContain(
+      "schema_snapshots_summary_strict"
+    );
+    expect(latestMigration).toContain(
+      "target_summary - allowed_keys <> '{}'::jsonb"
+    );
+    expect(latestMigration).toContain(
+      "technical_snapshot ? 'coverage_state'"
+    );
+    expect(latestMigration).toContain(
+      "grant execute on function public.persist_technical_schema_import("
+    );
+    expect(latestMigration).toContain(") to service_role;");
+    expect(latestMigration).toContain("coverage_status,");
+    expect(latestMigration).toContain("summary,");
+  });
+
+  it("provides a guarded pre-migration AdventureWorksLT purge command", () => {
+    expect(purgeAdventureWorksPlanScript).toContain(
+      'const REQUIRED_CONFIRMATION = "AdventureWorksLT"'
+    );
+    expect(purgeAdventureWorksPlanScript).toContain(
+      "SUPABASE_SERVICE_ROLE_KEY"
+    );
+    expect(purgeAdventureWorksPlanScript).toContain(
+      "isDemoOrTestTenant"
+    );
+    expect(purgeAdventureWorksPlanScript).toContain(
+      'await scopedDelete("semantic_versions")'
+    );
+    expect(purgeAdventureWorksPlanScript).toContain(
+      'await scopedDelete("schema_snapshots")'
+    );
+    expect(purgeAdventureWorksPlanScript).not.toContain(
+      ".rpc("
+    );
   });
 
   it("moves privileged connection and schema writes behind service-role RPCs", () => {

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "purge:adventureworkslt-plan": "node scripts/purge-adventureworkslt-plan.mjs",
     "test": "vitest run"
   }
 }

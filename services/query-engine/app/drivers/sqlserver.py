@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass
 from time import monotonic
 from typing import Literal
@@ -271,7 +272,8 @@ select
     cast(index_column.is_descending_key as int) as IS_DESCENDING,
     cast(index_column.is_included_column as int) as IS_INCLUDED,
     index_item.filter_definition,
-    cast(index_item.is_disabled as int) as IS_DISABLED
+    cast(index_item.is_disabled as int) as IS_DISABLED,
+    case when object_item.type = 'V' then 'view' else 'table' end as OBJECT_TYPE
 from sys.indexes as index_item
 inner join sys.objects as object_item
     on object_item.object_id = index_item.object_id
@@ -283,7 +285,7 @@ inner join sys.index_columns as index_column
 inner join sys.columns as column_item
     on column_item.object_id = index_column.object_id
    and column_item.column_id = index_column.column_id
-where object_item.type = 'U'
+where object_item.type in ('U', 'V')
   and object_item.is_ms_shipped = 0
   and index_item.index_id > 0
   and index_item.is_hypothetical = 0
@@ -479,7 +481,7 @@ class SqlServerDriver(DatabaseDriver):
         coverage_warnings.extend(
             _build_column_coverage_warnings(column_rows=column_rows, tables=tables)
         )
-        coverage_state = _coverage_state(coverage_warnings)
+        coverage_status = _coverage_status(coverage_warnings)
         schema_hash = _schema_hash(
             tables=tables,
             foreign_keys=foreign_keys,
@@ -494,7 +496,7 @@ class SqlServerDriver(DatabaseDriver):
             database_name=database_name,
             engine_version=engine_version,
             schema_hash=schema_hash,
-            coverage_state=coverage_state,
+            coverage_status=coverage_status,
             tables=tables,
             foreign_keys=foreign_keys,
             unique_constraints=unique_constraints,
@@ -1020,7 +1022,20 @@ def _build_tables(
             continue
         native_type = _optional_string(row[4]) or "unknown"
         declared_type = _optional_string(row[5])
+        resolved_declared_type = _declared_type(native_type, declared_type)
+        declared_type_unavailable = len(row) > 20 and bool(row[20])
         column_name = str(row[2])
+        is_primary_key = (
+            table_schema,
+            table_name,
+            column_name.lower(),
+        ) in primary_key_columns
+        is_foreign_key = (
+            table_schema,
+            table_name,
+            column_name.lower(),
+        ) in foreign_key_columns
+        is_identity = bool(row[12])
 
         table["columns"].append(
             SchemaColumnMetadata(
@@ -1029,7 +1044,7 @@ def _build_tables(
                 data_type=native_type,
                 native_type=native_type,
                 normalized_type=native_type,
-                declared_type=_declared_type(native_type, declared_type),
+                declared_type=resolved_declared_type,
                 declared_type_schema=_optional_string(row[21]) if len(row) > 21 else None,
                 declared_type_name=_optional_string(row[22]) if len(row) > 22 else None,
                 declared_type_is_user_defined=(
@@ -1038,23 +1053,29 @@ def _build_tables(
                 declared_type_is_assembly=(
                     bool(row[24]) if len(row) > 24 and row[24] is not None else None
                 ),
+                declared_type_available=not declared_type_unavailable,
+                technical_role=_technical_role(
+                    column_name=column_name,
+                    native_type=native_type,
+                    is_primary_key=is_primary_key,
+                    is_foreign_key=is_foreign_key,
+                    is_identity=is_identity,
+                ),
                 is_nullable=bool(row[6]),
                 max_length=_optional_int(row[7]),
                 numeric_precision=_optional_int(row[8]),
                 numeric_scale=_optional_int(row[9]),
                 datetime_precision=_optional_int(row[10]),
                 collation=_optional_string(row[11]),
-                is_identity=bool(row[12]),
+                is_identity=is_identity,
                 is_computed=bool(row[13]),
                 identity_seed=_optional_string(row[14]),
                 identity_increment=_optional_string(row[15]),
                 default_value=_optional_string(row[17]),
                 computed_expression=_optional_string(row[18]),
                 comment=_optional_string(row[19]),
-                is_primary_key=(table_schema, table_name, column_name.lower())
-                in primary_key_columns,
-                is_foreign_key=(table_schema, table_name, column_name.lower())
-                in foreign_key_columns,
+                is_primary_key=is_primary_key,
+                is_foreign_key=is_foreign_key,
                 is_unique_member=(table_schema, table_name, column_name.lower())
                 in unique_columns,
             )
@@ -1192,12 +1213,16 @@ def _build_default_constraints(column_rows) -> list[SchemaDefaultConstraintMetad
 
 
 def _build_indexes(index_rows) -> list[SchemaIndexMetadata]:
-    grouped: dict[tuple[str, str, str, bool, bool, str, str | None, bool], list] = {}
+    grouped: dict[
+        tuple[str, str, str, str, bool, bool, str, str | None, bool],
+        list,
+    ] = {}
     for row in index_rows:
         key = (
             str(row[0]),
             str(row[1]),
             str(row[2]),
+            str(row[13]),
             bool(row[3]),
             bool(row[4]),
             str(row[5]).lower(),
@@ -1211,6 +1236,7 @@ def _build_indexes(index_rows) -> list[SchemaIndexMetadata]:
         schema_name,
         table_name,
         index_name,
+        object_type,
         is_unique,
         is_primary_key,
         index_type,
@@ -1236,6 +1262,7 @@ def _build_indexes(index_rows) -> list[SchemaIndexMetadata]:
                 name=index_name,
                 schema_name=schema_name,
                 table_name=table_name,
+                object_type=object_type,
                 is_unique=is_unique,
                 is_primary_key=is_primary_key,
                 index_type=index_type,
@@ -1262,18 +1289,19 @@ def _build_column_coverage_warnings(
     tables: list[SchemaTableMetadata],
 ) -> list[SchemaCoverageWarning]:
     table_keys = {(table.table_schema, table.name) for table in tables}
-    unresolved_declared_type_keys: set[tuple[str, str]] = set()
-    missing_declared_type_schema_keys: set[tuple[str, str]] = set()
+    unresolved_declared_types: dict[tuple[str, str], set[str]] = {}
+    missing_declared_type_schemas: dict[tuple[str, str], set[str]] = {}
     unmapped_column_keys: set[tuple[str, str]] = set()
 
     for row in column_rows:
         table_key = (str(row[0]), str(row[1]))
+        column_name = str(row[2])
         if table_key not in table_keys:
             unmapped_column_keys.add(table_key)
 
         declared_type_unavailable = len(row) > 20 and bool(row[20])
         if declared_type_unavailable:
-            unresolved_declared_type_keys.add(table_key)
+            unresolved_declared_types.setdefault(table_key, set()).add(column_name)
         declared_type_name = _optional_string(row[22]) if len(row) > 22 else None
         declared_type_schema = _optional_string(row[21]) if len(row) > 21 else None
         declared_type_is_user_defined = (
@@ -1281,10 +1309,14 @@ def _build_column_coverage_warnings(
         )
         if declared_type_name is not None and declared_type_is_user_defined:
             if declared_type_schema is None:
-                missing_declared_type_schema_keys.add(table_key)
+                missing_declared_type_schemas.setdefault(table_key, set()).add(
+                    column_name
+                )
 
     warnings: list[SchemaCoverageWarning] = []
-    for schema_name, object_name in sorted(unresolved_declared_type_keys):
+    for (schema_name, object_name), column_names in sorted(
+        unresolved_declared_types.items()
+    ):
         warnings.append(
             SchemaCoverageWarning(
                 code="COLUMN_DECLARED_TYPE_UNAVAILABLE",
@@ -1292,8 +1324,9 @@ def _build_column_coverage_warnings(
                 object_schema=schema_name,
                 object_name=object_name,
                 message=(
-                    "One or more SQL Server column declared types were not visible; "
-                    "native base types were used where available."
+                    "SQL Server declared type metadata was unavailable for "
+                    f"{_column_warning_detail(column_names)}; native base types "
+                    "were used where available."
                 ),
             )
         )
@@ -1312,7 +1345,9 @@ def _build_column_coverage_warnings(
             )
         )
 
-    for schema_name, object_name in sorted(missing_declared_type_schema_keys):
+    for (schema_name, object_name), column_names in sorted(
+        missing_declared_type_schemas.items()
+    ):
         warnings.append(
             SchemaCoverageWarning(
                 code="COLUMN_DECLARED_TYPE_SCHEMA_UNAVAILABLE",
@@ -1320,8 +1355,8 @@ def _build_column_coverage_warnings(
                 object_schema=schema_name,
                 object_name=object_name,
                 message=(
-                    "One or more SQL Server declared type names were visible, "
-                    "but their schemas were not visible."
+                    "SQL Server declared type names were visible but type schemas "
+                    f"were unavailable for {_column_warning_detail(column_names)}."
                 ),
             )
         )
@@ -1448,29 +1483,39 @@ def _build_coverage_warnings(
     return warnings
 
 
-def _coverage_state(
+def _coverage_status(
     warnings: list[SchemaCoverageWarning],
-) -> Literal["complete", "partial"]:
-    incomplete_codes = {
-        "ROW_COUNT_ESTIMATE_UNAVAILABLE",
+) -> Literal["ok", "partial", "warning", "blocked"]:
+    blocked_codes = {
+        "COLUMN_OBJECT_MAPPING_MISSING",
+    }
+    warning_codes = {
         "VIEW_DEFINITION_MISSING",
         "VIEW_DEFINITION_PERMISSION_DENIED",
         "NO_VIEW_DEFINITION_PERMISSION",
         "PARTIAL_METADATA_VISIBILITY_POSSIBLE",
         "INDEX_METADATA_UNAVAILABLE",
         "VIEW_LINEAGE_NOT_AVAILABLE",
-        "VIEW_LINEAGE_PARTIAL",
         "VIEW_LINEAGE_PERMISSION_DENIED",
+    }
+    partial_codes = {
+        "ROW_COUNT_ESTIMATE_UNAVAILABLE",
+        "NO_FOREIGN_KEYS_FOUND",
+        "VIEW_LINEAGE_PARTIAL",
         "VIEW_LINEAGE_UNRESOLVED_REFERENCE",
         "COLUMN_DECLARED_TYPE_UNAVAILABLE",
         "COLUMN_DECLARED_TYPE_SCHEMA_UNAVAILABLE",
-        "COLUMN_OBJECT_MAPPING_MISSING",
     }
-    return (
-        "partial"
-        if any(warning.code in incomplete_codes for warning in warnings)
-        else "complete"
-    )
+    warning_codes_present = {warning.code for warning in warnings}
+    if warning_codes_present & blocked_codes:
+        return "blocked"
+    if warning_codes_present & warning_codes:
+        return "warning"
+    if any(warning.code in partial_codes for warning in warnings):
+        return "partial"
+    if warnings:
+        return "warning"
+    return "ok"
 
 
 def _schema_hash(
@@ -1510,6 +1555,8 @@ def _schema_hash(
                             column.declared_type_is_user_defined
                         ),
                         "declared_type_is_assembly": column.declared_type_is_assembly,
+                        "declared_type_available": column.declared_type_available,
+                        "technical_role": column.technical_role,
                         "max_length": column.max_length,
                         "precision": column.numeric_precision,
                         "scale": column.numeric_scale,
@@ -1602,6 +1649,7 @@ def _schema_hash(
                 "name": index.name,
                 "schema_name": index.schema_name,
                 "table_name": index.table_name,
+                "object_type": index.object_type,
                 "is_unique": index.is_unique,
                 "is_primary_key": index.is_primary_key,
                 "index_type": index.index_type,
@@ -1680,3 +1728,103 @@ def _declared_type(data_type: str, declared_type: str | None) -> str | None:
     if data_type.lower() == declared_type.lower():
         return None
     return declared_type
+
+
+def _column_warning_detail(column_names: set[str]) -> str:
+    ordered_names = sorted(column_names)
+    visible_names = ordered_names[:12]
+    detail = ", ".join(visible_names)
+    if len(ordered_names) > len(visible_names):
+        detail = f"{detail}, and {len(ordered_names) - len(visible_names)} more"
+    noun = "column" if len(ordered_names) == 1 else "columns"
+    return f"{len(ordered_names)} {noun} ({detail})"
+
+
+def _technical_role(
+    *,
+    column_name: str,
+    native_type: str,
+    is_primary_key: bool,
+    is_foreign_key: bool,
+    is_identity: bool,
+) -> Literal[
+    "identifier",
+    "date",
+    "boolean",
+    "quantity_candidate",
+    "money_candidate",
+    "numeric",
+    "text",
+    "binary",
+    "xml",
+    "unknown",
+]:
+    ordered_name_tokens = [
+        token.lower()
+        for token in re.findall(
+            r"[A-Z]+(?=[A-Z][a-z]|[0-9]|$)|[A-Z]?[a-z]+|[0-9]+",
+            column_name,
+        )
+    ]
+    name_tokens = set(ordered_name_tokens)
+    normalized_type = native_type.lower().strip()
+    stripped_name = column_name.strip()
+    identifier_name = (
+        stripped_name.lower() == "id"
+        or stripped_name.lower().endswith("_id")
+        or (bool(ordered_name_tokens) and ordered_name_tokens[-1] == "id")
+    )
+
+    if (
+        is_primary_key
+        or is_foreign_key
+        or is_identity
+        or normalized_type == "uniqueidentifier"
+        or identifier_name
+    ):
+        return "identifier"
+    if normalized_type in {
+        "date",
+        "datetime",
+        "datetime2",
+        "datetimeoffset",
+        "smalldatetime",
+        "time",
+    }:
+        return "date"
+    if normalized_type == "bit":
+        return "boolean"
+    if normalized_type in {"binary", "varbinary", "image", "rowversion", "timestamp"}:
+        return "binary"
+    if normalized_type == "xml":
+        return "xml"
+    if normalized_type in {"char", "nchar", "varchar", "nvarchar", "text", "ntext"}:
+        return "text"
+    if normalized_type in {"money", "smallmoney"}:
+        return "money_candidate"
+    if normalized_type in {
+        "tinyint",
+        "smallint",
+        "int",
+        "bigint",
+        "decimal",
+        "numeric",
+        "float",
+        "real",
+    }:
+        if name_tokens & {"quantity", "qty", "count"}:
+            return "quantity_candidate"
+        if name_tokens & {
+            "amount",
+            "balance",
+            "cost",
+            "freight",
+            "price",
+            "revenue",
+            "subtotal",
+            "tax",
+            "total",
+        }:
+            return "money_candidate"
+        return "numeric"
+    return "unknown"
