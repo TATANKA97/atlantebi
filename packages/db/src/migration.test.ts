@@ -12,8 +12,18 @@ const migrationFileNames = readdirSync(migrationsDirectory)
 const migration = migrationFileNames
   .map((fileName) => readFileSync(resolve(migrationsDirectory, fileName), "utf8"))
   .join("\n");
-const latestMigration = readFileSync(
-  resolve(migrationsDirectory, migrationFileNames.at(-1) ?? ""),
+const schemaImportSummaryMigration = readFileSync(
+  resolve(
+    migrationsDirectory,
+    "20260611120000_persist_schema_import_summary.sql"
+  ),
+  "utf8"
+);
+const schemaImportSummaryGrantsMigration = readFileSync(
+  resolve(
+    migrationsDirectory,
+    "20260611140354_grant_schema_import_summary_helpers_to_service_role.sql"
+  ),
   "utf8"
 );
 const purgeAdventureWorksPlanScript = readFileSync(
@@ -269,41 +279,55 @@ describe("Supabase metadata migration", () => {
   });
 
   it("requires a pre-migration purge before replacing legacy coverage state", () => {
-    expect(latestMigration).toContain(
+    expect(schemaImportSummaryMigration).toContain(
       "legacy schema snapshots must be purged before this migration"
     );
-    expect(latestMigration).toContain("drop column coverage_state");
-    expect(latestMigration).toContain(
+    expect(schemaImportSummaryMigration).toContain("drop column coverage_state");
+    expect(schemaImportSummaryMigration).toContain(
       "add column coverage_status public.schema_coverage_status not null"
     );
-    expect(latestMigration).toContain("add column summary jsonb not null");
-    expect(latestMigration).not.toContain(
+    expect(schemaImportSummaryMigration).toContain(
+      "add column summary jsonb not null"
+    );
+    expect(schemaImportSummaryMigration).not.toContain(
       "technical_snapshot->>'coverage_state'"
     );
   });
 
   it("persists a strict sanitized import summary through the service-role RPC", () => {
-    expect(latestMigration).toContain(
+    expect(schemaImportSummaryMigration).toContain(
       "target_summary jsonb"
     );
-    expect(latestMigration).toContain(
+    expect(schemaImportSummaryMigration).toContain(
       "app_private.sanitize_schema_import_summary"
     );
-    expect(latestMigration).toContain(
+    expect(schemaImportSummaryMigration).toContain(
       "schema_snapshots_summary_strict"
     );
-    expect(latestMigration).toContain(
+    expect(schemaImportSummaryMigration).toContain(
       "target_summary - allowed_keys <> '{}'::jsonb"
     );
-    expect(latestMigration).toContain(
+    expect(schemaImportSummaryMigration).toContain(
       "technical_snapshot ? 'coverage_state'"
     );
-    expect(latestMigration).toContain(
+    expect(schemaImportSummaryMigration).toContain(
       "grant execute on function public.persist_technical_schema_import("
     );
-    expect(latestMigration).toContain(") to service_role;");
-    expect(latestMigration).toContain("coverage_status,");
-    expect(latestMigration).toContain("summary,");
+    expect(schemaImportSummaryMigration).toContain(") to service_role;");
+    expect(schemaImportSummaryMigration).toContain("coverage_status,");
+    expect(schemaImportSummaryMigration).toContain("summary,");
+    expect(schemaImportSummaryGrantsMigration).toContain(
+      "grant execute on function app_private.sanitize_schema_import_summary(jsonb)"
+    );
+    expect(schemaImportSummaryGrantsMigration).toContain(
+      "grant execute on function app_private.is_valid_schema_import_summary(jsonb)"
+    );
+    expect(schemaImportSummaryGrantsMigration).not.toContain(
+      "to anon"
+    );
+    expect(schemaImportSummaryGrantsMigration).not.toContain(
+      "to authenticated"
+    );
   });
 
   it("provides a guarded pre-migration AdventureWorksLT purge command", () => {
