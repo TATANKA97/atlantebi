@@ -174,15 +174,15 @@ export const SchemaTableMetadataSchema = z.strictObject({
 export type SchemaTableMetadata = z.infer<typeof SchemaTableMetadataSchema>;
 
 export const SchemaForeignKeyMetadataSchema = z.strictObject({
-  name: z.string().min(1).max(255),
+  constraint_name: z.string().min(1).max(255),
   from_schema: z.string().min(1).max(255),
   from_table: z.string().min(1).max(255),
   from_columns: z.array(z.string().min(1).max(255)).min(1),
   to_schema: z.string().min(1).max(255),
   to_table: z.string().min(1).max(255),
   to_columns: z.array(z.string().min(1).max(255)).min(1),
-  on_delete: z.string().min(1).max(40),
-  on_update: z.string().min(1).max(40),
+  delete_rule: z.string().min(1).max(40),
+  update_rule: z.string().min(1).max(40),
   is_disabled: z.boolean().default(false),
   is_not_trusted: z.boolean().default(false),
   source: z.literal("db_fk").default("db_fk"),

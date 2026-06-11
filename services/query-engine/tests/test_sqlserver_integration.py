@@ -61,12 +61,12 @@ def test_sqlserver_snapshot_v1_against_real_catalog_views() -> None:
     foreign_key = next(
         foreign_key
         for foreign_key in result.foreign_keys
-        if foreign_key.name == "FK_ChildEntity_ParentEntity"
+        if foreign_key.constraint_name == "FK_ChildEntity_ParentEntity"
     )
     assert foreign_key.from_columns == ["TenantCode", "EntityCode"]
     assert foreign_key.to_columns == ["TenantCode", "EntityCode"]
-    assert foreign_key.on_update == "cascade"
-    assert foreign_key.on_delete == "cascade"
+    assert foreign_key.update_rule == "cascade"
+    assert foreign_key.delete_rule == "cascade"
 
     assert any(
         constraint.name == "UQ_ParentEntity_DisplayName"

@@ -21,6 +21,16 @@ describe("semantic column sensitivity classification", () => {
     });
   });
 
+  it("restricts payment authorization codes without classifying them as PII", () => {
+    expect(service.classifyColumnSensitivity("CreditCardApprovalCode")).toEqual({
+      kind: "sensitive",
+      reason: "payment_authorization_code"
+    });
+    expect(service.classifyColumnSensitivity("AccountNumber")).toEqual({
+      kind: "none"
+    });
+  });
+
   it("marks direct contact fields as PII", () => {
     expect(service.classifyColumnSensitivity("EmailAddress")).toEqual({
       kind: "pii",
@@ -118,6 +128,19 @@ describe("technical schema projection", () => {
             is_primary_key: false,
             is_foreign_key: false,
             is_unique_member: false
+          },
+          {
+            name: "CreditCardApprovalCode",
+            data_type: "varchar",
+            declared_type_available: true,
+            technical_role: "text",
+            ordinal_position: 5,
+            is_nullable: true,
+            is_identity: false,
+            is_computed: false,
+            is_primary_key: false,
+            is_foreign_key: false,
+            is_unique_member: false
           }
         ],
         is_system_object: false,
@@ -182,7 +205,13 @@ describe("technical schema projection", () => {
     if (!projectedTable) {
       throw new Error("Expected a projected table.");
     }
-    const [orderQty, emailAddress, passwordHash, catalogDescription] =
+    const [
+      orderQty,
+      emailAddress,
+      passwordHash,
+      catalogDescription,
+      creditCardApprovalCode
+    ] =
       projectedTable.columns;
 
     expect(orderQty).toMatchObject({
@@ -217,6 +246,16 @@ describe("technical schema projection", () => {
         exclusion_reason: "unsupported_complex_type"
       }
     });
+    expect(creditCardApprovalCode).toMatchObject({
+      role: "unknown",
+      pii: false,
+      metadata: {
+        technical_role: "text",
+        queryable: false,
+        is_sensitive: true,
+        sensitive_reason: "payment_authorization_code"
+      }
+    });
   });
 
   it("builds the complete persisted summary from explicit projection fields", () => {
@@ -225,11 +264,11 @@ describe("technical schema projection", () => {
       total_objects: 2,
       total_tables: 1,
       total_views: 1,
-      total_columns: 4,
+      total_columns: 5,
       queryable_objects: 1,
       non_queryable_objects: 1,
       queryable_columns: 2,
-      non_queryable_columns: 2,
+      non_queryable_columns: 3,
       indexes_total_count: 2,
       table_indexes_count: 1,
       view_indexes_count: 1,
@@ -238,8 +277,8 @@ describe("technical schema projection", () => {
       views_with_lineage_count: 1,
       views_with_partial_lineage_count: 1,
       pii_columns_count: 1,
-      excluded_columns_count: 2,
-      sensitive_columns_count: 1,
+      excluded_columns_count: 3,
+      sensitive_columns_count: 2,
       coverage_warnings_count: 1,
       coverage_warnings_by_code: { VIEW_LINEAGE_PARTIAL: 1 }
     });

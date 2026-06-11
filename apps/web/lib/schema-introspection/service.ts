@@ -359,7 +359,10 @@ function toSemanticColumnProjection({
   }
 
   const sensitivity = classifyColumnSensitivity(column.name);
-  if (sensitivity.kind === "credential") {
+  if (
+    sensitivity.kind === "credential" ||
+    sensitivity.kind === "sensitive"
+  ) {
     metadata.is_sensitive = true;
     metadata.queryable = false;
     metadata.sensitive_reason = sensitivity.reason;
@@ -567,9 +570,9 @@ function buildRelationshipProjection(
     cardinality: isUniqueSourceColumns(schema, relationship)
       ? "one_to_one"
       : "many_to_one",
-    constraint_name: relationship.name,
-    update_rule: relationship.on_update,
-    delete_rule: relationship.on_delete,
+    constraint_name: relationship.constraint_name,
+    update_rule: relationship.update_rule,
+    delete_rule: relationship.delete_rule,
     is_disabled: relationship.is_disabled,
     is_not_trusted: relationship.is_not_trusted,
     verified_by_db: relationship.verified_by_db
@@ -608,6 +611,7 @@ function normalizedColumnSet(columns: string[]) {
 export type ColumnSensitivity =
   | { kind: "none" }
   | { kind: "pii"; reason: "direct_person_identifier" | "contact_identifier" }
+  | { kind: "sensitive"; reason: "payment_authorization_code" }
   | {
       kind: "credential";
       reason:
@@ -620,6 +624,11 @@ export type ColumnSensitivity =
 export function classifyColumnSensitivity(columnName: string): ColumnSensitivity {
   const tokens = columnNameTokens(columnName);
   const tokenSet = new Set(tokens);
+  const compactName = tokens.join("");
+
+  if (compactName === "creditcardapprovalcode") {
+    return { kind: "sensitive", reason: "payment_authorization_code" };
+  }
 
   if (tokens.some((token) => ["password", "passwd", "pwd"].includes(token))) {
     return { kind: "credential", reason: "credential_name" };
@@ -650,7 +659,6 @@ export function classifyColumnSensitivity(columnName: string): ColumnSensitivity
     return { kind: "pii", reason: "contact_identifier" };
   }
 
-  const compactName = tokens.join("");
   if (
     compactName === "firstname" ||
     compactName === "middlename" ||
