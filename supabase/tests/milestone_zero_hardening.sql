@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(15);
+select plan(17);
 
 select ok(
   not has_table_privilege('authenticated', 'public.schema_snapshots', 'INSERT'),
@@ -40,6 +40,24 @@ select ok(
     'EXECUTE'
   ),
   'authenticated cannot call the privileged connection RPC'
+);
+
+select ok(
+  has_function_privilege(
+    'service_role',
+    'app_private.sanitize_schema_import_summary(jsonb)',
+    'EXECUTE'
+  ),
+  'service role can sanitize schema import summaries'
+);
+
+select ok(
+  has_function_privilege(
+    'service_role',
+    'app_private.is_valid_schema_import_summary(jsonb)',
+    'EXECUTE'
+  ),
+  'service role can satisfy the schema snapshot summary constraint'
 );
 
 insert into auth.users (
