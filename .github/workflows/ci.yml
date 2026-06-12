@@ -17,7 +17,7 @@ jobs:
       - run: npx -y supabase@2.104.0 start
       - run: npx -y supabase@2.104.0 db reset --local
       - run: npx -y supabase@2.104.0 test db
-      - name: Verify concurrent schema version allocation
+      - name: Verify concurrent graph import deduplication
         shell: bash
         run: |
           docker exec -i supabase_db_atlantebi psql -v ON_ERROR_STOP=1 -U postgres \
@@ -30,7 +30,15 @@ jobs:
           second_pid=$!
           wait "$first_pid"
           wait "$second_pid"
-          test "$(cat /tmp/import-1 /tmp/import-2 | sort -n | tr '\n' ' ')" = "1 2 "
+          test "$(cat /tmp/import-1 /tmp/import-2 | sort -n | tr '\n' ' ')" = "1 1 "
+          test "$(
+            docker exec supabase_db_atlantebi psql -At -U postgres \
+              -c "select count(*) from public.schema_snapshots where connection_id = '30000000-0000-4000-8000-000000000002';"
+          )" = "1"
+          test "$(
+            docker exec supabase_db_atlantebi psql -At -U postgres \
+              -c "select count(*) from public.queryability_graph_versions where connection_id = '30000000-0000-4000-8000-000000000002';"
+          )" = "1"
       - if: always()
         run: npx -y supabase@2.104.0 stop --no-backup
 

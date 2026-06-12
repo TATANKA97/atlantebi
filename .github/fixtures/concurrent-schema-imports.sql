@@ -79,23 +79,30 @@ language plpgsql
 as $$
 declare
   captured_at timestamptz := clock_timestamp();
-  imported_version integer;
+  snapshot_id uuid := gen_random_uuid();
+  imported_graph_version integer;
 begin
-  select semantic_version_number
-  into imported_version
-  from public.persist_technical_schema_import(
+  select queryability_graph_version
+  into imported_graph_version
+  from public.persist_queryability_graph_import(
     '10000000-0000-4000-8000-000000000002',
     '20000000-0000-4000-8000-000000000002',
     '30000000-0000-4000-8000-000000000002',
+    snapshot_id,
     'sqlserver',
     jsonb_build_object(
       'status', 'ok',
       'engine', 'sqlserver',
       'engine_version', 'test',
       'schema_hash', repeat('a', 64),
+      'snapshot_hash', repeat('b', 64),
       'coverage_status', 'ok',
       'tables', jsonb_build_array(),
       'foreign_keys', jsonb_build_array(),
+      'unique_constraints', jsonb_build_array(),
+      'check_constraints', jsonb_build_array(),
+      'default_constraints', jsonb_build_array(),
+      'indexes', jsonb_build_array(),
       'coverage_warnings', jsonb_build_array()
     ),
     jsonb_build_object(
@@ -143,12 +150,29 @@ begin
       'coverage_warnings_count', 0,
       'coverage_warnings_by_code', jsonb_build_object()
     ),
-    '[]'::jsonb,
-    '[]'::jsonb,
+    jsonb_build_object(
+      'contract_version', 'queryability_graph.v1',
+      'tenant_id', '20000000-0000-4000-8000-000000000002',
+      'connection_id', '30000000-0000-4000-8000-000000000002',
+      'schema_snapshot_id', snapshot_id,
+      'engine', 'sqlserver',
+      'schema_hash', repeat('a', 64),
+      'snapshot_hash', repeat('b', 64),
+      'graph_input_hash', repeat('c', 64),
+      'derivation_key', repeat('d', 64),
+      'graph_hash', repeat('e', 64),
+      'builder_version', '1.0.0',
+      'policy_version', '1.0.0',
+      'status', 'complete',
+      'status_reasons', jsonb_build_array(),
+      'semantic_status', 'not_initialized',
+      'nodes', jsonb_build_array(),
+      'edges', jsonb_build_array()
+    ),
     0,
     0,
     captured_at
   );
-  return imported_version;
+  return imported_graph_version;
 end;
 $$;

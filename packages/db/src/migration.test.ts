@@ -63,6 +63,13 @@ const queryEngineDockerfile = readFileSync(
   resolve(import.meta.dirname, "../../../services/query-engine/Dockerfile"),
   "utf8"
 );
+const concurrentSchemaImportsFixture = readFileSync(
+  resolve(
+    import.meta.dirname,
+    "../../../.github/fixtures/concurrent-schema-imports.sql"
+  ),
+  "utf8"
+);
 
 const tenantScopedTables = [
   "tenants",
@@ -456,6 +463,12 @@ describe("Supabase metadata migration", () => {
     );
     expect(queryabilityGraphMigration).not.toContain(
       "insert into public.semantic_relationships"
+    );
+    expect(concurrentSchemaImportsFixture).toContain(
+      "public.persist_queryability_graph_import("
+    );
+    expect(concurrentSchemaImportsFixture).not.toContain(
+      "public.persist_technical_schema_import("
     );
   });
 
