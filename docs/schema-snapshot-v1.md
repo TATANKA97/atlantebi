@@ -11,7 +11,8 @@ ok | partial | warning | blocked
 ```
 
 Old snapshots and semantic drafts must be purged and reimported. There is no
-runtime fallback or compatibility adapter.
+runtime fallback or compatibility adapter. `snapshot_hash` is required and the
+database migration intentionally fails if legacy snapshot rows still exist.
 
 ## Demo rollout
 
@@ -56,3 +57,15 @@ coverage_status=partial
 The indexed view index
 `SalesLT.vProductAndDescription.IX_vProductAndDescription` is part of the
 technical snapshot.
+
+## Downstream artifact
+
+Technical Snapshot V1 is the only input for
+[Queryability Graph V1](./queryability-graph-v1.md). The snapshot does not
+create a Semantic Layer directly.
+
+`schema_hash` now represents stable observable DDL only. The full technical
+payload has a separate `snapshot_hash`; view-lineage coverage and technical
+classifications can change `snapshot_hash` without changing `schema_hash`.
+Permission-dependent declared-type visibility is also excluded from
+`schema_hash` and retained in `snapshot_hash`.

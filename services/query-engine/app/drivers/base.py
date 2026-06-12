@@ -53,6 +53,7 @@ class SchemaIntrospectionResult:
     database_name: str
     engine_version: str
     schema_hash: str
+    snapshot_hash: str
     coverage_status: Literal["ok", "partial", "warning", "blocked"]
     tables: list["SchemaTableMetadata"]
     foreign_keys: list["SchemaForeignKeyMetadata"]

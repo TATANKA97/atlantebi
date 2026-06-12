@@ -1,11 +1,13 @@
 import "server-only";
 
+import { randomUUID } from "node:crypto";
 import {
   ConnectionMetadataSchema,
+  QueryabilityGraphArtifactSchema,
   SchemaImportSummarySchema,
   SchemaIntrospectionResponseSchema,
   type ConnectionMetadata,
-  type SchemaColumnMetadata,
+  type QueryabilityGraphArtifact,
   type SchemaImportSummary,
   type SchemaIntrospectionResponse
 } from "@atlantebi/contracts";
@@ -23,9 +25,25 @@ type IntrospectionResult =
   | {
       ok: true;
       schemaSnapshotId: string;
-      semanticVersionId: string;
+      queryabilityGraphId: string;
+      queryabilityGraphVersion: number;
+      queryabilityGraphStatus: "complete" | "partial";
+      semanticStatus: "not_initialized";
+      deduplicated: boolean;
       tableCount: number;
       columnCount: number;
+    }
+  | { ok: false; code: string; message: string };
+
+export type QueryabilityRebuildResult =
+  | {
+      ok: true;
+      schemaSnapshotId: string;
+      queryabilityGraphId: string;
+      queryabilityGraphVersion: number;
+      queryabilityGraphStatus: "complete" | "partial";
+      semanticStatus: "not_initialized";
+      deduplicated: boolean;
     }
   | { ok: false; code: string; message: string };
 
@@ -46,35 +64,8 @@ type ConnectionSecretRow = {
   status: "draft" | "ready" | "failed" | "disabled";
 };
 
-type SemanticTableProjection = {
-  physical_schema: string;
-  physical_name: string;
-  metadata: Record<string, string | number | boolean>;
-  columns: SemanticColumnProjection[];
-};
-
-type SemanticColumnProjection = {
-  physical_name: string;
-  data_type: string;
-  role: "dimension" | "measure" | "date" | "identifier" | "unknown";
-  pii: boolean;
-  metadata: Record<string, string | number | boolean>;
-};
-
-type SemanticRelationshipProjection = {
-  from_schema: string;
-  from_table: string;
-  from_columns: string[];
-  to_schema: string;
-  to_table: string;
-  to_columns: string[];
-  cardinality: "one_to_one" | "many_to_one";
-  constraint_name: string;
-  update_rule: string;
-  delete_rule: string;
-  is_disabled: boolean;
-  is_not_trusted: boolean;
-  verified_by_db: boolean;
+type PersistableQueryabilityGraph = QueryabilityGraphArtifact & {
+  status: "complete" | "partial";
 };
 
 export async function introspectConnection({
@@ -139,9 +130,30 @@ export async function introspectConnection({
       resourceKey: connection.id,
       run: async () => {
         const schema = await runSchemaIntrospection(metadata, timeoutMs);
+        const schemaSnapshotId = randomUUID();
+        const graph = await runQueryabilityCompilation({
+          connectionId: connection.id,
+          schema,
+          schemaSnapshotId,
+          tenantId: context.tenantId,
+          timeoutMs
+        });
+        if (graph.status === "blocked") {
+          return {
+            ok: false,
+            code: "queryability_graph_blocked",
+            message: "Il Queryability Graph non è utilizzabile."
+          };
+        }
+        const persistableGraph: PersistableQueryabilityGraph = {
+          ...graph,
+          status: graph.status
+        };
         return persistSchemaIntrospection({
           connection,
           context,
+          graph: persistableGraph,
+          schemaSnapshotId,
           schema
         });
       },
@@ -156,6 +168,111 @@ export async function introspectConnection({
       };
     }
     throw error;
+  }
+}
+
+export async function rebuildQueryabilityGraph({
+  context,
+  schemaSnapshotId,
+  timeoutMs
+}: {
+  context: ActiveTenantContext;
+  schemaSnapshotId: string;
+  timeoutMs: number;
+}): Promise<QueryabilityRebuildResult> {
+  if (!canManageConnections(context.role)) {
+    return {
+      ok: false,
+      code: "queryability_rebuild_forbidden",
+      message: "Il tuo ruolo non consente di rigenerare il graph."
+    };
+  }
+
+  const admin = createSupabaseAdminClient();
+  const { data, error } = await admin
+    .from("schema_snapshots")
+    .select(
+      "id,connection_id,engine,snapshot,summary,table_count,column_count,introspected_at"
+    )
+    .eq("tenant_id", context.tenantId)
+    .eq("id", schemaSnapshotId)
+    .single();
+  if (error || !data) {
+    return {
+      ok: false,
+      code: "schema_snapshot_not_found",
+      message: "Snapshot tecnico non trovato."
+    };
+  }
+
+  try {
+    const schema = SchemaIntrospectionResponseSchema.parse(data.snapshot);
+    const summary = SchemaImportSummarySchema.parse(data.summary);
+    const graph = await runQueryabilityCompilation({
+      connectionId: data.connection_id as string,
+      schema,
+      schemaSnapshotId,
+      tenantId: context.tenantId,
+      timeoutMs
+    });
+    if (graph.status === "blocked") {
+      return {
+        ok: false,
+        code: "queryability_graph_blocked",
+        message: "Il Queryability Graph non è utilizzabile."
+      };
+    }
+
+    const { data: persistedData, error: persistError } = await admin.rpc(
+      "persist_queryability_graph_import",
+      {
+        actor_user_id: context.userId,
+        queryability_graph: graph,
+        reuse_existing_snapshot: true,
+        target_column_count: data.column_count as number,
+        target_connection_id: data.connection_id as string,
+        target_engine: data.engine as "sqlserver",
+        target_introspected_at: data.introspected_at as string,
+        target_snapshot_id: schemaSnapshotId,
+        target_summary: summary,
+        target_table_count: data.table_count as number,
+        target_tenant_id: context.tenantId,
+        technical_snapshot: schema
+      }
+    );
+    const persisted = Array.isArray(persistedData)
+      ? persistedData[0]
+      : persistedData;
+    if (persistError || !persisted) {
+      return {
+        ok: false,
+        code: "queryability_rebuild_save_failed",
+        message: "Rigenerazione Queryability Graph non salvata."
+      };
+    }
+
+    const result = persisted as {
+      schema_snapshot_id: string;
+      queryability_graph_id: string;
+      queryability_graph_version: number;
+      deduplicated: boolean;
+      semantic_status: "not_initialized";
+    };
+    return {
+      ok: true,
+      schemaSnapshotId: result.schema_snapshot_id,
+      queryabilityGraphId: result.queryability_graph_id,
+      queryabilityGraphVersion: result.queryability_graph_version,
+      queryabilityGraphStatus: graph.status,
+      semanticStatus: result.semantic_status,
+      deduplicated: result.deduplicated
+    };
+  } catch {
+    return {
+      ok: false,
+      code: "queryability_rebuild_failed",
+      message: "Rigenerazione Queryability Graph fallita."
+    };
   }
 }
 
@@ -239,24 +356,27 @@ async function runSchemaIntrospection(
 async function persistSchemaIntrospection({
   connection,
   context,
+  graph,
+  schemaSnapshotId,
   schema
 }: {
   connection: ConnectionSecretRow;
   context: ActiveTenantContext;
+  graph: PersistableQueryabilityGraph;
+  schemaSnapshotId: string;
   schema: SchemaIntrospectionResponse;
 }): Promise<IntrospectionResult> {
-  const tableProjection = buildSemanticTableProjection(schema);
-  const relationshipProjection = buildRelationshipProjection(schema);
-  const summary = buildSchemaImportSummary(schema, tableProjection);
+  const summary = buildSchemaImportSummary(schema, graph);
   const admin = createSupabaseAdminClient();
-  const { data, error } = await admin.rpc("persist_technical_schema_import", {
+  const { data, error } = await admin.rpc("persist_queryability_graph_import", {
     actor_user_id: context.userId,
-    relationship_projection: relationshipProjection,
-    semantic_table_projection: tableProjection,
+    queryability_graph: graph,
+    reuse_existing_snapshot: false,
     target_column_count: countColumns(schema),
     target_connection_id: connection.id,
     target_engine: schema.engine ?? connection.engine,
     target_introspected_at: schema.introspected_at,
+    target_snapshot_id: schemaSnapshotId,
     target_summary: summary,
     target_table_count: summary.total_tables,
     target_tenant_id: context.tenantId,
@@ -274,166 +394,29 @@ async function persistSchemaIntrospection({
 
   const persisted = result as {
     schema_snapshot_id: string;
-    semantic_version_id: string;
+    queryability_graph_id: string;
+    queryability_graph_version: number;
+    deduplicated: boolean;
+    semantic_status: "not_initialized";
   };
   return {
     ok: true,
     schemaSnapshotId: persisted.schema_snapshot_id,
-    semanticVersionId: persisted.semantic_version_id,
+    queryabilityGraphId: persisted.queryability_graph_id,
+    queryabilityGraphVersion: persisted.queryability_graph_version,
+    queryabilityGraphStatus: graph.status,
+    semanticStatus: persisted.semantic_status,
+    deduplicated: persisted.deduplicated,
     tableCount: summary.total_tables,
     columnCount: summary.total_columns
   };
 }
 
-function toSemanticColumnProjection({
-  column,
-  primaryKeyColumns
-}: {
-  column: SchemaColumnMetadata;
-  primaryKeyColumns: Set<string>;
-}): SemanticColumnProjection {
-  const metadata: Record<string, string | number | boolean> = {
-    ordinal_position: column.ordinal_position,
-    technical_role: column.technical_role,
-    declared_type_available: column.declared_type_available,
-    is_nullable: column.is_nullable,
-    is_primary_key: primaryKeyColumns.has(column.name.toLowerCase()),
-    is_foreign_key: column.is_foreign_key,
-    is_unique_member: column.is_unique_member,
-    is_identity: column.is_identity,
-    is_computed: column.is_computed,
-    queryable: true,
-    is_sensitive: false
-  };
-
-  if (column.declared_type !== undefined) {
-    metadata.declared_type = column.declared_type;
-  }
-  if (column.declared_type_schema !== undefined) {
-    metadata.declared_type_schema = column.declared_type_schema;
-  }
-  if (column.declared_type_name !== undefined) {
-    metadata.declared_type_name = column.declared_type_name;
-  }
-  if (column.declared_type_is_user_defined !== undefined) {
-    metadata.declared_type_is_user_defined = column.declared_type_is_user_defined;
-  }
-  if (column.declared_type_is_assembly !== undefined) {
-    metadata.declared_type_is_assembly = column.declared_type_is_assembly;
-  }
-  if (column.max_length !== undefined) {
-    metadata.max_length = column.max_length;
-  }
-  if (column.numeric_precision !== undefined) {
-    metadata.numeric_precision = column.numeric_precision;
-  }
-  if (column.numeric_scale !== undefined) {
-    metadata.numeric_scale = column.numeric_scale;
-  }
-  if (column.datetime_precision !== undefined) {
-    metadata.datetime_precision = column.datetime_precision;
-  }
-  if (column.native_type !== undefined) {
-    metadata.native_type = column.native_type;
-  }
-  if (column.normalized_type !== undefined) {
-    metadata.normalized_type = column.normalized_type;
-  }
-  if (column.default_value !== undefined) {
-    metadata.has_default = true;
-  }
-  if (column.collation !== undefined) {
-    metadata.collation = column.collation;
-  }
-  if (column.identity_seed !== undefined) {
-    metadata.identity_seed = column.identity_seed;
-  }
-  if (column.identity_increment !== undefined) {
-    metadata.identity_increment = column.identity_increment;
-  }
-  if (column.computed_expression !== undefined) {
-    metadata.has_computed_expression = true;
-  }
-  if (column.comment !== undefined) {
-    metadata.has_comment = true;
-  }
-
-  const sensitivity = classifyColumnSensitivity(column.name);
-  if (
-    sensitivity.kind === "credential" ||
-    sensitivity.kind === "sensitive"
-  ) {
-    metadata.is_sensitive = true;
-    metadata.queryable = false;
-    metadata.sensitive_reason = sensitivity.reason;
-  } else if (sensitivity.kind === "pii") {
-    metadata.pii_reason = sensitivity.reason;
-  }
-  if (column.technical_role === "binary") {
-    metadata.queryable = false;
-    metadata.exclusion_reason = "unsupported_binary_type";
-  } else if (column.technical_role === "xml") {
-    metadata.queryable = false;
-    metadata.exclusion_reason = "unsupported_complex_type";
-  }
-
-  return {
-    physical_name: column.name,
-    data_type: column.data_type,
-    role: "unknown",
-    pii: sensitivity.kind === "pii",
-    metadata
-  };
-}
-
-export function buildSemanticTableProjection(
-  schema: SchemaIntrospectionResponse
-): SemanticTableProjection[] {
-  return schema.tables.map((table) => {
-    const metadata: SemanticTableProjection["metadata"] = {
-      table_type: table.table_type,
-      column_count: table.columns.length,
-      primary_key_count: table.primary_key?.columns.length ?? 0,
-      has_definition_hash: table.definition_hash !== undefined,
-      queryable: false
-    };
-    if (table.row_count_estimate !== undefined) {
-      metadata.row_count_estimate = table.row_count_estimate;
-    }
-    if (table.view_definition_available !== undefined) {
-      metadata.view_definition_available = table.view_definition_available;
-    }
-    if (table.lineage_available !== undefined) {
-      metadata.lineage_available = table.lineage_available;
-    }
-    if (table.table_type === "view") {
-      metadata.view_lineage_count = table.view_lineage.length;
-    }
-
-    const primaryKeyColumns = new Set(
-      (table.primary_key?.columns ?? []).map((name) => name.toLowerCase())
-    );
-    const columns = table.columns.map((column) =>
-      toSemanticColumnProjection({ column, primaryKeyColumns })
-    );
-    metadata.queryable = columns.some(
-      (column) => column.metadata.queryable === true
-    );
-
-    return {
-      physical_schema: table.schema,
-      physical_name: table.name,
-      metadata,
-      columns
-    };
-  });
-}
-
 export function buildSchemaImportSummary(
   schema: SchemaIntrospectionResponse,
-  tableProjection = buildSemanticTableProjection(schema)
+  graph: QueryabilityGraphArtifact
 ): SchemaImportSummary {
-  const allColumns = tableProjection.flatMap((table) => table.columns);
+  const allColumns = graph.nodes.flatMap((node) => node.columns);
   const views = schema.tables.filter((table) => table.table_type === "view");
   const warningCounts = schema.coverage_warnings.reduce<Record<string, number>>(
     (counts, warning) => {
@@ -466,17 +449,17 @@ export function buildSchemaImportSummary(
     ).length,
     total_views: views.length,
     total_columns: allColumns.length,
-    queryable_objects: tableProjection.filter(
-      (table) => table.metadata.queryable === true
+    queryable_objects: graph.nodes.filter(
+      (node) => node.queryability_status === "queryable"
     ).length,
-    non_queryable_objects: tableProjection.filter(
-      (table) => table.metadata.queryable !== true
+    non_queryable_objects: graph.nodes.filter(
+      (node) => node.queryability_status !== "queryable"
     ).length,
     queryable_columns: allColumns.filter(
-      (column) => column.metadata.queryable === true
+      (column) => column.queryability_status === "queryable"
     ).length,
     non_queryable_columns: allColumns.filter(
-      (column) => column.metadata.queryable !== true
+      (column) => column.queryability_status !== "queryable"
     ).length,
     primary_keys_count: schema.tables.filter((table) => table.primary_key).length,
     foreign_keys_count: schema.foreign_keys.length,
@@ -545,151 +528,90 @@ export function buildSchemaImportSummary(
         count + table.columns.filter((column) => column.is_identity).length,
       0
     ),
-    pii_columns_count: allColumns.filter((column) => column.pii).length,
+    pii_columns_count: allColumns.filter(
+      (column) => column.sensitivity === "pii"
+    ).length,
     excluded_columns_count: allColumns.filter(
-      (column) => column.metadata.queryable !== true
+      (column) => column.queryability_status === "excluded"
     ).length,
     sensitive_columns_count: allColumns.filter(
-      (column) => column.metadata.is_sensitive === true
+      (column) => column.sensitivity === "sensitive"
     ).length,
     coverage_warnings_count: schema.coverage_warnings.length,
     coverage_warnings_by_code: warningCounts
   });
 }
 
-function buildRelationshipProjection(
-  schema: SchemaIntrospectionResponse
-): SemanticRelationshipProjection[] {
-  return schema.foreign_keys.map((relationship) => ({
-    from_schema: relationship.from_schema,
-    from_table: relationship.from_table,
-    from_columns: relationship.from_columns,
-    to_schema: relationship.to_schema,
-    to_table: relationship.to_table,
-    to_columns: relationship.to_columns,
-    cardinality: isUniqueSourceColumns(schema, relationship)
-      ? "one_to_one"
-      : "many_to_one",
-    constraint_name: relationship.constraint_name,
-    update_rule: relationship.update_rule,
-    delete_rule: relationship.delete_rule,
-    is_disabled: relationship.is_disabled,
-    is_not_trusted: relationship.is_not_trusted,
-    verified_by_db: relationship.verified_by_db
-  }));
-}
-
-function isUniqueSourceColumns(
-  schema: SchemaIntrospectionResponse,
-  relationship: SchemaIntrospectionResponse["foreign_keys"][number]
-) {
-  const expected = normalizedColumnSet(relationship.from_columns);
-  const uniqueConstraintMatch = schema.unique_constraints.some(
-    (constraint) =>
-      physicalTableKey(constraint.schema_name, constraint.table_name) ===
-        physicalTableKey(relationship.from_schema, relationship.from_table) &&
-      normalizedColumnSet(constraint.columns) === expected
-  );
-  if (uniqueConstraintMatch) {
-    return true;
+async function runQueryabilityCompilation({
+  connectionId,
+  schema,
+  schemaSnapshotId,
+  tenantId,
+  timeoutMs
+}: {
+  connectionId: string;
+  schema: SchemaIntrospectionResponse;
+  schemaSnapshotId: string;
+  tenantId: string;
+  timeoutMs: number;
+}) {
+  const queryEngineUrl = process.env.QUERY_ENGINE_URL;
+  if (!queryEngineUrl) {
+    throw new Error("QUERY_ENGINE_URL is required.");
   }
 
-  return schema.indexes.some(
-    (index) =>
-      index.is_unique &&
-      physicalTableKey(index.schema_name, index.table_name) ===
-        physicalTableKey(relationship.from_schema, relationship.from_table) &&
-      normalizedColumnSet(index.key_columns.map((column) => column.name)) ===
-        expected
-  );
-}
+  const headers: Record<string, string> = {
+    "content-type": "application/json"
+  };
+  const token = process.env.QUERY_ENGINE_API_TOKEN;
+  if (token) {
+    headers["x-atlante-query-engine-token"] = token;
+  }
+  const url = new URL("/queryability/compile", queryEngineUrl).toString();
+  const body = JSON.stringify({
+    tenant_id: tenantId,
+    connection_id: connectionId,
+    schema_snapshot_id: schemaSnapshotId,
+    snapshot: schema
+  });
 
-function normalizedColumnSet(columns: string[]) {
-  return columns.map((column) => column.toLowerCase()).sort().join("\u0000");
-}
-
-export type ColumnSensitivity =
-  | { kind: "none" }
-  | { kind: "pii"; reason: "direct_person_identifier" | "contact_identifier" }
-  | { kind: "sensitive"; reason: "payment_authorization_code" }
-  | {
-      kind: "credential";
-      reason:
-        | "credential_name"
-        | "credential_derivative_name"
-        | "secret_name"
-        | "secret_key_name";
-    };
-
-export function classifyColumnSensitivity(columnName: string): ColumnSensitivity {
-  const tokens = columnNameTokens(columnName);
-  const tokenSet = new Set(tokens);
-  const compactName = tokens.join("");
-
-  if (compactName === "creditcardapprovalcode") {
-    return { kind: "sensitive", reason: "payment_authorization_code" };
+  if (process.env.QUERY_ENGINE_AUTH_MODE === "google_id_token") {
+    const client = await new GoogleAuth().getIdTokenClient(queryEngineUrl);
+    const response = await client.request({
+      data: body,
+      headers,
+      method: "POST",
+      timeout: timeoutMs + 5000,
+      url,
+      validateStatus: () => true
+    });
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error("Queryability graph compilation failed.");
+    }
+    return QueryabilityGraphArtifactSchema.parse(response.data);
   }
 
-  if (tokens.some((token) => ["password", "passwd", "pwd"].includes(token))) {
-    return { kind: "credential", reason: "credential_name" };
+  const response = await fetch(url, {
+    body,
+    headers,
+    method: "POST",
+    signal: AbortSignal.timeout(timeoutMs + 5000)
+  });
+  if (!response.ok) {
+    throw new Error("Queryability graph compilation failed.");
   }
-
-  if (tokens.some((token) => ["hash", "salt"].includes(token))) {
-    return { kind: "credential", reason: "credential_derivative_name" };
-  }
-
-  if (
-    tokens.some((token) =>
-      ["secret", "token", "credential", "credentials"].includes(token)
-    )
-  ) {
-    return { kind: "credential", reason: "secret_name" };
-  }
-
-  if (
-    tokenSet.has("key") &&
-    ["api", "access", "private", "secret"].some((token) =>
-      tokenSet.has(token)
-    )
-  ) {
-    return { kind: "credential", reason: "secret_key_name" };
-  }
-
-  if (tokens.some((token) => ["email", "phone"].includes(token))) {
-    return { kind: "pii", reason: "contact_identifier" };
-  }
-
-  if (
-    compactName === "firstname" ||
-    compactName === "middlename" ||
-    compactName === "lastname" ||
-    compactName === "fullname" ||
-    compactName === "addressline" ||
-    compactName === "addressline1" ||
-    compactName === "addressline2"
-  ) {
-    return { kind: "pii", reason: "direct_person_identifier" };
-  }
-
-  return { kind: "none" };
-}
-
-function columnNameTokens(columnName: string) {
-  return columnName
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((token) => token.length > 0);
-}
-
-function physicalTableKey(schema: string, table: string) {
-  return `${schema}.${table}`.toLowerCase();
+  return QueryabilityGraphArtifactSchema.parse(await response.json());
 }
 
 function validatedIntrospectionResponse(payload: unknown) {
   const schema = SchemaIntrospectionResponseSchema.parse(payload);
 
-  if (schema.status !== "ok" || !schema.engine) {
+  if (
+    schema.status !== "ok" ||
+    !schema.engine ||
+    !schema.schema_hash ||
+    !schema.snapshot_hash
+  ) {
     throw new Error(schema.sanitized_error ?? schema.message);
   }
 

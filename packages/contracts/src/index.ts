@@ -345,6 +345,7 @@ export const SchemaIntrospectionResponseSchema = z.strictObject({
   database_name: z.string().min(1).max(255).optional(),
   engine_version: z.string().min(1).max(500).optional(),
   schema_hash: z.string().length(64).optional(),
+  snapshot_hash: z.string().length(64).optional(),
   coverage_status: SchemaCoverageStatusSchema,
   tables: z.array(SchemaTableMetadataSchema).max(5_000).default([]),
   foreign_keys: z
@@ -372,6 +373,243 @@ export const SchemaIntrospectionResponseSchema = z.strictObject({
 });
 export type SchemaIntrospectionResponse = z.infer<
   typeof SchemaIntrospectionResponseSchema
+>;
+
+export const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
+
+export const QueryabilityStatusSchema = z.enum([
+  "queryable",
+  "excluded"
+]);
+export type QueryabilityStatus = z.infer<typeof QueryabilityStatusSchema>;
+
+export const QueryabilitySensitivitySchema = z.enum([
+  "none",
+  "pii",
+  "sensitive"
+]);
+export type QueryabilitySensitivity = z.infer<
+  typeof QueryabilitySensitivitySchema
+>;
+
+export const QueryabilityCandidateKeySchema = z.strictObject({
+  key_type: z.enum(["primary_key", "unique_constraint", "unique_index"]),
+  name: z.string().min(1).max(255),
+  columns: z.array(z.string().min(1).max(255)).min(1),
+  eligible_for_cardinality: z.boolean()
+});
+export type QueryabilityCandidateKey = z.infer<
+  typeof QueryabilityCandidateKeySchema
+>;
+
+export const QueryabilityColumnSchema = z.strictObject({
+  column_key: Sha256Schema,
+  name: z.string().min(1).max(255),
+  ordinal_position: z.number().int().min(1),
+  native_type: z.string().min(1).max(255).optional(),
+  normalized_type: z.string().min(1).max(255).optional(),
+  technical_role: SchemaTechnicalRoleSchema,
+  nullable: z.boolean(),
+  queryability_status: QueryabilityStatusSchema,
+  sensitivity: QueryabilitySensitivitySchema,
+  reason_codes: z.array(z.string().min(1).max(100)).max(20)
+});
+export type QueryabilityColumn = z.infer<typeof QueryabilityColumnSchema>;
+
+export const QueryabilityNodeSchema = z.strictObject({
+  node_key: Sha256Schema,
+  database_name: z.string().min(1).max(255),
+  schema_name: z.string().min(1).max(255),
+  object_name: z.string().min(1).max(255),
+  object_type: z.enum(["table", "view"]),
+  queryability_status: QueryabilityStatusSchema,
+  reason_codes: z.array(z.string().min(1).max(100)).max(100),
+  bridge_candidate: z.boolean(),
+  candidate_keys: z.array(QueryabilityCandidateKeySchema).max(10_000),
+  columns: z.array(QueryabilityColumnSchema).max(50_000),
+  view_definition_available: z.boolean().optional(),
+  view_lineage_status: z
+    .enum(["complete", "partial", "unavailable"])
+    .optional()
+});
+export type QueryabilityNode = z.infer<typeof QueryabilityNodeSchema>;
+
+export const QueryabilityColumnPairSchema = z.strictObject({
+  ordinal_position: z.number().int().min(1),
+  from_column: z.string().min(1).max(255),
+  from_column_key: Sha256Schema,
+  to_column: z.string().min(1).max(255),
+  to_column_key: Sha256Schema
+});
+export type QueryabilityColumnPair = z.infer<
+  typeof QueryabilityColumnPairSchema
+>;
+
+export const QueryabilityForeignKeyEdgeSchema = z.strictObject({
+  edge_key: Sha256Schema,
+  edge_type: z.literal("fk_join"),
+  constraint_name: z.string().min(1).max(255),
+  from_node_key: Sha256Schema,
+  to_node_key: Sha256Schema,
+  column_pairs: z.array(QueryabilityColumnPairSchema).min(1),
+  relationship_shape: z.enum(["one_to_one", "many_to_one"]),
+  child_to_parent: z.enum(["zero_or_one", "exactly_one"]),
+  parent_to_child: z.enum(["zero_or_one", "zero_or_many"]),
+  nullable_fk: z.boolean(),
+  self_reference: z.boolean(),
+  verified_by_db: z.boolean(),
+  enforcement_status: z.enum(["enabled", "disabled"]),
+  validation_status: z.enum(["trusted", "untrusted"]),
+  automatic_join_allowed: z.boolean(),
+  reason_codes: z.array(z.string().min(1).max(100)).max(100)
+});
+export type QueryabilityForeignKeyEdge = z.infer<
+  typeof QueryabilityForeignKeyEdgeSchema
+>;
+
+export const QueryabilityViewDependencyEdgeSchema = z.strictObject({
+  edge_key: Sha256Schema,
+  edge_type: z.literal("view_depends_on"),
+  from_node_key: Sha256Schema,
+  to_node_key: Sha256Schema.optional(),
+  source: z.enum([
+    "dm_sql_referenced_entities",
+    "sql_expression_dependencies"
+  ]),
+  referenced_server_name: z.string().min(1).max(255).optional(),
+  referenced_database_name: z.string().min(1).max(255).optional(),
+  referenced_schema_name: z.string().min(1).max(255).optional(),
+  referenced_object_name: z.string().min(1).max(255).optional(),
+  resolution_status: z.enum(["resolved", "external", "unresolved"]),
+  automatic_join_allowed: z.literal(false),
+  reason_codes: z.array(z.string().min(1).max(100)).max(100)
+});
+export type QueryabilityViewDependencyEdge = z.infer<
+  typeof QueryabilityViewDependencyEdgeSchema
+>;
+
+export const QueryabilityViewColumnEdgeSchema = z.strictObject({
+  edge_key: Sha256Schema,
+  edge_type: z.literal("view_column_derives_from"),
+  from_node_key: Sha256Schema,
+  from_column_key: Sha256Schema,
+  to_node_key: Sha256Schema.optional(),
+  to_column_key: Sha256Schema.optional(),
+  source: z.enum([
+    "dm_sql_referenced_entities",
+    "sql_expression_dependencies"
+  ]),
+  referenced_server_name: z.string().min(1).max(255).optional(),
+  referenced_database_name: z.string().min(1).max(255).optional(),
+  referenced_schema_name: z.string().min(1).max(255).optional(),
+  referenced_object_name: z.string().min(1).max(255).optional(),
+  referenced_column_name: z.string().min(1).max(255).optional(),
+  resolution_status: z.enum(["resolved", "external", "unresolved"]),
+  lineage_status: z.enum(["complete", "partial"]),
+  automatic_join_allowed: z.literal(false),
+  reason_codes: z.array(z.string().min(1).max(100)).max(100)
+});
+export type QueryabilityViewColumnEdge = z.infer<
+  typeof QueryabilityViewColumnEdgeSchema
+>;
+
+export const QueryabilityEdgeSchema = z.discriminatedUnion("edge_type", [
+  QueryabilityForeignKeyEdgeSchema,
+  QueryabilityViewDependencyEdgeSchema,
+  QueryabilityViewColumnEdgeSchema
+]);
+export type QueryabilityEdge = z.infer<typeof QueryabilityEdgeSchema>;
+
+export const QueryabilityGraphStatusSchema = z.enum([
+  "complete",
+  "partial",
+  "blocked"
+]);
+export type QueryabilityGraphStatus = z.infer<
+  typeof QueryabilityGraphStatusSchema
+>;
+
+export const QueryabilityGraphArtifactSchema = z.strictObject({
+  contract_version: z.literal("queryability_graph.v1"),
+  tenant_id: z.string().uuid(),
+  connection_id: z.string().uuid(),
+  schema_snapshot_id: z.string().uuid(),
+  engine: z.literal("sqlserver"),
+  schema_hash: Sha256Schema,
+  snapshot_hash: Sha256Schema,
+  graph_input_hash: Sha256Schema,
+  derivation_key: Sha256Schema,
+  graph_hash: Sha256Schema,
+  builder_version: z.string().min(1).max(100),
+  policy_version: z.string().min(1).max(100),
+  status: QueryabilityGraphStatusSchema,
+  status_reasons: z.array(z.string().min(1).max(100)).max(100),
+  semantic_status: z.literal("not_initialized"),
+  nodes: z.array(QueryabilityNodeSchema).max(5_000),
+  edges: z.array(QueryabilityEdgeSchema).max(250_000)
+});
+export type QueryabilityGraphArtifact = z.infer<
+  typeof QueryabilityGraphArtifactSchema
+>;
+
+export const QueryabilityGraphVersionSchema = z.strictObject({
+  graph_version_id: z.string().uuid(),
+  graph_version: z.number().int().positive(),
+  created_at: z.string().datetime({ offset: true }),
+  graph: QueryabilityGraphArtifactSchema
+});
+export type QueryabilityGraphVersion = z.infer<
+  typeof QueryabilityGraphVersionSchema
+>;
+
+export const QueryabilityCompileRequestSchema = z.strictObject({
+  tenant_id: z.string().uuid(),
+  connection_id: z.string().uuid(),
+  schema_snapshot_id: z.string().uuid(),
+  snapshot: SchemaIntrospectionResponseSchema
+});
+export type QueryabilityCompileRequest = z.infer<
+  typeof QueryabilityCompileRequestSchema
+>;
+
+export const QueryabilityPathStepSchema = z.strictObject({
+  edge_key: Sha256Schema,
+  from_node_key: Sha256Schema,
+  to_node_key: Sha256Schema,
+  traversal: z.enum(["child_to_parent", "parent_to_child"]),
+  cardinality: z.enum([
+    "zero_or_one",
+    "exactly_one",
+    "zero_or_many"
+  ])
+});
+export type QueryabilityPathStep = z.infer<
+  typeof QueryabilityPathStepSchema
+>;
+
+export const QueryabilityPathSchema = z.strictObject({
+  steps: z.array(QueryabilityPathStepSchema).min(1).max(4),
+  fanout_warning: z.boolean()
+});
+export type QueryabilityPath = z.infer<typeof QueryabilityPathSchema>;
+
+export const QueryabilityPathResultSchema = z.strictObject({
+  status: z.enum(["found", "not_found", "ambiguous", "blocked"]),
+  paths: z.array(QueryabilityPathSchema).max(100),
+  reason_codes: z.array(z.string().min(1).max(100)).max(100)
+});
+export type QueryabilityPathResult = z.infer<
+  typeof QueryabilityPathResultSchema
+>;
+
+export const QueryabilityPathRequestSchema = z.strictObject({
+  graph: QueryabilityGraphArtifactSchema,
+  from_node_key: Sha256Schema,
+  to_node_key: Sha256Schema,
+  max_hops: z.number().int().min(1).max(4).default(4)
+});
+export type QueryabilityPathRequest = z.infer<
+  typeof QueryabilityPathRequestSchema
 >;
 
 export const CHART_TYPE_VALUES = [

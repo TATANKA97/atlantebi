@@ -605,14 +605,18 @@ id uuid pk
 tenant_id uuid fk
 connection_id uuid fk
 schema_hash text
-raw_summary jsonb
+snapshot_hash text
+snapshot jsonb
+summary jsonb
 table_count integer
 column_count integer
-relationship_count integer
+coverage_status text -- ok | partial | warning | blocked
 created_at timestamptz
 ```
 
-### 13.6 semantic_layer_versions
+### 13.6 queryability_graph_versions
+
+Artefatto tecnico immutabile derivato da uno snapshot.
 
 ```txt
 id uuid pk
@@ -620,13 +624,47 @@ tenant_id uuid fk
 connection_id uuid fk
 schema_snapshot_id uuid fk
 version integer
+contract_version text -- queryability_graph.v1
+builder_version text
+policy_version text
+status text -- complete | partial
+schema_hash text
+snapshot_hash text
+graph_input_hash text
+derivation_key text
+graph_hash text
+graph jsonb
+node_count integer
+column_count integer
+edge_count integer
+created_by uuid
+created_at timestamptz
+```
+
+Nodi, colonne ed edge sono anche proiettati in tabelle normalizzate per API,
+diagnostica e path finding. Il lineage delle view e le FK sono edge distinti.
+Solo gli edge `fk_join` possono essere usati per routing automatico.
+
+### 13.7 semantic_layer_versions
+
+```txt
+id uuid pk
+tenant_id uuid fk
+connection_id uuid fk
+queryability_graph_version_id uuid fk
+base_graph_hash text
+version integer
 status text -- draft | active | archived
 created_by uuid
 created_at timestamptz
 activated_at timestamptz nullable
 ```
 
-### 13.7 semantic_tables
+La versione semantica e' `fresh` quando `base_graph_hash` coincide con il
+graph corrente, `stale` quando differisce e `indeterminate` quando l'ultimo
+build del graph e' blocked.
+
+### 13.8 semantic_tables
 
 ```txt
 id uuid pk
@@ -645,7 +683,7 @@ created_at timestamptz
 updated_at timestamptz
 ```
 
-### 13.8 semantic_columns
+### 13.9 semantic_columns
 
 ```txt
 id uuid pk
@@ -666,7 +704,7 @@ created_at timestamptz
 updated_at timestamptz
 ```
 
-### 13.9 semantic_relationships
+### 13.10 semantic_relationships
 
 ```txt
 id uuid pk
@@ -677,7 +715,8 @@ from_column_id uuid
 to_table_id uuid
 to_column_id uuid
 relationship_type text -- one_to_many | many_to_one | one_to_one
-source text -- db_fk | inferred | user_confirmed
+source text -- graph_edge | inferred | user_confirmed | ai_suggested
+graph_edge_id uuid nullable
 confidence numeric
 status text -- proposed | verified | rejected
 evidence jsonb
@@ -685,7 +724,7 @@ created_at timestamptz
 updated_at timestamptz
 ```
 
-### 13.10 semantic_metrics
+### 13.11 semantic_metrics
 
 ```txt
 id uuid pk
@@ -705,7 +744,7 @@ created_at timestamptz
 updated_at timestamptz
 ```
 
-### 13.11 semantic_memory
+### 13.12 semantic_memory
 
 ```txt
 id uuid pk
@@ -726,7 +765,7 @@ created_at timestamptz
 updated_at timestamptz
 ```
 
-### 13.12 business_anchors
+### 13.13 business_anchors
 
 Le “stelle polari”.
 
@@ -760,7 +799,7 @@ tolerance_percent = 5
 
 Questi valori possono essere passati all’AI in forma sintetica e usati anche deterministicamente per controlli di plausibilità.
 
-### 13.13 dashboards
+### 13.14 dashboards
 
 ```txt
 id uuid pk
@@ -774,7 +813,7 @@ created_at timestamptz
 updated_at timestamptz
 ```
 
-### 13.14 widgets
+### 13.15 widgets
 
 Un widget è l’oggetto salvato che contiene domanda, SQL, grafico, impostazioni e refresh.
 
@@ -794,7 +833,7 @@ created_at timestamptz
 updated_at timestamptz
 ```
 
-### 13.15 dashboard_widgets
+### 13.16 dashboard_widgets
 
 Permette lo stesso widget su più dashboard senza duplicarlo.
 
@@ -815,7 +854,7 @@ Se un widget è presente in più dashboard, quando l’utente lo elimina la UI d
 * rimuovi da più dashboard selezionate;
 * elimina definitivamente il widget.
 
-### 13.16 widget_cache
+### 13.17 widget_cache
 
 ```txt
 id uuid pk
@@ -830,7 +869,7 @@ expires_at timestamptz nullable
 
 Disattivabile per tenant.
 
-### 13.17 query_runs
+### 13.18 query_runs
 
 ```txt
 id uuid pk
@@ -849,7 +888,7 @@ confidence_score numeric nullable -- internal, not shown by default
 created_at timestamptz
 ```
 
-### 13.18 query_checks
+### 13.19 query_checks
 
 ```txt
 id uuid pk
@@ -867,7 +906,7 @@ execution_ms integer nullable
 created_at timestamptz
 ```
 
-### 13.19 audit_log
+### 13.20 audit_log
 
 ```txt
 id uuid pk
@@ -884,26 +923,73 @@ created_at timestamptz
 
 ---
 
-## 14. Semantic layer
+## 14. Queryability Graph e Semantic Layer
 
 Il semantic layer è il cuore del prodotto.
 
-### 14.1 Build iniziale
+### 14.1 Queryability Graph V1
 
-Quando viene creata una connessione:
+Pipeline obbligatoria:
 
-1. test connessione;
-2. introspection tabelle/viste/colonne;
-3. rilevamento PK/FK;
-4. rilevamento indici;
-5. stima righe;
-6. profiling leggero;
-7. relationship inference;
-8. AI enrichment;
-9. revisione admin;
-10. attivazione versione semantic layer.
+```txt
+Technical Snapshot V1
+-> Queryability Graph V1
+-> Semantic Layer
+-> Query Compiler
+```
 
-### 14.2 Profiling privacy-safe
+Il graph e' tecnico, deterministico, tenant-scoped e immutabile. Contiene
+nodi table/view, colonne queryable o escluse, candidate keys, FK direzionali,
+nullability, stati trusted/disabled, self-reference, bridge candidate e
+lineage view.
+
+Solo `fk_join` puo' essere usato per routing automatico. FK disabled o
+untrusted restano metadata ma sono escluse dai path automatici. Il lineage
+view non dimostra predicati di join e le indexed view non propagano chiavi
+alle tabelle sorgenti.
+
+Path finding V1:
+
+* massimo quattro hop;
+* shortest path equivalenti producono `ambiguous`;
+* espansioni parent -> child producono warning fanout.
+
+Stati:
+
+* `complete`: routing tecnico pienamente utilizzabile;
+* `partial`: routing utilizzabile con metadata non bloccanti incompleti;
+* `blocked`: graph non utilizzabile e import non persistito.
+
+Hash:
+
+* `schema_hash`: DDL stabile osservabile;
+* `snapshot_hash`: snapshot tecnico full-fidelity;
+* `graph_input_hash`: soli campi consumati dal builder;
+* `graph_hash`: output canonico del graph.
+
+Derivation key:
+
+```txt
+graph_input_hash + builder_version + policy_version
+```
+
+### 14.2 Build iniziale del Semantic Layer
+
+L'import schema termina con `semantic_status = not_initialized`. La mancanza
+del Semantic Layer dopo un import riuscito non e' un errore.
+
+La creazione successiva:
+
+1. seleziona una versione Queryability Graph;
+2. salva `base_graph_hash`;
+3. aggiunge naming, metriche e interpretazioni business;
+4. applica eventuale AI enrichment;
+5. richiede revisione admin;
+6. attiva esplicitamente la versione.
+
+La freshness dipende da `base_graph_hash`, non da `schema_hash`.
+
+### 14.3 Profiling privacy-safe
 
 Il sistema può calcolare internamente:
 
@@ -925,7 +1011,7 @@ ai_send_sample_rows = false default
 
 Se attivata, inviare solo sample redatti e limitati.
 
-### 14.3 AI enrichment
+### 14.4 AI enrichment
 
 L’AI può suggerire:
 
@@ -939,7 +1025,7 @@ L’AI può suggerire:
 
 L’AI non decide in modo definitivo. Il semantic layer attivo deve essere revisionabile.
 
-### 14.4 Memorie semantiche
+### 14.5 Memorie semantiche
 
 Quando il sistema scopre qualcosa di utile, crea memoria.
 
@@ -2024,15 +2110,15 @@ Servizi:
 * Azure SQL demo;
 * MySQL demo.
 
-### Milestone 3 — Introspection + Semantic Layer
+### Milestone 3 — Snapshot, Queryability Graph, Semantic Layer
 
-* schema scan;
-* PK/FK;
-* relationships;
-* profiling leggero;
-* AI enrichment;
-* UI semantic review;
-* activation version.
+* **3A Technical Snapshot V1**: schema scan SQL Server, PK/FK, constraint,
+  indici, view definition, lineage, coverage e hash tecnici;
+* **3B Queryability Graph V1**: graph tecnico immutabile, cardinalita',
+  trust, nullability, self-reference, path fino a quattro hop, ambiguity e
+  fanout warning;
+* **3C Semantic Layer**: derivazione da graph version, `base_graph_hash`,
+  AI enrichment, review admin e activation version.
 
 ### Milestone 4 — Query AI
 
@@ -2090,21 +2176,22 @@ Il prodotto è pronto per pilot se:
 1. connessione SQL Server via IP allowlist funziona;
 2. connessione MySQL via IP allowlist funziona;
 3. almeno una VPN pilot è documentata o testata;
-4. semantic layer viene generato e revisionato;
-5. “fatturato 2008” su DB demo produce grafico corretto;
-6. “prodotti più venduti” produce risultato visibile;
-7. query ambigua chiede chiarimento;
-8. chart `bar` renderizza sempre se dati compatibili;
-9. colonne count non sono formattate come valuta;
-10. AI non aggiunge metriche non richieste;
-11. Supabase non contiene password DB;
-12. SQL validator blocca DDL/DML;
-13. risultati non vengono nascosti per skip o engine error;
-14. business anchor rileva mismatch grossolani;
-15. widget copiato su dashboard non duplica query;
-16. audit log traccia azioni sensibili;
-17. rate limit e AI cost cap attivi;
-18. demo end-to-end ripetibile.
+4. Queryability Graph viene generato e validato prima del Semantic Layer;
+5. semantic layer viene derivato da una graph version e revisionato;
+6. “fatturato 2008” su DB demo produce grafico corretto;
+7. “prodotti più venduti” produce risultato visibile;
+8. query ambigua chiede chiarimento;
+9. chart `bar` renderizza sempre se dati compatibili;
+10. colonne count non sono formattate come valuta;
+11. AI non aggiunge metriche non richieste;
+12. Supabase non contiene password DB;
+13. SQL validator blocca DDL/DML;
+14. risultati non vengono nascosti per skip o engine error;
+15. business anchor rileva mismatch grossolani;
+16. widget copiato su dashboard non duplica query;
+17. audit log traccia azioni sensibili;
+18. rate limit e AI cost cap attivi;
+19. demo end-to-end ripetibile.
 
 ---
 

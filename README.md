@@ -2,7 +2,9 @@
 
 Atlante BI is an AI-powered BI platform for Italian SMBs. This repository starts with the product foundation only: application metadata, strict shared contracts, a technical web shell, and a query-engine boundary.
 
-This foundation intentionally does not include AI orchestration, dashboard UI, chart rendering, query execution, introspection, or customer data storage.
+The current technical foundation includes SQL Server Technical Snapshot V1 and
+Queryability Graph V1. It does not yet include semantic AI, query execution,
+chart rendering, or dashboard generation.
 
 ## Architecture
 
@@ -21,6 +23,7 @@ Supabase stores application metadata only:
 - tenants and memberships
 - connection metadata with `secret_ref`
 - semantic layer metadata
+- immutable technical schema snapshots and queryability graphs
 - dashboards and widgets
 - query history metadata
 - audit logs
@@ -112,10 +115,12 @@ environment variables.
 - Web auth: `/login`
 - Tenant setup: `/setup`
 - Connections: `/connections`
-- Semantic layer: `/semantic`
+- Schema and Queryability Graph: `/semantic`
 - Query engine health: `GET /health`
 - Query engine connection test: `POST /connections/test`
 - Query engine schema introspection: `POST /schema/introspect`
+- Queryability graph compile: `POST /queryability/compile`
+- Queryability path search: `POST /queryability/paths`
 - Query engine run boundary: `POST /query/run` validates the request contract and returns `501` until real execution is implemented.
 
 ## Sources Checked
