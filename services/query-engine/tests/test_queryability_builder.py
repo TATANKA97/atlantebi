@@ -467,6 +467,65 @@ def test_incomplete_lineage_marks_graph_partial_without_warning() -> None:
     assert node_by_name(graph, "vCustomer").view_lineage_status == "partial"
 
 
+def test_unresolved_lineage_marks_graph_partial_without_upstream_warning() -> None:
+    view = replace(
+        table(
+            "vCustomer",
+            [column("CustomerID", 1)],
+            table_type="view",
+        ),
+        view_lineage=[
+            SchemaViewLineageDependency(
+                source="dm_sql_referenced_entities",
+                referencing_column="MissingViewColumn",
+                referenced_schema_name="SalesLT",
+                referenced_entity_name="MissingCustomer",
+                referenced_column_name="CustomerID",
+                referenced_class="OBJECT_OR_COLUMN",
+            )
+        ],
+    )
+
+    graph = build(snapshot(tables=[view]))
+
+    assert graph.status == "partial"
+    assert graph.status_reasons == ["VIEW_LINEAGE_PARTIAL"]
+    assert node_by_name(graph, "vCustomer").view_lineage_status == "partial"
+
+
+def test_distinct_lineage_metadata_produces_distinct_edge_keys() -> None:
+    dependencies = [
+        SchemaViewLineageDependency(
+            source="dm_sql_referenced_entities",
+            referencing_column="CustomerID",
+            referenced_schema_name="SalesLT",
+            referenced_entity_name="Customer",
+            referenced_column_name="CustomerID",
+            referenced_class="OBJECT_OR_COLUMN",
+            is_selected=is_selected,
+        )
+        for is_selected in [True, False]
+    ]
+    customer = table(
+        "Customer",
+        [column("CustomerID", 1)],
+        primary_key=["CustomerID"],
+    )
+    view = replace(
+        table(
+            "vCustomer",
+            [column("CustomerID", 1)],
+            table_type="view",
+        ),
+        view_lineage=dependencies,
+    )
+
+    graph = build(snapshot(tables=[customer, view]))
+
+    assert len(graph.edges) == 3
+    assert len({edge.edge_key for edge in graph.edges}) == 3
+
+
 def test_cross_database_lineage_edges_have_unique_stable_keys() -> None:
     dependencies = [
         SchemaViewLineageDependency(

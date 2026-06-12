@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(25);
+select plan(32);
 
 select ok(
   not has_table_privilege(
@@ -20,6 +20,42 @@ select ok(
     'INSERT'
   ),
   'authenticated cannot forge graph edges'
+);
+
+select ok(
+  not has_table_privilege(
+    'authenticated',
+    'public.queryability_graph_derivations',
+    'SELECT'
+  ),
+  'authenticated cannot read snapshot-to-graph derivations directly'
+);
+
+select ok(
+  not has_table_privilege(
+    'service_role',
+    'public.schema_snapshots',
+    'UPDATE,DELETE'
+  ),
+  'service role cannot mutate or delete immutable schema snapshots directly'
+);
+
+select ok(
+  not has_table_privilege(
+    'service_role',
+    'public.queryability_graph_versions',
+    'UPDATE,DELETE'
+  ),
+  'service role cannot mutate or delete immutable graph versions directly'
+);
+
+select ok(
+  not has_function_privilege(
+    'service_role',
+    'app_private.persist_queryability_graph_import_core(uuid,uuid,uuid,uuid,public.connection_engine,jsonb,jsonb,jsonb,integer,integer,timestamptz,boolean)',
+    'EXECUTE'
+  ),
+  'service role cannot bypass graph persistence invariants'
 );
 
 select ok(
@@ -422,6 +458,68 @@ select is(
   ),
   1,
   'graph-equivalent snapshots do not duplicate graph versions'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from public.queryability_graph_derivations
+    where tenant_id = '20000000-0000-4000-8000-000000000020'
+      and graph_version_id = (
+        select queryability_graph_id
+        from metadata_only_import
+      )
+  ),
+  2,
+  'each full-fidelity snapshot is mapped to its reused graph'
+);
+
+select ok(
+  exists (
+    select 1
+    from public.audit_logs
+    where tenant_id = '20000000-0000-4000-8000-000000000020'
+      and action = 'queryability_graph.deduplicated'
+      and metadata->>'schema_snapshot_id'
+        = '40000000-0000-4000-8000-000000000023'
+  ),
+  'deduplicated graph imports remain auditable'
+);
+
+select throws_ok(
+  $$
+    select *
+    from public.persist_queryability_graph_import(
+      '10000000-0000-4000-8000-000000000020',
+      '20000000-0000-4000-8000-000000000020',
+      '30000000-0000-4000-8000-000000000020',
+      '40000000-0000-4000-8000-000000000024',
+      'sqlserver',
+      (select snapshot from queryability_fixture),
+      (select summary from queryability_fixture),
+      (
+        select graph || jsonb_build_object(
+          'edges',
+          jsonb_build_array(
+            jsonb_build_object(
+              'edge_type', 'fk_join',
+              'automatic_join_allowed', true,
+              'enforcement_status', 'disabled',
+              'validation_status', 'trusted',
+              'verified_by_db', true
+            )
+          )
+        )
+        from queryability_fixture
+      ),
+      1,
+      0,
+      '2026-06-12T08:00:00Z'
+    )
+  $$,
+  '22023',
+  'automatic joins require enabled trusted database-verified foreign keys',
+  'persistence rejects unsafe automatic FK joins'
 );
 
 update queryability_fixture

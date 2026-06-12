@@ -29,13 +29,28 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "graph_forbidden" }, { status: 403 });
   }
 
-  const { data, error } = await createSupabaseAdminClient()
+  const admin = createSupabaseAdminClient();
+  const { data: derivation, error: derivationError } = await admin
+    .from("queryability_graph_derivations")
+    .select("graph_version_id,schema_snapshot_id,created_at")
+    .eq("tenant_id", tenant.context.tenantId)
+    .eq("connection_id", parsed.data.connection_id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (derivationError) {
+    return NextResponse.json({ error: "graph_read_failed" }, { status: 500 });
+  }
+  if (!derivation) {
+    return NextResponse.json({ error: "graph_not_found" }, { status: 404 });
+  }
+
+  const { data, error } = await admin
     .from("queryability_graph_versions")
     .select("id,version,created_at,graph")
     .eq("tenant_id", tenant.context.tenantId)
     .eq("connection_id", parsed.data.connection_id)
-    .order("version", { ascending: false })
-    .limit(1)
+    .eq("id", derivation.graph_version_id)
     .maybeSingle();
   if (error) {
     return NextResponse.json({ error: "graph_read_failed" }, { status: 500 });
@@ -47,7 +62,9 @@ export async function GET(request: Request) {
   return NextResponse.json({
     graph_version_id: data.id,
     graph_version: data.version,
-    created_at: data.created_at,
+    schema_snapshot_id: derivation.schema_snapshot_id,
+    derived_at: derivation.created_at,
+    graph_created_at: data.created_at,
     graph: QueryabilityGraphArtifactSchema.parse(data.graph)
   });
 }

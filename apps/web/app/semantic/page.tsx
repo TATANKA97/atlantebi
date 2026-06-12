@@ -17,6 +17,10 @@ import { PathInspector } from "./path-inspector";
 import { coverageWarningsLabel } from "../../lib/semantic/summary";
 import { createSupabaseAdminClient } from "../../lib/supabase/admin";
 import {
+  snapshotIdForGraphDisplay,
+  snapshotIdForGraphRebuild
+} from "../../lib/queryability/snapshot-selection";
+import {
   canManageConnections,
   getActiveTenantContext
 } from "../../lib/tenant";
@@ -71,6 +75,7 @@ const MESSAGE_COPY: Record<string, string> = {
     "Una rigenerazione del graph è già in corso.",
   queryability_rebuild_save_failed: "Queryability Graph rigenerato ma non salvato.",
   queryability_graph_not_found: "Queryability Graph richiesto non trovato.",
+  schema_import_failed: "Import schema fallito.",
   schema_snapshot_not_found: "Snapshot tecnico non trovato."
 };
 
@@ -90,7 +95,8 @@ export default async function QueryabilityPage({
   const context = await getActiveTenantContext();
   const canManage = canManageConnections(context.role);
   const admin = createSupabaseAdminClient();
-  const [connectionsResult, graphsResult] = await Promise.all([
+  const [connectionsResult, graphsResult, latestDerivationResult] =
+    await Promise.all([
     context.supabase
       .from("db_connection_summaries")
       .select("id,name,engine,database_name,status")
@@ -106,12 +112,24 @@ export default async function QueryabilityPage({
           .eq("tenant_id", context.tenantId)
           .order("created_at", { ascending: false })
           .limit(20)
-      : Promise.resolve({ data: [], error: null })
+      : Promise.resolve({ data: [], error: null }),
+    canManage
+      ? admin
+          .from("queryability_graph_derivations")
+          .select("graph_version_id")
+          .eq("tenant_id", context.tenantId)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+      : Promise.resolve({ data: null, error: null })
   ]);
 
   const connections = (connectionsResult.data ?? []) as ConnectionRow[];
   const graphVersions = (graphsResult.data ?? []) as GraphVersionRow[];
-  const selectedGraphId = params.graph ?? graphVersions[0]?.id;
+  const selectedGraphId =
+    params.graph ??
+    (latestDerivationResult.data?.graph_version_id as string | undefined) ??
+    graphVersions[0]?.id;
   const selectedGraphResult =
     canManage && selectedGraphId
       ? await admin
@@ -132,7 +150,12 @@ export default async function QueryabilityPage({
     ? await readSnapshotSummary({
         admin,
         connectionId: selectedGraphRow.connection_id,
-        snapshotId: params.snapshot ?? selectedGraphRow.schema_snapshot_id,
+        graphVersionId: selectedGraphRow.id,
+        snapshotId: snapshotIdForGraphDisplay({
+          graphExplicitlySelected: Boolean(params.graph),
+          graphSnapshotId: selectedGraphRow.schema_snapshot_id,
+          requestedSnapshotId: params.snapshot
+        }),
         tenantId: context.tenantId
       })
     : null;
@@ -217,7 +240,10 @@ export default async function QueryabilityPage({
               <input
                 name="schema_snapshot_id"
                 type="hidden"
-                value={selectedGraphRow.schema_snapshot_id}
+                value={snapshotIdForGraphRebuild({
+                  displayedSnapshotId: snapshot?.id,
+                  graphSnapshotId: selectedGraphRow.schema_snapshot_id
+                })}
               />
               <button
                 className="border border-[color:var(--border)] px-4 py-2 text-sm font-medium"
@@ -814,22 +840,41 @@ function Stat({ label, value }: { label: string; value: string }) {
 async function readSnapshotSummary({
   admin,
   connectionId,
+  graphVersionId,
   snapshotId,
   tenantId
 }: {
   admin: ReturnType<typeof createSupabaseAdminClient>;
   connectionId: string;
-  snapshotId: string;
+  graphVersionId: string;
+  snapshotId: string | undefined;
   tenantId: string;
 }) {
-  const { data } = await admin
+  let query = admin
     .from("schema_snapshots")
     .select("id,summary,snapshot")
     .eq("tenant_id", tenantId)
-    .eq("connection_id", connectionId)
-    .eq("id", snapshotId)
-    .single();
+    .eq("connection_id", connectionId);
+  query = snapshotId
+    ? query.eq("id", snapshotId)
+    : query
+        .order("created_at", { ascending: false })
+        .order("introspected_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(1);
+  const { data } = await query.maybeSingle();
   if (!data) {
+    return null;
+  }
+  const { data: derivation } = await admin
+    .from("queryability_graph_derivations")
+    .select("schema_snapshot_id")
+    .eq("tenant_id", tenantId)
+    .eq("connection_id", connectionId)
+    .eq("schema_snapshot_id", data.id)
+    .eq("graph_version_id", graphVersionId)
+    .maybeSingle();
+  if (!derivation) {
     return null;
   }
   return {
