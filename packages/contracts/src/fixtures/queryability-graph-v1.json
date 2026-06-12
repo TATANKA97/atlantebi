@@ -1,0 +1,190 @@
+{
+  "contract_version": "queryability_graph.v1",
+  "tenant_id": "11111111-1111-4111-8111-111111111111",
+  "connection_id": "22222222-2222-4222-8222-222222222222",
+  "schema_snapshot_id": "33333333-3333-4333-8333-333333333333",
+  "engine": "sqlserver",
+  "schema_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "snapshot_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "graph_input_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "derivation_key": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "graph_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "builder_version": "1.0.0",
+  "policy_version": "1.0.0",
+  "status": "partial",
+  "status_reasons": ["VIEW_LINEAGE_PARTIAL"],
+  "semantic_status": "not_initialized",
+  "nodes": [
+    {
+      "node_key": "1111111111111111111111111111111111111111111111111111111111111111",
+      "database_name": "AdventureWorksLT",
+      "schema_name": "SalesLT",
+      "object_name": "Parent",
+      "object_type": "table",
+      "queryability_status": "queryable",
+      "reason_codes": [],
+      "bridge_candidate": false,
+      "candidate_keys": [
+        {
+          "key_type": "primary_key",
+          "name": "PK_Parent",
+          "columns": ["TenantID", "ParentID"],
+          "eligible_for_cardinality": true
+        }
+      ],
+      "columns": [
+        {
+          "column_key": "2111111111111111111111111111111111111111111111111111111111111111",
+          "name": "TenantID",
+          "ordinal_position": 1,
+          "native_type": "int",
+          "normalized_type": "int",
+          "technical_role": "identifier",
+          "nullable": false,
+          "queryability_status": "queryable",
+          "sensitivity": "none",
+          "reason_codes": []
+        },
+        {
+          "column_key": "2211111111111111111111111111111111111111111111111111111111111111",
+          "name": "ParentID",
+          "ordinal_position": 2,
+          "native_type": "int",
+          "normalized_type": "int",
+          "technical_role": "identifier",
+          "nullable": false,
+          "queryability_status": "queryable",
+          "sensitivity": "none",
+          "reason_codes": []
+        }
+      ]
+    },
+    {
+      "node_key": "3111111111111111111111111111111111111111111111111111111111111111",
+      "database_name": "AdventureWorksLT",
+      "schema_name": "SalesLT",
+      "object_name": "Child",
+      "object_type": "table",
+      "queryability_status": "queryable",
+      "reason_codes": [],
+      "bridge_candidate": false,
+      "candidate_keys": [],
+      "columns": [
+        {
+          "column_key": "3211111111111111111111111111111111111111111111111111111111111111",
+          "name": "TenantID",
+          "ordinal_position": 1,
+          "native_type": "int",
+          "normalized_type": "int",
+          "technical_role": "identifier",
+          "nullable": false,
+          "queryability_status": "queryable",
+          "sensitivity": "none",
+          "reason_codes": []
+        },
+        {
+          "column_key": "3311111111111111111111111111111111111111111111111111111111111111",
+          "name": "ParentID",
+          "ordinal_position": 2,
+          "native_type": "int",
+          "normalized_type": "int",
+          "technical_role": "identifier",
+          "nullable": true,
+          "queryability_status": "queryable",
+          "sensitivity": "none",
+          "reason_codes": []
+        }
+      ]
+    },
+    {
+      "node_key": "4111111111111111111111111111111111111111111111111111111111111111",
+      "database_name": "AdventureWorksLT",
+      "schema_name": "SalesLT",
+      "object_name": "vChild",
+      "object_type": "view",
+      "queryability_status": "queryable",
+      "reason_codes": [],
+      "bridge_candidate": false,
+      "candidate_keys": [],
+      "columns": [
+        {
+          "column_key": "4211111111111111111111111111111111111111111111111111111111111111",
+          "name": "ParentID",
+          "ordinal_position": 1,
+          "native_type": "int",
+          "normalized_type": "int",
+          "technical_role": "identifier",
+          "nullable": true,
+          "queryability_status": "queryable",
+          "sensitivity": "none",
+          "reason_codes": []
+        }
+      ],
+      "view_definition_available": true,
+      "view_lineage_status": "partial"
+    }
+  ],
+  "edges": [
+    {
+      "edge_key": "5111111111111111111111111111111111111111111111111111111111111111",
+      "edge_type": "fk_join",
+      "constraint_name": "FK_Child_Parent",
+      "from_node_key": "3111111111111111111111111111111111111111111111111111111111111111",
+      "to_node_key": "1111111111111111111111111111111111111111111111111111111111111111",
+      "column_pairs": [
+        {
+          "ordinal_position": 1,
+          "from_column": "TenantID",
+          "from_column_key": "3211111111111111111111111111111111111111111111111111111111111111",
+          "to_column": "TenantID",
+          "to_column_key": "2111111111111111111111111111111111111111111111111111111111111111"
+        },
+        {
+          "ordinal_position": 2,
+          "from_column": "ParentID",
+          "from_column_key": "3311111111111111111111111111111111111111111111111111111111111111",
+          "to_column": "ParentID",
+          "to_column_key": "2211111111111111111111111111111111111111111111111111111111111111"
+        }
+      ],
+      "relationship_shape": "many_to_one",
+      "child_to_parent": "zero_or_one",
+      "parent_to_child": "zero_or_many",
+      "nullable_fk": true,
+      "self_reference": false,
+      "verified_by_db": true,
+      "enforcement_status": "enabled",
+      "validation_status": "trusted",
+      "automatic_join_allowed": true,
+      "reason_codes": []
+    },
+    {
+      "edge_key": "6111111111111111111111111111111111111111111111111111111111111111",
+      "edge_type": "view_depends_on",
+      "from_node_key": "4111111111111111111111111111111111111111111111111111111111111111",
+      "to_node_key": "3111111111111111111111111111111111111111111111111111111111111111",
+      "source": "dm_sql_referenced_entities",
+      "referenced_schema_name": "SalesLT",
+      "referenced_object_name": "Child",
+      "resolution_status": "resolved",
+      "automatic_join_allowed": false,
+      "reason_codes": ["LINEAGE_NOT_JOIN_EVIDENCE"]
+    },
+    {
+      "edge_key": "7111111111111111111111111111111111111111111111111111111111111111",
+      "edge_type": "view_column_derives_from",
+      "from_node_key": "4111111111111111111111111111111111111111111111111111111111111111",
+      "from_column_key": "4211111111111111111111111111111111111111111111111111111111111111",
+      "to_node_key": "3111111111111111111111111111111111111111111111111111111111111111",
+      "to_column_key": "3311111111111111111111111111111111111111111111111111111111111111",
+      "source": "dm_sql_referenced_entities",
+      "referenced_schema_name": "SalesLT",
+      "referenced_object_name": "Child",
+      "referenced_column_name": "ParentID",
+      "resolution_status": "resolved",
+      "lineage_status": "partial",
+      "automatic_join_allowed": false,
+      "reason_codes": ["LINEAGE_INCOMPLETE", "LINEAGE_NOT_JOIN_EVIDENCE"]
+    }
+  ]
+}

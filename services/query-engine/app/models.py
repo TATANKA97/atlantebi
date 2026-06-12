@@ -346,6 +346,7 @@ class SchemaIntrospectionResponse(StrictModel):
     database_name: str | None = Field(default=None, min_length=1, max_length=255)
     engine_version: str | None = Field(default=None, min_length=1, max_length=500)
     schema_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    snapshot_hash: str | None = Field(default=None, min_length=64, max_length=64)
     coverage_status: SchemaCoverageStatus = Field(strict=False)
     tables: list[SchemaTableMetadata] = Field(default_factory=list, max_length=5_000)
     foreign_keys: list[SchemaForeignKeyMetadata] = Field(
@@ -373,6 +374,202 @@ class SchemaIntrospectionResponse(StrictModel):
         max_length=20_000,
     )
     sanitized_error: str = Field(default=None, min_length=1, max_length=500)
+
+
+Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
+class QueryabilityCandidateKey(StrictModel):
+    key_type: Literal["primary_key", "unique_constraint", "unique_index"]
+    name: str = Field(min_length=1, max_length=255)
+    columns: list[NonEmptyString] = Field(min_length=1)
+    eligible_for_cardinality: bool
+
+
+class QueryabilityColumn(StrictModel):
+    column_key: Sha256
+    name: str = Field(min_length=1, max_length=255)
+    ordinal_position: int = Field(ge=1)
+    native_type: str | None = Field(default=None, min_length=1, max_length=255)
+    normalized_type: str | None = Field(default=None, min_length=1, max_length=255)
+    technical_role: SchemaTechnicalRole = Field(strict=False)
+    nullable: bool
+    queryability_status: Literal["queryable", "excluded"]
+    sensitivity: Literal["none", "pii", "sensitive"]
+    reason_codes: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(
+        max_length=20
+    )
+
+
+class QueryabilityNode(StrictModel):
+    node_key: Sha256
+    database_name: str = Field(min_length=1, max_length=255)
+    schema_name: str = Field(min_length=1, max_length=255)
+    object_name: str = Field(min_length=1, max_length=255)
+    object_type: Literal["table", "view"]
+    queryability_status: Literal["queryable", "excluded"]
+    reason_codes: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(
+        max_length=100
+    )
+    bridge_candidate: bool
+    candidate_keys: list[QueryabilityCandidateKey] = Field(max_length=10_000)
+    columns: list[QueryabilityColumn] = Field(max_length=50_000)
+    view_definition_available: bool | None = None
+    view_lineage_status: Literal["complete", "partial", "unavailable"] | None = None
+
+
+class QueryabilityColumnPair(StrictModel):
+    ordinal_position: int = Field(ge=1)
+    from_column: str = Field(min_length=1, max_length=255)
+    from_column_key: Sha256
+    to_column: str = Field(min_length=1, max_length=255)
+    to_column_key: Sha256
+
+
+class QueryabilityForeignKeyEdge(StrictModel):
+    edge_key: Sha256
+    edge_type: Literal["fk_join"]
+    constraint_name: str = Field(min_length=1, max_length=255)
+    from_node_key: Sha256
+    to_node_key: Sha256
+    column_pairs: list[QueryabilityColumnPair] = Field(min_length=1)
+    relationship_shape: Literal["one_to_one", "many_to_one"]
+    child_to_parent: Literal["zero_or_one", "exactly_one"]
+    parent_to_child: Literal["zero_or_one", "zero_or_many"]
+    nullable_fk: bool
+    self_reference: bool
+    verified_by_db: bool
+    enforcement_status: Literal["enabled", "disabled"]
+    validation_status: Literal["trusted", "untrusted"]
+    automatic_join_allowed: bool
+    reason_codes: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(
+        max_length=100
+    )
+
+
+class QueryabilityViewDependencyEdge(StrictModel):
+    edge_key: Sha256
+    edge_type: Literal["view_depends_on"]
+    from_node_key: Sha256
+    to_node_key: Sha256 | None = None
+    source: Literal["dm_sql_referenced_entities", "sql_expression_dependencies"]
+    referenced_server_name: str | None = Field(default=None, min_length=1, max_length=255)
+    referenced_database_name: str | None = Field(
+        default=None, min_length=1, max_length=255
+    )
+    referenced_schema_name: str | None = Field(default=None, min_length=1, max_length=255)
+    referenced_object_name: str | None = Field(default=None, min_length=1, max_length=255)
+    resolution_status: Literal["resolved", "external", "unresolved"]
+    automatic_join_allowed: Literal[False]
+    reason_codes: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(
+        max_length=100
+    )
+
+
+class QueryabilityViewColumnEdge(StrictModel):
+    edge_key: Sha256
+    edge_type: Literal["view_column_derives_from"]
+    from_node_key: Sha256
+    from_column_key: Sha256
+    to_node_key: Sha256 | None = None
+    to_column_key: Sha256 | None = None
+    source: Literal["dm_sql_referenced_entities", "sql_expression_dependencies"]
+    referenced_server_name: str | None = Field(default=None, min_length=1, max_length=255)
+    referenced_database_name: str | None = Field(
+        default=None, min_length=1, max_length=255
+    )
+    referenced_schema_name: str | None = Field(default=None, min_length=1, max_length=255)
+    referenced_object_name: str | None = Field(default=None, min_length=1, max_length=255)
+    referenced_column_name: str | None = Field(default=None, min_length=1, max_length=255)
+    resolution_status: Literal["resolved", "external", "unresolved"]
+    lineage_status: Literal["complete", "partial"]
+    automatic_join_allowed: Literal[False]
+    reason_codes: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(
+        max_length=100
+    )
+
+
+QueryabilityEdge = Annotated[
+    QueryabilityForeignKeyEdge
+    | QueryabilityViewDependencyEdge
+    | QueryabilityViewColumnEdge,
+    Field(discriminator="edge_type"),
+]
+
+
+class QueryabilityGraphArtifact(StrictModel):
+    contract_version: Literal["queryability_graph.v1"]
+    tenant_id: JsonUUID
+    connection_id: JsonUUID
+    schema_snapshot_id: JsonUUID
+    engine: Literal["sqlserver"]
+    schema_hash: Sha256
+    snapshot_hash: Sha256
+    graph_input_hash: Sha256
+    derivation_key: Sha256
+    graph_hash: Sha256
+    builder_version: str = Field(min_length=1, max_length=100)
+    policy_version: str = Field(min_length=1, max_length=100)
+    status: Literal["complete", "partial", "blocked"]
+    status_reasons: list[
+        Annotated[str, Field(min_length=1, max_length=100)]
+    ] = Field(max_length=100)
+    semantic_status: Literal["not_initialized"]
+    nodes: list[QueryabilityNode] = Field(max_length=5_000)
+    edges: list[QueryabilityEdge] = Field(max_length=250_000)
+
+
+class QueryabilityGraphVersion(StrictModel):
+    graph_version_id: JsonUUID
+    graph_version: int = Field(gt=0)
+    created_at: str
+    graph: QueryabilityGraphArtifact
+
+    @field_validator("created_at")
+    @classmethod
+    def validate_created_at(cls, value: str) -> str:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("created_at must be an ISO 8601 datetime") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("created_at must include a UTC offset")
+        return value
+
+
+class QueryabilityPathStep(StrictModel):
+    edge_key: Sha256
+    from_node_key: Sha256
+    to_node_key: Sha256
+    traversal: Literal["child_to_parent", "parent_to_child"]
+    cardinality: Literal["zero_or_one", "exactly_one", "zero_or_many"]
+
+
+class QueryabilityPath(StrictModel):
+    steps: list[QueryabilityPathStep] = Field(min_length=1, max_length=4)
+    fanout_warning: bool
+
+
+class QueryabilityPathResult(StrictModel):
+    status: Literal["found", "not_found", "ambiguous", "blocked"]
+    paths: list[QueryabilityPath] = Field(max_length=100)
+    reason_codes: list[
+        Annotated[str, Field(min_length=1, max_length=100)]
+    ] = Field(max_length=100)
+
+
+class QueryabilityCompileRequest(StrictModel):
+    tenant_id: JsonUUID
+    connection_id: JsonUUID
+    schema_snapshot_id: JsonUUID
+    snapshot: SchemaIntrospectionResponse
+
+
+class QueryabilityPathRequest(StrictModel):
+    graph: QueryabilityGraphArtifact
+    from_node_key: Sha256
+    to_node_key: Sha256
+    max_hops: int = Field(default=4, ge=1, le=4)
 
 
 class ChartType(StrEnum):

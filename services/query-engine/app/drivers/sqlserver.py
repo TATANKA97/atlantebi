@@ -490,12 +490,25 @@ class SqlServerDriver(DatabaseDriver):
             default_constraints=default_constraints,
             indexes=indexes,
         )
+        snapshot_hash = _snapshot_hash(
+            engine_version=engine_version,
+            database_name=database_name,
+            coverage_status=coverage_status,
+            tables=tables,
+            foreign_keys=foreign_keys,
+            unique_constraints=unique_constraints,
+            check_constraints=check_constraints,
+            default_constraints=default_constraints,
+            indexes=indexes,
+            coverage_warnings=coverage_warnings,
+        )
 
         return SchemaIntrospectionResult(
             engine=Engine.sqlserver,
             database_name=database_name,
             engine_version=engine_version,
             schema_hash=schema_hash,
+            snapshot_hash=snapshot_hash,
             coverage_status=coverage_status,
             tables=tables,
             foreign_keys=foreign_keys,
@@ -1548,15 +1561,6 @@ def _schema_hash(
                         "ordinal": column.ordinal_position,
                         "native_type": column.native_type,
                         "normalized_type": column.normalized_type,
-                        "declared_type": column.declared_type,
-                        "declared_type_schema": column.declared_type_schema,
-                        "declared_type_name": column.declared_type_name,
-                        "declared_type_is_user_defined": (
-                            column.declared_type_is_user_defined
-                        ),
-                        "declared_type_is_assembly": column.declared_type_is_assembly,
-                        "declared_type_available": column.declared_type_available,
-                        "technical_role": column.technical_role,
                         "max_length": column.max_length,
                         "precision": column.numeric_precision,
                         "scale": column.numeric_scale,
@@ -1571,32 +1575,6 @@ def _schema_hash(
                     }
                     for column in sorted(
                         table.columns, key=lambda item: item.ordinal_position
-                    )
-                ],
-                "view_lineage": [
-                    {
-                        "source": dependency.source,
-                        "referencing_column": dependency.referencing_column,
-                        "referenced_server_name": dependency.referenced_server_name,
-                        "referenced_database_name": dependency.referenced_database_name,
-                        "referenced_schema_name": dependency.referenced_schema_name,
-                        "referenced_entity_name": dependency.referenced_entity_name,
-                        "referenced_column_name": dependency.referenced_column_name,
-                        "referenced_class": dependency.referenced_class,
-                        "is_selected": dependency.is_selected,
-                        "is_updated": dependency.is_updated,
-                        "is_select_all": dependency.is_select_all,
-                        "is_all_columns_found": dependency.is_all_columns_found,
-                        "is_caller_dependent": dependency.is_caller_dependent,
-                        "is_ambiguous": dependency.is_ambiguous,
-                        "is_incomplete": dependency.is_incomplete,
-                        "is_schema_bound_reference": (
-                            dependency.is_schema_bound_reference
-                        ),
-                    }
-                    for dependency in sorted(
-                        table.view_lineage,
-                        key=_view_lineage_sort_key,
                     )
                 ],
             }
@@ -1667,6 +1645,134 @@ def _schema_hash(
             for index in sorted(
                 indexes,
                 key=lambda item: (item.schema_name, item.table_name, item.name),
+            )
+        ],
+    }
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _snapshot_hash(
+    *,
+    engine_version: str,
+    database_name: str,
+    coverage_status: str,
+    tables: list[SchemaTableMetadata],
+    foreign_keys: list[SchemaForeignKeyMetadata],
+    unique_constraints: list[SchemaUniqueConstraintMetadata],
+    check_constraints: list[SchemaCheckConstraintMetadata],
+    default_constraints: list[SchemaDefaultConstraintMetadata],
+    indexes: list[SchemaIndexMetadata],
+    coverage_warnings: list[SchemaCoverageWarning],
+) -> str:
+    canonical = {
+        "engine": "sqlserver",
+        "engine_version": engine_version,
+        "database_name": database_name,
+        "coverage_status": coverage_status,
+        "tables": [
+            {
+                "schema": table.table_schema,
+                "name": table.name,
+                "type": table.table_type,
+                "database_name": table.database_name,
+                "object_id": table.object_id,
+                "is_system_object": table.is_system_object,
+                "row_count_estimate": table.row_count_estimate,
+                "comment": table.comment,
+                "view_definition_available": table.view_definition_available,
+                "view_definition": table.view_definition,
+                "definition_hash": table.definition_hash,
+                "lineage_available": table.lineage_available,
+                "primary_key": (
+                    {
+                        "name": table.primary_key.name,
+                        "columns": table.primary_key.columns,
+                    }
+                    if table.primary_key
+                    else None
+                ),
+                "columns": [
+                    column.__dict__
+                    for column in sorted(
+                        table.columns,
+                        key=lambda item: item.ordinal_position,
+                    )
+                ],
+                "view_lineage": [
+                    dependency.__dict__
+                    for dependency in sorted(
+                        table.view_lineage,
+                        key=_view_lineage_sort_key,
+                    )
+                ],
+            }
+            for table in sorted(tables, key=lambda item: (item.table_schema, item.name))
+        ],
+        "foreign_keys": [
+            foreign_key.__dict__
+            for foreign_key in sorted(
+                foreign_keys,
+                key=lambda item: (
+                    item.from_schema,
+                    item.from_table,
+                    item.constraint_name,
+                ),
+            )
+        ],
+        "unique_constraints": [
+            unique.__dict__
+            for unique in sorted(
+                unique_constraints,
+                key=lambda item: (item.schema_name, item.table_name, item.name),
+            )
+        ],
+        "check_constraints": [
+            check.__dict__
+            for check in sorted(
+                check_constraints,
+                key=lambda item: (item.schema_name, item.table_name, item.name),
+            )
+        ],
+        "default_constraints": [
+            default.__dict__
+            for default in sorted(
+                default_constraints,
+                key=lambda item: (
+                    item.schema_name,
+                    item.table_name,
+                    item.column_name,
+                    item.name,
+                ),
+            )
+        ],
+        "indexes": [
+            {
+                **index.__dict__,
+                "key_columns": [column.__dict__ for column in index.key_columns],
+                "included_columns": [
+                    column.__dict__ for column in index.included_columns
+                ],
+            }
+            for index in sorted(
+                indexes,
+                key=lambda item: (item.schema_name, item.table_name, item.name),
+            )
+        ],
+        "coverage_warnings": [
+            {
+                "code": warning.code,
+                "severity": warning.severity,
+                "object_schema": warning.object_schema,
+                "object_name": warning.object_name,
+            }
+            for warning in sorted(
+                coverage_warnings,
+                key=lambda item: (
+                    item.code,
+                    item.object_schema or "",
+                    item.object_name or "",
+                ),
             )
         ],
     }

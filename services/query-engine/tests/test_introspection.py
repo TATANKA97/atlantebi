@@ -1,6 +1,7 @@
 import asyncio
 import json
 import sys
+from dataclasses import replace
 from threading import get_ident
 from time import monotonic
 from types import SimpleNamespace
@@ -39,6 +40,7 @@ from app.drivers.sqlserver import (
     _fetch_view_lineage,
     _fetch_all_sync,
     _schema_hash,
+    _snapshot_hash,
     _technical_role,
 )
 from app.main import app
@@ -230,6 +232,7 @@ def test_schema_introspection_endpoint_uses_secret_resolver_and_driver(
                 database_name="AdventureWorksLT",
                 engine_version="12.0.2000.8",
                 schema_hash="a" * 64,
+                snapshot_hash="b" * 64,
                 coverage_status="ok",
                 tables=[
                     SchemaTableMetadata(
@@ -1078,6 +1081,156 @@ def test_sqlserver_schema_hash_canonicalizes_view_lineage_order() -> None:
     )
 
     assert first_hash == second_hash
+
+
+def test_schema_hash_excludes_lineage_and_technical_roles_but_snapshot_hash_tracks_them() -> None:
+    dependency = SchemaViewLineageDependency(
+        source="dm_sql_referenced_entities",
+        referencing_column="CustomerID",
+        referenced_schema_name="SalesLT",
+        referenced_entity_name="Customer",
+        referenced_column_name="CustomerID",
+        referenced_class="OBJECT_OR_COLUMN",
+    )
+    base_view = SchemaTableMetadata(
+        table_schema="SalesLT",
+        name="vCustomer",
+        table_type="view",
+        columns=[
+            SchemaColumnMetadata(
+                name="CustomerID",
+                data_type="int",
+                native_type="int",
+                normalized_type="int",
+                technical_role="identifier",
+                ordinal_position=1,
+                is_nullable=False,
+            )
+        ],
+        view_lineage=[dependency],
+    )
+    changed_metadata = SchemaTableMetadata(
+        **{
+            **base_view.__dict__,
+            "columns": [
+                SchemaColumnMetadata(
+                    **{
+                        **base_view.columns[0].__dict__,
+                        "technical_role": "numeric",
+                    }
+                )
+            ],
+            "view_lineage": [
+                SchemaViewLineageDependency(
+                    **{
+                        **dependency.__dict__,
+                        "is_incomplete": True,
+                    }
+                )
+            ],
+        }
+    )
+
+    base_schema_hash = _schema_hash(
+        tables=[base_view],
+        foreign_keys=[],
+        unique_constraints=[],
+        check_constraints=[],
+        default_constraints=[],
+        indexes=[],
+    )
+    changed_schema_hash = _schema_hash(
+        tables=[changed_metadata],
+        foreign_keys=[],
+        unique_constraints=[],
+        check_constraints=[],
+        default_constraints=[],
+        indexes=[],
+    )
+    base_snapshot_hash = _snapshot_hash(
+        engine_version="12.0.2000.8",
+        database_name="AdventureWorksLT",
+        coverage_status="ok",
+        tables=[base_view],
+        foreign_keys=[],
+        unique_constraints=[],
+        check_constraints=[],
+        default_constraints=[],
+        indexes=[],
+        coverage_warnings=[],
+    )
+    changed_snapshot_hash = _snapshot_hash(
+        engine_version="12.0.2000.8",
+        database_name="AdventureWorksLT",
+        coverage_status="partial",
+        tables=[changed_metadata],
+        foreign_keys=[],
+        unique_constraints=[],
+        check_constraints=[],
+        default_constraints=[],
+        indexes=[],
+        coverage_warnings=[
+            SchemaCoverageWarning(
+                code="VIEW_LINEAGE_PARTIAL",
+                severity="warning",
+                message="Partial lineage.",
+                object_schema="SalesLT",
+                object_name="vCustomer",
+            )
+        ],
+    )
+
+    assert base_schema_hash == changed_schema_hash
+    assert base_snapshot_hash != changed_snapshot_hash
+
+
+def test_schema_hash_excludes_permission_dependent_declared_type_visibility() -> None:
+    visible_column = SchemaColumnMetadata(
+        name="Name",
+        data_type="nvarchar",
+        native_type="nvarchar",
+        normalized_type="text",
+        declared_type="sys.Name",
+        declared_type_schema="sys",
+        declared_type_name="Name",
+        declared_type_is_user_defined=True,
+        declared_type_is_assembly=False,
+        declared_type_available=True,
+        ordinal_position=1,
+        is_nullable=False,
+    )
+    hidden_column = replace(
+        visible_column,
+        declared_type=None,
+        declared_type_schema=None,
+        declared_type_name=None,
+        declared_type_is_user_defined=None,
+        declared_type_is_assembly=None,
+        declared_type_available=False,
+    )
+    visible_table = SchemaTableMetadata(
+        table_schema="SalesLT",
+        name="Product",
+        table_type="base_table",
+        columns=[visible_column],
+    )
+    hidden_table = replace(visible_table, columns=[hidden_column])
+
+    assert _schema_hash(
+        tables=[visible_table],
+        foreign_keys=[],
+        unique_constraints=[],
+        check_constraints=[],
+        default_constraints=[],
+        indexes=[],
+    ) == _schema_hash(
+        tables=[hidden_table],
+        foreign_keys=[],
+        unique_constraints=[],
+        check_constraints=[],
+        default_constraints=[],
+        indexes=[],
+    )
 
 
 def test_coverage_status_is_deterministic() -> None:

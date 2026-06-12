@@ -42,7 +42,11 @@ export async function POST(request: Request) {
 
   return NextResponse.json({
     schema_snapshot_id: result.schemaSnapshotId,
-    semantic_version_id: result.semanticVersionId,
+    queryability_graph_id: result.queryabilityGraphId,
+    queryability_graph_version: result.queryabilityGraphVersion,
+    queryability_graph_status: result.queryabilityGraphStatus,
+    semantic_status: result.semanticStatus,
+    deduplicated: result.deduplicated,
     table_count: result.tableCount,
     column_count: result.columnCount
   });

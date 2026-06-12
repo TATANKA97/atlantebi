@@ -20,9 +20,14 @@ from app.models import (
     HealthResponse,
     QueryRequest,
     QueryResponse,
+    QueryabilityCompileRequest,
+    QueryabilityGraphArtifact,
+    QueryabilityPathRequest,
+    QueryabilityPathResult,
     SchemaIntrospectionRequest,
     SchemaIntrospectionResponse,
 )
+from app.queryability import build_queryability_graph, find_queryability_paths
 from app.secrets import GcpSecretResolver, SecretResolutionError
 
 app = FastAPI(title="Atlante BI Query Engine", version="0.1.0")
@@ -154,6 +159,7 @@ async def introspect_schema(
             "database_name": result.database_name,
             "engine_version": result.engine_version,
             "schema_hash": result.schema_hash,
+            "snapshot_hash": result.snapshot_hash,
             "coverage_status": result.coverage_status,
             "tables": [asdict(table) for table in result.tables],
             "foreign_keys": [
@@ -214,6 +220,52 @@ async def introspect_schema(
             message="Schema introspection failed against the customer database.",
             sanitized_error=str(exc),
         )
+
+
+@app.post(
+    "/queryability/compile",
+    response_model=QueryabilityGraphArtifact,
+    response_model_exclude_none=True,
+)
+async def compile_queryability_graph(
+    request: QueryabilityCompileRequest,
+    _: None = Depends(require_internal_auth),
+) -> QueryabilityGraphArtifact:
+    snapshot = request.snapshot
+    if (
+        snapshot.status != "ok"
+        or snapshot.engine != "sqlserver"
+        or snapshot.schema_hash is None
+        or snapshot.snapshot_hash is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="A successful SQL Server technical snapshot is required.",
+        )
+
+    return build_queryability_graph(
+        snapshot=snapshot,
+        tenant_id=str(request.tenant_id),
+        connection_id=str(request.connection_id),
+        schema_snapshot_id=str(request.schema_snapshot_id),
+    )
+
+
+@app.post(
+    "/queryability/paths",
+    response_model=QueryabilityPathResult,
+    response_model_exclude_none=True,
+)
+async def queryability_paths(
+    request: QueryabilityPathRequest,
+    _: None = Depends(require_internal_auth),
+) -> QueryabilityPathResult:
+    return find_queryability_paths(
+        graph=request.graph,
+        from_node_key=request.from_node_key,
+        to_node_key=request.to_node_key,
+        max_hops=request.max_hops,
+    )
 
 
 def _connection_test_error(

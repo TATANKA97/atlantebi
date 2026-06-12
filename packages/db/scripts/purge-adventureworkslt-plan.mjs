@@ -88,14 +88,18 @@ async function main() {
   }
 
   async function request(path, options = {}) {
+    const { allowMissingRelation = false, ...fetchOptions } = options;
     const response = await fetch(`${supabaseUrl}/rest/v1/${path}`, {
-      ...options,
+      ...fetchOptions,
       headers: {
         ...headers,
-        ...options.headers
+        ...fetchOptions.headers
       }
     });
     const body = await response.text();
+    if (!response.ok && allowMissingRelation && response.status === 404) {
+      return [];
+    }
     if (!response.ok) {
       throw new Error(
         `Supabase request failed (${response.status}): ${body || path}`
@@ -179,6 +183,7 @@ async function main() {
     "widgets",
     "query_history",
     "semantic_versions",
+    "queryability_graph_versions",
     "schema_snapshots"
   ]) {
     const remaining = await request(
@@ -187,7 +192,10 @@ async function main() {
         `tenant_id=${encodeFilterValue(tenantId)}`,
         `connection_id=${encodeFilterValue(connectionId)}`,
         "limit=1"
-      ].join("&")
+      ].join("&"),
+      table === "queryability_graph_versions"
+        ? { allowMissingRelation: true }
+        : {}
     );
     if (remaining.length > 0) {
       throw new Error(`Purge verification failed for ${table}.`);

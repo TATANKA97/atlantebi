@@ -26,6 +26,13 @@ const schemaImportSummaryGrantsMigration = readFileSync(
   ),
   "utf8"
 );
+const queryabilityGraphMigration = readFileSync(
+  resolve(
+    migrationsDirectory,
+    "20260612010000_queryability_graph_v1.sql"
+  ),
+  "utf8"
+);
 const purgeAdventureWorksPlanScript = readFileSync(
   resolve(
     import.meta.dirname,
@@ -62,6 +69,10 @@ const tenantScopedTables = [
   "tenant_memberships",
   "db_connections",
   "schema_snapshots",
+  "queryability_graph_versions",
+  "queryability_graph_nodes",
+  "queryability_graph_columns",
+  "queryability_graph_edges",
   "semantic_versions",
   "semantic_tables",
   "semantic_columns",
@@ -381,6 +392,61 @@ describe("Supabase metadata migration", () => {
     );
     expect(migration).toContain(
       "semantic_versions_tenant_connection_snapshot_idx"
+    );
+  });
+
+  it("persists immutable queryability graphs without creating semantic drafts", () => {
+    for (const table of [
+      "queryability_graph_versions",
+      "queryability_graph_nodes",
+      "queryability_graph_columns",
+      "queryability_graph_edges"
+    ]) {
+      expect(queryabilityGraphMigration).toContain(
+        `create table public.${table}`
+      );
+      expect(queryabilityGraphMigration).toContain(
+        `alter table public.${table} enable row level security;`
+      );
+      expect(queryabilityGraphMigration).toContain(
+        `revoke all privileges on table public.${table}`
+      );
+    }
+    expect(queryabilityGraphMigration).toContain(
+      "app_private.persist_queryability_graph_import"
+    );
+    expect(queryabilityGraphMigration).toContain(
+      "public.persist_queryability_graph_import"
+    );
+    expect(queryabilityGraphMigration).toContain(
+      "pg_advisory_xact_lock"
+    );
+    expect(queryabilityGraphMigration).toContain(
+      "queryability graph artifacts are immutable"
+    );
+    expect(queryabilityGraphMigration).toContain(
+      "queryability_graph->>'derivation_key'"
+    );
+    expect(queryabilityGraphMigration).toContain(
+      "foreign key (tenant_id, connection_id)"
+    );
+    expect(queryabilityGraphMigration).toContain(
+      "reuse_existing_snapshot boolean default false"
+    );
+    expect(queryabilityGraphMigration).toContain(
+      "alter column snapshot_hash set not null"
+    );
+    expect(queryabilityGraphMigration).toContain(
+      "'queryability_graph.rebuilt'"
+    );
+    expect(queryabilityGraphMigration).toContain(
+      "'not_initialized'::text"
+    );
+    expect(queryabilityGraphMigration).not.toContain(
+      "insert into public.semantic_versions"
+    );
+    expect(queryabilityGraphMigration).not.toContain(
+      "insert into public.semantic_relationships"
     );
   });
 
