@@ -434,6 +434,9 @@ describe("Supabase metadata migration", () => {
       "reuse_existing_snapshot boolean default false"
     );
     expect(queryabilityGraphMigration).toContain(
+      "not in ('ok', 'partial', 'warning')"
+    );
+    expect(queryabilityGraphMigration).toContain(
       "alter column snapshot_hash set not null"
     );
     expect(queryabilityGraphMigration).toContain(
@@ -441,6 +444,12 @@ describe("Supabase metadata migration", () => {
     );
     expect(queryabilityGraphMigration).toContain(
       "'not_initialized'::text"
+    );
+    expect(queryabilityGraphMigration).toContain(
+      "drop function if exists public.persist_technical_schema_import("
+    );
+    expect(queryabilityGraphMigration).toContain(
+      "drop function if exists app_private.persist_technical_schema_import("
     );
     expect(queryabilityGraphMigration).not.toContain(
       "insert into public.semantic_versions"

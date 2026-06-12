@@ -294,7 +294,8 @@ begin
 
   if jsonb_typeof(technical_snapshot) <> 'object'
     or technical_snapshot->>'status' <> 'ok'
-    or technical_snapshot->>'coverage_status' = 'blocked'
+    or coalesce(technical_snapshot->>'coverage_status', '')
+      not in ('ok', 'partial', 'warning')
     or technical_snapshot->>'schema_hash' !~ '^[0-9a-f]{64}$'
     or technical_snapshot->>'snapshot_hash' !~ '^[0-9a-f]{64}$'
   then
@@ -830,7 +831,7 @@ grant execute on function public.persist_queryability_graph_import(
   boolean
 ) to service_role;
 
-revoke execute on function public.persist_technical_schema_import(
+drop function if exists public.persist_technical_schema_import(
   uuid,
   uuid,
   uuid,
@@ -842,9 +843,9 @@ revoke execute on function public.persist_technical_schema_import(
   integer,
   integer,
   timestamptz
-) from service_role;
+);
 
-revoke execute on function app_private.persist_technical_schema_import(
+drop function if exists app_private.persist_technical_schema_import(
   uuid,
   uuid,
   uuid,
@@ -856,4 +857,4 @@ revoke execute on function app_private.persist_technical_schema_import(
   integer,
   integer,
   timestamptz
-) from service_role;
+);

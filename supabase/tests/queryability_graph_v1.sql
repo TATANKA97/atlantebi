@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(15);
+select plan(18);
 
 select ok(
   not has_table_privilege(
@@ -32,12 +32,10 @@ select ok(
 );
 
 select ok(
-  not has_function_privilege(
-    'service_role',
-    'public.persist_technical_schema_import(uuid,uuid,uuid,public.connection_engine,jsonb,jsonb,jsonb,jsonb,integer,integer,timestamptz)',
-    'EXECUTE'
-  ),
-  'legacy semantic projection import is disabled'
+  to_regprocedure(
+    'public.persist_technical_schema_import(uuid,uuid,uuid,public.connection_engine,jsonb,jsonb,jsonb,jsonb,integer,integer,timestamptz)'
+  ) is null,
+  'legacy semantic projection import is removed'
 );
 
 insert into auth.users (
@@ -228,6 +226,33 @@ values (
   }'
 );
 
+select throws_ok(
+  $$
+    select *
+    from public.persist_queryability_graph_import(
+      '10000000-0000-4000-8000-000000000020',
+      '20000000-0000-4000-8000-000000000020',
+      '30000000-0000-4000-8000-000000000020',
+      '40000000-0000-4000-8000-000000000020',
+      'sqlserver',
+      (
+        select
+          (snapshot - 'coverage_status')
+          || '{"coverage_state":"complete"}'::jsonb
+        from queryability_fixture
+      ),
+      (select summary from queryability_fixture),
+      (select graph from queryability_fixture),
+      1,
+      0,
+      '2026-06-12T08:00:00Z'
+    )
+  $$,
+  '22023',
+  'technical snapshot is invalid or blocked',
+  'legacy coverage_state imports are rejected'
+);
+
 create temporary table first_import as
 select *
 from public.persist_queryability_graph_import(
@@ -264,6 +289,26 @@ select is(
   ),
   1,
   'one graph version is persisted'
+);
+
+select is(
+  (
+    select coverage_status::text
+    from public.schema_snapshot_summaries
+    where id = (select schema_snapshot_id from first_import)
+  ),
+  'ok',
+  'snapshot summary exposes strict coverage status'
+);
+
+select is(
+  (
+    select summary->>'database_name'
+    from public.schema_snapshot_summaries
+    where id = (select schema_snapshot_id from first_import)
+  ),
+  'demo',
+  'snapshot summary exposes the persisted sanitized import summary'
 );
 
 select is(
