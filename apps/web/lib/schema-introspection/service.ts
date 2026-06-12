@@ -188,6 +188,40 @@ export async function rebuildQueryabilityGraph({
     };
   }
 
+  try {
+    return await withSecurityOperationLease({
+      actorUserId: context.userId,
+      operation: "schema_introspection",
+      resourceKey: `queryability-rebuild:${schemaSnapshotId}`,
+      run: () =>
+        rebuildQueryabilityGraphInternal({
+          context,
+          schemaSnapshotId,
+          timeoutMs
+        }),
+      tenantId: context.tenantId
+    });
+  } catch (error) {
+    if (isSecurityOperationLimitError(error)) {
+      return {
+        ok: false,
+        code: "queryability_rebuild_rate_limited",
+        message: "Una rigenerazione del graph è già in corso."
+      };
+    }
+    throw error;
+  }
+}
+
+async function rebuildQueryabilityGraphInternal({
+  context,
+  schemaSnapshotId,
+  timeoutMs
+}: {
+  context: ActiveTenantContext;
+  schemaSnapshotId: string;
+  timeoutMs: number;
+}): Promise<QueryabilityRebuildResult> {
   const admin = createSupabaseAdminClient();
   const { data, error } = await admin
     .from("schema_snapshots")
@@ -202,6 +236,24 @@ export async function rebuildQueryabilityGraph({
       ok: false,
       code: "schema_snapshot_not_found",
       message: "Snapshot tecnico non trovato."
+    };
+  }
+
+  const { data: latestSnapshot } = await admin
+    .from("schema_snapshots")
+    .select("id")
+    .eq("tenant_id", context.tenantId)
+    .eq("connection_id", data.connection_id as string)
+    .order("created_at", { ascending: false })
+    .order("introspected_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!latestSnapshot || latestSnapshot.id !== schemaSnapshotId) {
+    return {
+      ok: false,
+      code: "queryability_rebuild_historical_snapshot",
+      message: "Solo lo snapshot tecnico più recente può essere rigenerato."
     };
   }
 

@@ -15,6 +15,25 @@ jobs:
           node-version: "24"
           package-manager-cache: false
       - run: npx -y supabase@2.104.0 start
+      - name: Verify legacy demo snapshot upgrade
+        shell: bash
+        run: |
+          npx -y supabase@2.104.0 db reset --local --version 20260611140354
+          docker exec -i supabase_db_atlantebi psql -v ON_ERROR_STOP=1 -U postgres \
+            < .github/fixtures/legacy-queryability-upgrade.sql
+          npx -y supabase@2.104.0 migration up --local
+          test "$(
+            docker exec supabase_db_atlantebi psql -At -U postgres \
+              -c "select count(*) from public.schema_snapshots where tenant_id = '20000000-0000-4000-8000-000000000003';"
+          )" = "0"
+          test "$(
+            docker exec supabase_db_atlantebi psql -At -U postgres \
+              -c "select count(*) from public.semantic_versions where tenant_id = '20000000-0000-4000-8000-000000000003';"
+          )" = "0"
+          test "$(
+            docker exec supabase_db_atlantebi psql -At -U postgres \
+              -c "select to_regclass('public.queryability_graph_versions') is not null;"
+          )" = "t"
       - run: npx -y supabase@2.104.0 db reset --local
       - run: npx -y supabase@2.104.0 test db
       - name: Verify concurrent graph import deduplication
