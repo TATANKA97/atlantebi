@@ -42,8 +42,11 @@ type GraphVersionRow = {
   node_count: number;
   column_count: number;
   edge_count: number;
-  graph: unknown;
   created_at: string;
+};
+
+type SelectedGraphVersionRow = GraphVersionRow & {
+  graph: unknown;
 };
 
 type SnapshotSummaryRow = {
@@ -62,11 +65,21 @@ const MESSAGE_COPY: Record<string, string> = {
   invalid_rebuild_request: "Richiesta di rigenerazione non valida.",
   queryability_rebuild_failed: "Rigenerazione Queryability Graph fallita.",
   queryability_rebuild_forbidden: "Il tuo ruolo non consente la rigenerazione.",
+  queryability_rebuild_historical_snapshot:
+    "Solo lo snapshot tecnico più recente può essere rigenerato.",
+  queryability_rebuild_rate_limited:
+    "Una rigenerazione del graph è già in corso.",
   queryability_rebuild_save_failed: "Queryability Graph rigenerato ma non salvato.",
+  queryability_graph_not_found: "Queryability Graph richiesto non trovato.",
   schema_snapshot_not_found: "Snapshot tecnico non trovato."
 };
 
 export const dynamic = "force-dynamic";
+
+const MAX_RENDERED_GRAPH_NODES = 200;
+const MAX_RENDERED_GRAPH_EDGES = 500;
+const MAX_RENDERED_SNAPSHOT_OBJECTS = 100;
+const MAX_RENDERED_OBJECT_COLUMNS = 200;
 
 export default async function QueryabilityPage({
   searchParams
@@ -88,7 +101,7 @@ export default async function QueryabilityPage({
       ? admin
           .from("queryability_graph_versions")
           .select(
-            "id,connection_id,schema_snapshot_id,version,status,graph_hash,graph_input_hash,builder_version,policy_version,node_count,column_count,edge_count,graph,created_at"
+            "id,connection_id,schema_snapshot_id,version,status,graph_hash,graph_input_hash,builder_version,policy_version,node_count,column_count,edge_count,created_at"
           )
           .eq("tenant_id", context.tenantId)
           .order("created_at", { ascending: false })
@@ -98,19 +111,36 @@ export default async function QueryabilityPage({
 
   const connections = (connectionsResult.data ?? []) as ConnectionRow[];
   const graphVersions = (graphsResult.data ?? []) as GraphVersionRow[];
+  const selectedGraphId = params.graph ?? graphVersions[0]?.id;
+  const selectedGraphResult =
+    canManage && selectedGraphId
+      ? await admin
+          .from("queryability_graph_versions")
+          .select(
+            "id,connection_id,schema_snapshot_id,version,status,graph_hash,graph_input_hash,builder_version,policy_version,node_count,column_count,edge_count,graph,created_at"
+          )
+          .eq("tenant_id", context.tenantId)
+          .eq("id", selectedGraphId)
+          .maybeSingle()
+      : { data: null, error: null };
   const selectedGraphRow =
-    graphVersions.find((graph) => graph.id === params.graph) ?? graphVersions[0];
+    (selectedGraphResult.data as SelectedGraphVersionRow | null) ?? null;
   const selectedGraph = selectedGraphRow
     ? QueryabilityGraphArtifactSchema.parse(selectedGraphRow.graph)
     : null;
   const snapshot = selectedGraphRow
     ? await readSnapshotSummary({
         admin,
-        snapshotId: selectedGraphRow.schema_snapshot_id,
+        connectionId: selectedGraphRow.connection_id,
+        snapshotId: params.snapshot ?? selectedGraphRow.schema_snapshot_id,
         tenantId: context.tenantId
       })
     : null;
-  const message = params.message ? MESSAGE_COPY[params.message] : undefined;
+  const message =
+    (params.message ? MESSAGE_COPY[params.message] : undefined) ??
+    (params.graph && !selectedGraphRow
+      ? MESSAGE_COPY.queryability_graph_not_found
+      : undefined);
 
   return (
     <main className="min-h-screen px-8 py-10">
@@ -205,6 +235,7 @@ export default async function QueryabilityPage({
             <GraphMetrics graph={selectedGraph} />
             <PathInspector
               graphId={selectedGraphRow.id}
+              key={selectedGraphRow.id}
               nodes={selectedGraph.nodes.map((node) => ({
                 key: node.node_key,
                 label: `${node.schema_name}.${node.object_name}`
@@ -354,9 +385,15 @@ function GraphMetrics({ graph }: { graph: QueryabilityGraphArtifact }) {
 }
 
 function NodeTable({ graph }: { graph: QueryabilityGraphArtifact }) {
+  const visibleNodes = graph.nodes.slice(0, MAX_RENDERED_GRAPH_NODES);
   return (
     <section className="border-t border-[color:var(--border)] pt-6">
       <h2 className="text-base font-semibold">Nodi</h2>
+      <RenderLimitNotice
+        label="nodi"
+        rendered={visibleNodes.length}
+        total={graph.nodes.length}
+      />
       <div className="mt-4 overflow-x-auto">
         <table className="w-full border-collapse text-left text-xs">
           <thead className="text-[color:var(--muted)]">
@@ -374,7 +411,7 @@ function NodeTable({ graph }: { graph: QueryabilityGraphArtifact }) {
             </tr>
           </thead>
           <tbody>
-            {graph.nodes.map((node) => (
+            {visibleNodes.map((node) => (
               <tr key={node.node_key}>
                 <td className="border-b border-[color:var(--border)] py-2 pr-4">
                   {node.schema_name}.{node.object_name}
@@ -411,6 +448,7 @@ function NodeTable({ graph }: { graph: QueryabilityGraphArtifact }) {
 }
 
 function EdgeTable({ graph }: { graph: QueryabilityGraphArtifact }) {
+  const visibleEdges = graph.edges.slice(0, MAX_RENDERED_GRAPH_EDGES);
   const nodes = new Map(
     graph.nodes.map((node) => [
       node.node_key,
@@ -420,6 +458,11 @@ function EdgeTable({ graph }: { graph: QueryabilityGraphArtifact }) {
   return (
     <section className="border-t border-[color:var(--border)] pt-6">
       <h2 className="text-base font-semibold">Edge</h2>
+      <RenderLimitNotice
+        label="edge"
+        rendered={visibleEdges.length}
+        total={graph.edges.length}
+      />
       <div className="mt-4 overflow-x-auto">
         <table className="w-full border-collapse text-left text-xs">
           <thead className="text-[color:var(--muted)]">
@@ -437,7 +480,7 @@ function EdgeTable({ graph }: { graph: QueryabilityGraphArtifact }) {
             </tr>
           </thead>
           <tbody>
-            {graph.edges.map((edge) => (
+            {visibleEdges.map((edge) => (
               <tr key={edge.edge_key}>
                 <td className="border-b border-[color:var(--border)] py-2 pr-4">
                   {edge.edge_type}
@@ -605,14 +648,27 @@ function SnapshotObjects({
   const graphNodes = new Map(
     graph.nodes.map((node) => [`${node.schema_name}.${node.object_name}`, node])
   );
+  const visibleTables = parsed.data.tables.slice(
+    0,
+    MAX_RENDERED_SNAPSHOT_OBJECTS
+  );
   return (
     <section className="border-t border-[color:var(--border)] pt-6">
       <h2 className="text-base font-semibold">Oggetti importati</h2>
+      <RenderLimitNotice
+        label="oggetti"
+        rendered={visibleTables.length}
+        total={parsed.data.tables.length}
+      />
       <div className="mt-5 grid gap-6">
-        {parsed.data.tables.map((table) => {
+        {visibleTables.map((table) => {
           const graphNode = graphNodes.get(`${table.schema}.${table.name}`);
           const graphColumns = new Map(
             graphNode?.columns.map((column) => [column.name, column]) ?? []
+          );
+          const visibleColumns = table.columns.slice(
+            0,
+            MAX_RENDERED_OBJECT_COLUMNS
           );
           return (
             <section
@@ -639,6 +695,11 @@ function SnapshotObjects({
                     : ""}
                 </p>
               </div>
+              <RenderLimitNotice
+                label="colonne"
+                rendered={visibleColumns.length}
+                total={table.columns.length}
+              />
               <div className="mt-3 overflow-x-auto">
                 <table className="w-full border-collapse text-left text-xs">
                   <thead className="text-[color:var(--muted)]">
@@ -661,7 +722,7 @@ function SnapshotObjects({
                     </tr>
                   </thead>
                   <tbody>
-                    {table.columns.map((column) => {
+                    {visibleColumns.map((column) => {
                       const graphColumn = graphColumns.get(column.name);
                       return (
                         <tr key={column.name}>
@@ -694,6 +755,25 @@ function SnapshotObjects({
         })}
       </div>
     </section>
+  );
+}
+
+function RenderLimitNotice({
+  label,
+  rendered,
+  total
+}: {
+  label: string;
+  rendered: number;
+  total: number;
+}) {
+  if (rendered === total) {
+    return null;
+  }
+  return (
+    <p className="mt-2 text-xs text-[color:var(--muted)]">
+      Mostrati {rendered} di {total} {label}.
+    </p>
   );
 }
 
@@ -733,10 +813,12 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 async function readSnapshotSummary({
   admin,
+  connectionId,
   snapshotId,
   tenantId
 }: {
   admin: ReturnType<typeof createSupabaseAdminClient>;
+  connectionId: string;
   snapshotId: string;
   tenantId: string;
 }) {
@@ -744,6 +826,7 @@ async function readSnapshotSummary({
     .from("schema_snapshots")
     .select("id,summary,snapshot")
     .eq("tenant_id", tenantId)
+    .eq("connection_id", connectionId)
     .eq("id", snapshotId)
     .single();
   if (!data) {

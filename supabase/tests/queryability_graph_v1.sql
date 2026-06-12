@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(18);
+select plan(25);
 
 select ok(
   not has_table_privilege(
@@ -357,13 +357,81 @@ select is(
 );
 
 update queryability_fixture
+set snapshot = jsonb_set(
+      jsonb_set(
+        snapshot,
+        '{snapshot_hash}',
+        to_jsonb(repeat('c', 64))
+      ),
+      '{tables,0,row_count_estimate}',
+      '42'
+    ),
+    graph = jsonb_set(
+      jsonb_set(
+        graph,
+        '{schema_snapshot_id}',
+        '"40000000-0000-4000-8000-000000000023"'
+      ),
+      '{snapshot_hash}',
+      to_jsonb(repeat('c', 64))
+    );
+
+create temporary table metadata_only_import as
+select *
+from public.persist_queryability_graph_import(
+  '10000000-0000-4000-8000-000000000020',
+  '20000000-0000-4000-8000-000000000020',
+  '30000000-0000-4000-8000-000000000020',
+  '40000000-0000-4000-8000-000000000023',
+  'sqlserver',
+  (select snapshot from queryability_fixture),
+  (select summary from queryability_fixture),
+  (select graph from queryability_fixture),
+  1,
+  0,
+  '2026-06-12T08:00:00Z'
+);
+
+select is(
+  (select deduplicated from metadata_only_import),
+  true,
+  'graph-equivalent metadata changes reuse the immutable graph'
+);
+
+select is(
+  (select schema_snapshot_id from metadata_only_import),
+  '40000000-0000-4000-8000-000000000023'::uuid,
+  'graph deduplication preserves the new full-fidelity snapshot'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from public.schema_snapshots
+    where tenant_id = '20000000-0000-4000-8000-000000000020'
+  ),
+  2,
+  'distinct snapshot hashes persist as distinct technical snapshots'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from public.queryability_graph_versions
+    where tenant_id = '20000000-0000-4000-8000-000000000020'
+  ),
+  1,
+  'graph-equivalent snapshots do not duplicate graph versions'
+);
+
+update queryability_fixture
 set graph = jsonb_set(
   jsonb_set(
     jsonb_set(
       jsonb_set(
         graph,
         '{schema_snapshot_id}',
-        '"40000000-0000-4000-8000-000000000020"'
+        '"40000000-0000-4000-8000-000000000023"'
       ),
       '{policy_version}',
       '"2.0.0"'
@@ -381,7 +449,7 @@ from public.persist_queryability_graph_import(
   '10000000-0000-4000-8000-000000000020',
   '20000000-0000-4000-8000-000000000020',
   '30000000-0000-4000-8000-000000000020',
-  '40000000-0000-4000-8000-000000000020',
+  '40000000-0000-4000-8000-000000000023',
   'sqlserver',
   (select snapshot from queryability_fixture),
   (select summary from queryability_fixture),
@@ -404,8 +472,57 @@ select is(
     from public.schema_snapshots
     where tenant_id = '20000000-0000-4000-8000-000000000020'
   ),
-  1,
-  'manual rebuild reuses the protected schema snapshot'
+  2,
+  'manual rebuild preserves both protected schema snapshots'
+);
+
+select throws_ok(
+  $$
+    update public.schema_snapshots
+    set schema_hash = repeat('0', 64)
+    where id = '40000000-0000-4000-8000-000000000023'
+  $$,
+  '55000',
+  'schema snapshots are immutable',
+  'persisted technical snapshots cannot be updated'
+);
+
+select throws_ok(
+  $$
+    select *
+    from public.persist_queryability_graph_import(
+      '10000000-0000-4000-8000-000000000020',
+      '20000000-0000-4000-8000-000000000020',
+      '30000000-0000-4000-8000-000000000020',
+      '40000000-0000-4000-8000-000000000020',
+      'sqlserver',
+      (
+        select snapshot
+        from public.schema_snapshots
+        where id = '40000000-0000-4000-8000-000000000020'
+      ),
+      (
+        select summary
+        from public.schema_snapshots
+        where id = '40000000-0000-4000-8000-000000000020'
+      ),
+      (
+        select jsonb_set(
+          jsonb_set(graph, '{schema_snapshot_id}', '"40000000-0000-4000-8000-000000000020"'),
+          '{snapshot_hash}',
+          to_jsonb(repeat('b', 64))
+        )
+        from queryability_fixture
+      ),
+      1,
+      0,
+      '2026-06-12T08:00:00Z',
+      true
+    )
+  $$,
+  '22023',
+  'only the latest matching schema snapshot can be rebuilt',
+  'historical snapshots cannot become the current graph through rebuild'
 );
 
 update queryability_fixture
@@ -437,6 +554,39 @@ set graph = jsonb_set(
     "validation_status":"trusted",
     "automatic_join_allowed":true,
     "reason_codes":[]
+  }]'::jsonb
+);
+
+select throws_ok(
+  $$
+    select *
+    from public.persist_queryability_graph_import(
+      '10000000-0000-4000-8000-000000000020',
+      '20000000-0000-4000-8000-000000000020',
+      '30000000-0000-4000-8000-000000000020',
+      '40000000-0000-4000-8000-000000000022',
+      'sqlserver',
+      (select snapshot from queryability_fixture),
+      (select summary from queryability_fixture),
+      (select graph from queryability_fixture),
+      1,
+      0,
+      '2026-06-12T08:00:00Z'
+    )
+  $$,
+  '22023',
+  'queryability graph contract invariants are invalid',
+  'FK edges without column pairs are rejected'
+);
+
+update queryability_fixture
+set graph = jsonb_set(
+  graph,
+  '{edges,0,column_pairs}',
+  '[{
+    "from_column_key":"7777777777777777777777777777777777777777777777777777777777777777",
+    "to_column_key":"6666666666666666666666666666666666666666666666666666666666666666",
+    "ordinal_position":1
   }]'::jsonb
 );
 

@@ -2,8 +2,53 @@ alter table public.schema_snapshots
   add column if not exists snapshot_hash text
     check (snapshot_hash ~ '^[0-9a-f]{64}$');
 
+do $$
+begin
+  if exists (
+    select 1
+    from public.schema_snapshots snapshot
+    join public.tenants tenant on tenant.id = snapshot.tenant_id
+    where snapshot.snapshot_hash is null
+      and not (
+        lower(coalesce(tenant.settings->>'environment', '')) in ('demo', 'test')
+        or tenant.slug ~* '(^|[-_])(demo|test)([-_]|$)'
+        or tenant.name ~* '(^|[[:space:]_-])(demo|test)([[:space:]_-]|$)'
+      )
+  ) then
+    raise exception
+      'legacy schema snapshots exist outside demo/test tenants; purge them explicitly before Queryability Graph V1'
+      using errcode = '55000';
+  end if;
+
+  delete from public.semantic_versions semantic_version
+  using public.schema_snapshots snapshot, public.tenants tenant
+  where semantic_version.tenant_id = snapshot.tenant_id
+    and semantic_version.connection_id = snapshot.connection_id
+    and tenant.id = snapshot.tenant_id
+    and snapshot.snapshot_hash is null
+    and (
+      lower(coalesce(tenant.settings->>'environment', '')) in ('demo', 'test')
+      or tenant.slug ~* '(^|[-_])(demo|test)([-_]|$)'
+      or tenant.name ~* '(^|[[:space:]_-])(demo|test)([[:space:]_-]|$)'
+    );
+
+  delete from public.schema_snapshots snapshot
+  using public.tenants tenant
+  where tenant.id = snapshot.tenant_id
+    and snapshot.snapshot_hash is null
+    and (
+      lower(coalesce(tenant.settings->>'environment', '')) in ('demo', 'test')
+      or tenant.slug ~* '(^|[-_])(demo|test)([-_]|$)'
+      or tenant.name ~* '(^|[[:space:]_-])(demo|test)([[:space:]_-]|$)'
+    );
+end;
+$$;
+
 alter table public.schema_snapshots
   alter column snapshot_hash set not null;
+
+create unique index schema_snapshots_connection_snapshot_hash_idx
+  on public.schema_snapshots (tenant_id, connection_id, snapshot_hash);
 
 create type public.queryability_graph_status as enum (
   'complete',
@@ -229,6 +274,21 @@ create trigger queryability_graph_edges_immutable
 before update on public.queryability_graph_edges
 for each row execute function app_private.reject_queryability_graph_update();
 
+create or replace function app_private.reject_schema_snapshot_update()
+returns trigger
+language plpgsql
+set search_path = public, app_private, pg_temp
+as $$
+begin
+  raise exception 'schema snapshots are immutable'
+    using errcode = '55000';
+end;
+$$;
+
+create trigger schema_snapshots_immutable
+before update on public.schema_snapshots
+for each row execute function app_private.reject_schema_snapshot_update();
+
 create or replace function app_private.persist_queryability_graph_import(
   actor_user_id uuid,
   target_tenant_id uuid,
@@ -257,6 +317,8 @@ declare
   connection_database_name text;
   sanitized_summary jsonb;
   existing_graph public.queryability_graph_versions%rowtype;
+  effective_snapshot_id uuid;
+  normalized_graph jsonb;
   new_graph_id uuid;
   new_graph_version integer;
   inserted_node_count integer;
@@ -325,6 +387,81 @@ begin
       using errcode = '22023';
   end if;
 
+  if jsonb_array_length(queryability_graph->'nodes') > 5000
+    or jsonb_array_length(queryability_graph->'edges') > 250000
+    or exists (
+      select 1
+      from jsonb_array_elements(queryability_graph->'nodes') node
+      where jsonb_typeof(node) <> 'object'
+        or node->>'node_key' !~ '^[0-9a-f]{64}$'
+        or node->>'object_type' not in ('table', 'view')
+        or node->>'queryability_status' not in ('queryable', 'excluded')
+        or jsonb_typeof(node->'columns') <> 'array'
+        or jsonb_array_length(node->'columns') > 50000
+    )
+    or exists (
+      select 1
+      from jsonb_array_elements(queryability_graph->'nodes') node
+      cross join lateral jsonb_array_elements(node->'columns') graph_column
+      where jsonb_typeof(graph_column) <> 'object'
+        or graph_column->>'column_key' !~ '^[0-9a-f]{64}$'
+        or graph_column->>'ordinal_position' !~ '^[1-9][0-9]*$'
+        or graph_column->>'queryability_status'
+          not in ('queryable', 'excluded')
+        or graph_column->>'sensitivity'
+          not in ('none', 'pii', 'sensitive')
+    )
+    or exists (
+      select node->>'node_key'
+      from jsonb_array_elements(queryability_graph->'nodes') node
+      group by node->>'node_key'
+      having count(*) > 1
+    )
+    or exists (
+      select graph_column->>'column_key'
+      from jsonb_array_elements(queryability_graph->'nodes') node
+      cross join lateral jsonb_array_elements(node->'columns') graph_column
+      group by graph_column->>'column_key'
+      having count(*) > 1
+    )
+    or exists (
+      select 1
+      from jsonb_array_elements(queryability_graph->'edges') edge
+      where jsonb_typeof(edge) <> 'object'
+        or edge->>'edge_key' !~ '^[0-9a-f]{64}$'
+        or edge->>'edge_type' not in (
+          'fk_join',
+          'view_depends_on',
+          'view_column_derives_from'
+        )
+        or jsonb_typeof(edge->'reason_codes') <> 'array'
+        or (
+          edge->>'edge_type' = 'fk_join'
+          and (
+            jsonb_typeof(edge->'column_pairs') <> 'array'
+            or jsonb_array_length(edge->'column_pairs') = 0
+            or edge->>'relationship_shape'
+              not in ('one_to_one', 'many_to_one')
+            or edge->>'enforcement_status' not in ('enabled', 'disabled')
+            or edge->>'validation_status' not in ('trusted', 'untrusted')
+          )
+        )
+        or (
+          edge->>'edge_type' <> 'fk_join'
+          and edge->>'automatic_join_allowed' <> 'false'
+        )
+    )
+    or exists (
+      select edge->>'edge_key'
+      from jsonb_array_elements(queryability_graph->'edges') edge
+      group by edge->>'edge_key'
+      having count(*) > 1
+    )
+  then
+    raise exception 'queryability graph contract invariants are invalid'
+      using errcode = '22023';
+  end if;
+
   if sanitized_summary->>'database_name' <> connection_database_name
     or sanitized_summary->>'engine' <> target_engine::text
     or sanitized_summary->>'engine_version'
@@ -342,21 +479,6 @@ begin
       using errcode = '22023';
   end if;
 
-  if reuse_existing_snapshot and not exists (
-    select 1
-    from public.schema_snapshots snapshot
-    where snapshot.id = target_snapshot_id
-      and snapshot.tenant_id = target_tenant_id
-      and snapshot.connection_id = target_connection_id
-      and snapshot.engine = target_engine
-      and snapshot.schema_hash = technical_snapshot->>'schema_hash'
-      and snapshot.snapshot_hash = technical_snapshot->>'snapshot_hash'
-      and snapshot.snapshot = technical_snapshot
-  ) then
-    raise exception 'existing schema snapshot does not match rebuild input'
-      using errcode = '22023';
-  end if;
-
   expected_node_count := jsonb_array_length(queryability_graph->'nodes');
   expected_edge_count := jsonb_array_length(queryability_graph->'edges');
   select coalesce(sum(jsonb_array_length(node->'columns')), 0)::integer
@@ -365,6 +487,89 @@ begin
 
   perform pg_advisory_xact_lock(
     hashtextextended(target_connection_id::text, 0)
+  );
+
+  effective_snapshot_id := target_snapshot_id;
+  if reuse_existing_snapshot then
+    if not exists (
+      select 1
+      from public.schema_snapshots snapshot
+      where snapshot.id = target_snapshot_id
+        and snapshot.tenant_id = target_tenant_id
+        and snapshot.connection_id = target_connection_id
+        and snapshot.engine = target_engine
+        and snapshot.schema_hash = technical_snapshot->>'schema_hash'
+        and snapshot.snapshot_hash = technical_snapshot->>'snapshot_hash'
+        and snapshot.snapshot = technical_snapshot
+        and snapshot.id = (
+          select latest.id
+          from public.schema_snapshots latest
+          where latest.tenant_id = target_tenant_id
+            and latest.connection_id = target_connection_id
+          order by latest.created_at desc, latest.introspected_at desc, latest.id desc
+          limit 1
+        )
+    ) then
+      raise exception 'only the latest matching schema snapshot can be rebuilt'
+        using errcode = '22023';
+    end if;
+  else
+    select snapshot.id
+    into effective_snapshot_id
+    from public.schema_snapshots snapshot
+    where snapshot.tenant_id = target_tenant_id
+      and snapshot.connection_id = target_connection_id
+      and snapshot.snapshot_hash = technical_snapshot->>'snapshot_hash'
+      and snapshot.snapshot = technical_snapshot
+    limit 1;
+
+    if effective_snapshot_id is null then
+      effective_snapshot_id := target_snapshot_id;
+      insert into public.schema_snapshots (
+        id,
+        tenant_id,
+        connection_id,
+        engine,
+        snapshot,
+        snapshot_version,
+        table_count,
+        column_count,
+        introspected_at,
+        engine_version,
+        schema_hash,
+        snapshot_hash,
+        coverage_status,
+        coverage_warnings,
+        summary,
+        created_by,
+        created_at
+      )
+      values (
+        effective_snapshot_id,
+        target_tenant_id,
+        target_connection_id,
+        target_engine,
+        technical_snapshot,
+        1,
+        target_table_count,
+        target_column_count,
+        target_introspected_at,
+        technical_snapshot->>'engine_version',
+        technical_snapshot->>'schema_hash',
+        technical_snapshot->>'snapshot_hash',
+        (technical_snapshot->>'coverage_status')::public.schema_coverage_status,
+        coalesce(technical_snapshot->'coverage_warnings', '[]'::jsonb),
+        sanitized_summary,
+        actor_user_id,
+        clock_timestamp()
+      );
+    end if;
+  end if;
+
+  normalized_graph := jsonb_set(
+    queryability_graph,
+    '{schema_snapshot_id}',
+    to_jsonb(effective_snapshot_id::text)
   );
 
   select *
@@ -377,10 +582,21 @@ begin
 
   if found then
     if existing_graph.graph_hash <> queryability_graph->>'graph_hash'
+      or existing_graph.graph_input_hash
+        <> queryability_graph->>'graph_input_hash'
       or existing_graph.builder_version
         <> queryability_graph->>'builder_version'
       or existing_graph.policy_version
         <> queryability_graph->>'policy_version'
+      or existing_graph.contract_version
+        <> queryability_graph->>'contract_version'
+      or existing_graph.status::text <> queryability_graph->>'status'
+      or existing_graph.graph->'status_reasons'
+        is distinct from queryability_graph->'status_reasons'
+      or existing_graph.graph->'nodes'
+        is distinct from queryability_graph->'nodes'
+      or existing_graph.graph->'edges'
+        is distinct from queryability_graph->'edges'
     then
       raise exception 'queryability graph derivation collision'
         using errcode = '23505';
@@ -388,7 +604,7 @@ begin
 
     return query
     select
-      existing_graph.schema_snapshot_id,
+      effective_snapshot_id,
       existing_graph.id,
       existing_graph.version,
       true,
@@ -415,45 +631,6 @@ begin
   ) then
     raise exception 'queryability graph edge references unknown node'
       using errcode = '23503';
-  end if;
-
-  if not reuse_existing_snapshot then
-    insert into public.schema_snapshots (
-      id,
-      tenant_id,
-      connection_id,
-      engine,
-      snapshot,
-      snapshot_version,
-      table_count,
-      column_count,
-      introspected_at,
-      engine_version,
-      schema_hash,
-      snapshot_hash,
-      coverage_status,
-      coverage_warnings,
-      summary,
-      created_by
-    )
-    values (
-      target_snapshot_id,
-      target_tenant_id,
-      target_connection_id,
-      target_engine,
-      technical_snapshot,
-      1,
-      target_table_count,
-      target_column_count,
-      target_introspected_at,
-      technical_snapshot->>'engine_version',
-      technical_snapshot->>'schema_hash',
-      technical_snapshot->>'snapshot_hash',
-      (technical_snapshot->>'coverage_status')::public.schema_coverage_status,
-      coalesce(technical_snapshot->'coverage_warnings', '[]'::jsonb),
-      sanitized_summary,
-      actor_user_id
-    );
   end if;
 
   select coalesce(max(version), 0) + 1
@@ -485,7 +662,7 @@ begin
   values (
     target_tenant_id,
     target_connection_id,
-    target_snapshot_id,
+    effective_snapshot_id,
     new_graph_version,
     queryability_graph->>'contract_version',
     queryability_graph->>'builder_version',
@@ -496,7 +673,7 @@ begin
     queryability_graph->>'graph_input_hash',
     queryability_graph->>'derivation_key',
     queryability_graph->>'graph_hash',
-    queryability_graph,
+    normalized_graph,
     expected_node_count,
     expected_column_count,
     expected_edge_count,
@@ -709,7 +886,7 @@ begin
     'db_connection',
     target_connection_id,
     jsonb_build_object(
-      'schema_snapshot_id', target_snapshot_id,
+      'schema_snapshot_id', effective_snapshot_id,
       'queryability_graph_id', new_graph_id,
       'queryability_graph_version', new_graph_version,
       'schema_hash', technical_snapshot->>'schema_hash',
@@ -722,7 +899,7 @@ begin
 
   return query
   select
-    target_snapshot_id,
+    effective_snapshot_id,
     new_graph_id,
     new_graph_version,
     false,

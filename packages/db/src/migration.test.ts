@@ -55,6 +55,24 @@ const workflows = readdirSync(
     )
   )
   .join("\n");
+const queryEngineDeployWorkflow = readFileSync(
+  resolve(
+    import.meta.dirname,
+    "../../../.github/workflows/query-engine-deploy.yml"
+  ),
+  "utf8"
+);
+const supabaseMigrationsWorkflow = readFileSync(
+  resolve(
+    import.meta.dirname,
+    "../../../.github/workflows/supabase-migrations.yml"
+  ),
+  "utf8"
+);
+const webDeployWorkflow = readFileSync(
+  resolve(import.meta.dirname, "../../../.github/workflows/web-deploy.yml"),
+  "utf8"
+);
 const dockerIgnore = readFileSync(
   resolve(import.meta.dirname, "../../../.dockerignore"),
   "utf8"
@@ -67,6 +85,13 @@ const concurrentSchemaImportsFixture = readFileSync(
   resolve(
     import.meta.dirname,
     "../../../.github/fixtures/concurrent-schema-imports.sql"
+  ),
+  "utf8"
+);
+const legacyQueryabilityUpgradeFixture = readFileSync(
+  resolve(
+    import.meta.dirname,
+    "../../../.github/fixtures/legacy-queryability-upgrade.sql"
   ),
   "utf8"
 );
@@ -447,6 +472,21 @@ describe("Supabase metadata migration", () => {
       "alter column snapshot_hash set not null"
     );
     expect(queryabilityGraphMigration).toContain(
+      "schema_snapshots_connection_snapshot_hash_idx"
+    );
+    expect(queryabilityGraphMigration).toContain(
+      "legacy schema snapshots exist outside demo/test tenants"
+    );
+    expect(queryabilityGraphMigration).toContain(
+      "schema snapshots are immutable"
+    );
+    expect(queryabilityGraphMigration).toContain(
+      "only the latest matching schema snapshot can be rebuilt"
+    );
+    expect(queryabilityGraphMigration).toContain(
+      "queryability graph contract invariants are invalid"
+    );
+    expect(queryabilityGraphMigration).toContain(
       "'queryability_graph.rebuilt'"
     );
     expect(queryabilityGraphMigration).toContain(
@@ -470,6 +510,39 @@ describe("Supabase metadata migration", () => {
     expect(concurrentSchemaImportsFixture).not.toContain(
       "public.persist_technical_schema_import("
     );
+  });
+
+  it("deploys one verified main SHA in dependency order", () => {
+    expect(queryEngineDeployWorkflow).toContain('workflows: ["CI"]');
+    expect(supabaseMigrationsWorkflow).toContain(
+      'workflows: ["Deploy Query Engine"]'
+    );
+    expect(webDeployWorkflow).toContain('workflows: ["Supabase Migrations"]');
+    expect(queryEngineDeployWorkflow).toContain("environment: production");
+    expect(supabaseMigrationsWorkflow).toContain("environment: production");
+    expect(webDeployWorkflow).toContain("environment: production");
+    for (const workflow of [
+      queryEngineDeployWorkflow,
+      supabaseMigrationsWorkflow,
+      webDeployWorkflow
+    ]) {
+      expect(workflow).toContain(
+        "ref: ${{ github.event.workflow_run.head_sha }}"
+      );
+      expect(workflow).toContain("Verify triggering SHA is current main");
+    }
+  });
+
+  it("tests the breaking graph migration against a legacy demo snapshot", () => {
+    expect(workflows).toContain(
+      "npx -y supabase@2.104.0 db reset --local --version 20260611140354"
+    );
+    expect(workflows).toContain("legacy-queryability-upgrade.sql");
+    expect(workflows).toContain("npx -y supabase@2.104.0 migration up --local");
+    expect(legacyQueryabilityUpgradeFixture).toContain(
+      "public.persist_technical_schema_import("
+    );
+    expect(legacyQueryabilityUpgradeFixture).toContain("'test'");
   });
 
   it("fixes the immutable metadata guard search path", () => {

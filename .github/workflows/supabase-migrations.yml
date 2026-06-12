@@ -2,7 +2,7 @@ name: Supabase Migrations
 
 on:
   workflow_run:
-    workflows: ["CI"]
+    workflows: ["Deploy Query Engine"]
     branches: ["main"]
     types: [completed]
 
@@ -14,6 +14,7 @@ jobs:
   deploy:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    environment: production
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}

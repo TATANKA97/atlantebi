@@ -206,7 +206,7 @@ class SchemaForeignKeyMetadata(StrictModel):
     is_disabled: bool = False
     is_not_trusted: bool = False
     source: Literal["db_fk"] = "db_fk"
-    verified_by_db: bool = True
+    verified_by_db: Literal[True] = True
 
 
 class SchemaUniqueConstraintMetadata(StrictModel):

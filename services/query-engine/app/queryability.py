@@ -29,6 +29,8 @@ from app.models import (
 QUERYABILITY_GRAPH_CONTRACT_VERSION = "queryability_graph.v1"
 DEFAULT_BUILDER_VERSION = "1.0.0"
 DEFAULT_POLICY_VERSION = "1.0.0"
+MAX_PATH_RESULTS = 100
+MAX_PATH_SEARCH_STATES = 100_000
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,8 @@ def build_queryability_graph(
         _build_node(snapshot=snapshot, table=table)
         for table in snapshot.tables
     ]
+    if any(node.view_lineage_status == "partial" for node in nodes):
+        status_reasons.add("VIEW_LINEAGE_PARTIAL")
     nodes_by_object = {
         (node.schema_name, node.object_name): node for node in nodes
     }
@@ -220,7 +224,16 @@ def find_queryability_paths(
     queue = deque([(from_node_key, [], {from_node_key})])
     found: list[list[_Traversal]] = []
     shortest_length: int | None = None
+    explored_states = 0
+    result_truncated = False
     while queue:
+        explored_states += 1
+        if explored_states > MAX_PATH_SEARCH_STATES:
+            return QueryabilityPathResult(
+                status="blocked",
+                paths=[],
+                reason_codes=["PATH_SEARCH_LIMIT_EXCEEDED"],
+            )
         current_node, path, visited = queue.popleft()
         if shortest_length is not None and len(path) >= shortest_length:
             continue
@@ -240,6 +253,9 @@ def find_queryability_paths(
             if traversal.to_node_key == to_node_key:
                 shortest_length = len(next_path)
                 found.append(next_path)
+                if len(found) > MAX_PATH_RESULTS:
+                    result_truncated = True
+                    break
                 continue
             queue.append(
                 (
@@ -248,6 +264,8 @@ def find_queryability_paths(
                     {*visited, traversal.to_node_key},
                 )
             )
+        if result_truncated:
+            break
 
     if not found:
         return QueryabilityPathResult(
@@ -274,12 +292,11 @@ def find_queryability_paths(
                 for traversal in path
             ),
         )
-        for path in found
+        for path in found[:MAX_PATH_RESULTS]
         if len(path) == shortest_length
     ]
     reason_codes = ["MULTIPLE_SHORTEST_PATHS"] if len(paths) > 1 else []
-    if len(paths) > 100:
-        paths = paths[:100]
+    if result_truncated:
         reason_codes.append("PATH_RESULT_TRUNCATED")
     return QueryabilityPathResult(
         status="ambiguous" if len(paths) > 1 else "found",
@@ -485,6 +502,8 @@ def _build_fk_edge(
         reasons.append("FK_DISABLED")
     if foreign_key.is_not_trusted:
         reasons.append("FK_UNTRUSTED")
+    if not foreign_key.verified_by_db:
+        reasons.append("FK_NOT_DB_VERIFIED")
     if any(
         from_columns[column].queryability_status != "queryable"
         or to_columns[target].queryability_status != "queryable"
@@ -499,6 +518,7 @@ def _build_fk_edge(
     automatic_join_allowed = (
         not foreign_key.is_disabled
         and not foreign_key.is_not_trusted
+        and foreign_key.verified_by_db
         and "FK_COLUMN_EXCLUDED" not in reasons
         and from_node.queryability_status == "queryable"
         and to_node.queryability_status == "queryable"
@@ -548,6 +568,7 @@ def _build_lineage_edges(
         QueryabilityViewDependencyEdge | QueryabilityViewColumnEdge
     ] = []
     dependency_keys: set[tuple[Any, ...]] = set()
+    column_dependency_keys: set[tuple[Any, ...]] = set()
     for table in snapshot.tables:
         if table.table_type != "view":
             continue
@@ -563,17 +584,20 @@ def _build_lineage_edges(
                 dependency=dependency,
                 resolution_status=resolution_status,
             )
-            dependency_identity = (
+            object_dependency_identity = (
                 from_node.node_key,
                 dependency.source,
                 dependency.referenced_server_name,
                 dependency.referenced_database_name,
                 dependency.referenced_schema_name,
                 dependency.referenced_entity_name,
+                dependency.referenced_class,
                 to_node.node_key if to_node else None,
+                resolution_status,
+                tuple(reason_codes),
             )
-            if dependency_identity not in dependency_keys:
-                dependency_keys.add(dependency_identity)
+            if object_dependency_identity not in dependency_keys:
+                dependency_keys.add(object_dependency_identity)
                 payload = {
                     "edge_type": "view_depends_on",
                     "from_node_key": from_node.node_key,
@@ -583,6 +607,8 @@ def _build_lineage_edges(
                     "referenced_database_name": dependency.referenced_database_name,
                     "referenced_schema_name": dependency.referenced_schema_name,
                     "referenced_object_name": dependency.referenced_entity_name,
+                    "resolution_status": resolution_status,
+                    "reason_codes": reason_codes,
                 }
                 edges.append(
                     QueryabilityViewDependencyEdge(
@@ -624,6 +650,24 @@ def _build_lineage_edges(
                 and not dependency.is_ambiguous
                 else "partial"
             )
+            column_dependency_identity = (
+                object_dependency_identity,
+                dependency.referencing_column,
+                dependency.referenced_column_name,
+                dependency.is_selected,
+                dependency.is_updated,
+                dependency.is_select_all,
+                dependency.is_all_columns_found,
+                dependency.is_caller_dependent,
+                dependency.is_ambiguous,
+                dependency.is_incomplete,
+                from_column.column_key,
+                to_column.column_key if to_column else None,
+                lineage_status,
+            )
+            if column_dependency_identity in column_dependency_keys:
+                continue
+            column_dependency_keys.add(column_dependency_identity)
             payload = {
                 "edge_type": "view_column_derives_from",
                 "from_node_key": from_node.node_key,
@@ -631,9 +675,14 @@ def _build_lineage_edges(
                 "to_node_key": to_node.node_key if to_node else None,
                 "to_column_key": to_column.column_key if to_column else None,
                 "source": dependency.source,
+                "referenced_server_name": dependency.referenced_server_name,
+                "referenced_database_name": dependency.referenced_database_name,
                 "referenced_schema_name": dependency.referenced_schema_name,
                 "referenced_object_name": dependency.referenced_entity_name,
                 "referenced_column_name": dependency.referenced_column_name,
+                "resolution_status": resolution_status,
+                "lineage_status": lineage_status,
+                "reason_codes": reason_codes,
             }
             edges.append(
                 QueryabilityViewColumnEdge(
@@ -724,6 +773,14 @@ def _view_lineage_status(
         for warning in snapshot.coverage_warnings
     ):
         return "partial"
+    if any(
+        dependency.is_incomplete
+        or dependency.is_ambiguous
+        or not dependency.referenced_schema_name
+        or not dependency.referenced_entity_name
+        for dependency in table.view_lineage
+    ):
+        return "partial"
     return "complete"
 
 
@@ -781,7 +838,6 @@ def _graph_input_payload(
     nodes: list[QueryabilityNode],
 ) -> dict[str, Any]:
     return {
-        "schema_hash": snapshot.schema_hash,
         "coverage_status": snapshot.coverage_status,
         "coverage_warnings": [
             {
@@ -794,6 +850,7 @@ def _graph_input_payload(
                 snapshot.coverage_warnings,
                 key=lambda item: (
                     item.code,
+                    item.severity,
                     item.object_schema or "",
                     item.object_name or "",
                 ),
@@ -862,6 +919,14 @@ def _graph_input_payload(
                             item.referenced_schema_name or "",
                             item.referenced_entity_name or "",
                             item.referenced_column_name or "",
+                            item.referenced_class or "",
+                            _optional_bool_sort_key(item.is_selected),
+                            _optional_bool_sort_key(item.is_updated),
+                            _optional_bool_sort_key(item.is_select_all),
+                            _optional_bool_sort_key(item.is_all_columns_found),
+                            _optional_bool_sort_key(item.is_caller_dependent),
+                            _optional_bool_sort_key(item.is_ambiguous),
+                            _optional_bool_sort_key(item.is_incomplete),
                         ),
                     )
                 ],
@@ -873,6 +938,12 @@ def _graph_input_payload(
             if table.table_type == "view"
         ],
     }
+
+
+def _optional_bool_sort_key(value: bool | None) -> int:
+    if value is None:
+        return 0
+    return 2 if value else 1
 
 
 def _duplicate_object_keys(

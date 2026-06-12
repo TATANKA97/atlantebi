@@ -77,6 +77,7 @@ def foreign_key(
     *,
     disabled: bool = False,
     untrusted: bool = False,
+    verified_by_db: bool = True,
 ) -> SchemaForeignKeyMetadata:
     return SchemaForeignKeyMetadata(
         constraint_name=name,
@@ -90,6 +91,7 @@ def foreign_key(
         update_rule="no_action",
         is_disabled=disabled,
         is_not_trusted=untrusted,
+        verified_by_db=verified_by_db,
     )
 
 
@@ -433,6 +435,157 @@ def test_lineage_is_provenance_only_and_partial_status_is_preserved() -> None:
     }
 
 
+def test_incomplete_lineage_marks_graph_partial_without_warning() -> None:
+    customer = table(
+        "Customer",
+        [column("CustomerID", 1)],
+        primary_key=["CustomerID"],
+    )
+    view = replace(
+        table(
+            "vCustomer",
+            [column("CustomerID", 1)],
+            table_type="view",
+        ),
+        view_lineage=[
+            SchemaViewLineageDependency(
+                source="dm_sql_referenced_entities",
+                referencing_column="CustomerID",
+                referenced_schema_name="SalesLT",
+                referenced_entity_name="Customer",
+                referenced_column_name="CustomerID",
+                referenced_class="OBJECT_OR_COLUMN",
+                is_incomplete=True,
+            )
+        ],
+    )
+
+    graph = build(snapshot(tables=[customer, view]))
+
+    assert graph.status == "partial"
+    assert graph.status_reasons == ["VIEW_LINEAGE_PARTIAL"]
+    assert node_by_name(graph, "vCustomer").view_lineage_status == "partial"
+
+
+def test_cross_database_lineage_edges_have_unique_stable_keys() -> None:
+    dependencies = [
+        SchemaViewLineageDependency(
+            source="dm_sql_referenced_entities",
+            referencing_column="CustomerID",
+            referenced_database_name=database_name,
+            referenced_schema_name="dbo",
+            referenced_entity_name="Customer",
+            referenced_column_name="CustomerID",
+            referenced_class="OBJECT_OR_COLUMN",
+        )
+        for database_name in ["ArchiveA", "ArchiveB"]
+    ]
+    view = replace(
+        table(
+            "vCustomer",
+            [column("CustomerID", 1)],
+            table_type="view",
+        ),
+        view_lineage=dependencies,
+    )
+
+    first = build(snapshot(tables=[view]))
+    second = build(
+        snapshot(tables=[replace(view, view_lineage=list(reversed(dependencies)))])
+    )
+
+    assert len(first.edges) == 4
+    assert len({edge.edge_key for edge in first.edges}) == 4
+    assert first.graph_input_hash == second.graph_input_hash
+    assert first.graph_hash == second.graph_hash
+
+
+def test_multiple_view_columns_share_one_object_dependency_edge() -> None:
+    source = table(
+        name="Customer",
+        columns=[
+            column("CustomerID", 1),
+            column("DisplayName", 2, native_type="nvarchar"),
+        ],
+        primary_key=["CustomerID"],
+    )
+    view = replace(
+        table(
+            name="vCustomer",
+            table_type="view",
+            columns=[
+                column("CustomerID", 1),
+                column("DisplayName", 2, native_type="nvarchar"),
+            ],
+        ),
+        view_lineage=[
+            SchemaViewLineageDependency(
+                source="dm_sql_referenced_entities",
+                referenced_class="OBJECT_OR_COLUMN",
+                referencing_column="CustomerID",
+                referenced_schema_name="SalesLT",
+                referenced_entity_name="Customer",
+                referenced_column_name="CustomerID",
+                is_selected=True,
+            ),
+            SchemaViewLineageDependency(
+                source="dm_sql_referenced_entities",
+                referenced_class="OBJECT_OR_COLUMN",
+                referencing_column="DisplayName",
+                referenced_schema_name="SalesLT",
+                referenced_entity_name="Customer",
+                referenced_column_name="DisplayName",
+                is_selected=None,
+            ),
+        ],
+    )
+
+    graph = build(snapshot(tables=[source, view]))
+    object_edges = [
+        edge for edge in graph.edges if edge.edge_type == "view_depends_on"
+    ]
+    column_edges = [
+        edge for edge in graph.edges if edge.edge_type == "view_column_derives_from"
+    ]
+
+    assert len(object_edges) == 1
+    assert len(column_edges) == 2
+    assert len({edge.edge_key for edge in graph.edges}) == 3
+
+
+def test_unverified_fk_is_not_available_for_automatic_routing() -> None:
+    parent = table(
+        "Parent",
+        [column("ParentID", 1)],
+        primary_key=["ParentID"],
+    )
+    child = table(
+        "Child",
+        [column("ChildID", 1), column("ParentID", 2)],
+        primary_key=["ChildID"],
+    )
+
+    graph = build(
+        snapshot(
+            tables=[parent, child],
+            foreign_keys=[
+                foreign_key(
+                    "FK_Child_Parent",
+                    "Child",
+                    ["ParentID"],
+                    "Parent",
+                    ["ParentID"],
+                    verified_by_db=False,
+                )
+            ],
+        )
+    )
+    edge = fk_edges(graph)[0]
+
+    assert edge.automatic_join_allowed is False
+    assert edge.reason_codes == ["FK_NOT_DB_VERIFIED"]
+
+
 def test_path_finding_detects_parallel_fk_ambiguity_and_fanout() -> None:
     address = table(
         "Address",
@@ -527,6 +680,10 @@ def test_hashes_are_deterministic_and_policy_relevant_input_changes_them() -> No
     assert first.graph_hash == second.graph_hash
     assert first.graph_input_hash != degraded.graph_input_hash
     assert first.graph_hash != degraded.graph_hash
+
+    schema_only_change = build(replace(trusted, schema_hash="f" * 64))
+    assert first.graph_input_hash == schema_only_change.graph_input_hash
+    assert first.graph_hash == schema_only_change.graph_hash
 
 
 def test_incoherent_fk_metadata_blocks_graph() -> None:
