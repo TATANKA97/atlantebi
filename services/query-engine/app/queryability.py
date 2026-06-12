@@ -65,6 +65,20 @@ def build_queryability_graph(
         _build_node(snapshot=snapshot, table=table)
         for table in snapshot.tables
     ]
+    nodes_by_object = {
+        (node.schema_name, node.object_name): node for node in nodes
+    }
+    nodes = [
+        node.model_copy(update={"view_lineage_status": "partial"})
+        if node.view_lineage_status == "complete"
+        and _lineage_is_partial(
+            snapshot=snapshot,
+            table=table,
+            nodes_by_object=nodes_by_object,
+        )
+        else node
+        for node, table in zip(nodes, snapshot.tables, strict=True)
+    ]
     if any(node.view_lineage_status == "partial" for node in nodes):
         status_reasons.add("VIEW_LINEAGE_PARTIAL")
     nodes_by_object = {
@@ -199,6 +213,9 @@ def find_queryability_paths(
         if (
             not isinstance(edge, QueryabilityForeignKeyEdge)
             or not edge.automatic_join_allowed
+            or not edge.verified_by_db
+            or edge.enforcement_status != "enabled"
+            or edge.validation_status != "trusted"
             or edge.self_reference
         ):
             continue
@@ -607,6 +624,7 @@ def _build_lineage_edges(
                     "referenced_database_name": dependency.referenced_database_name,
                     "referenced_schema_name": dependency.referenced_schema_name,
                     "referenced_object_name": dependency.referenced_entity_name,
+                    "referenced_class": dependency.referenced_class,
                     "resolution_status": resolution_status,
                     "reason_codes": reason_codes,
                 }
@@ -680,6 +698,14 @@ def _build_lineage_edges(
                 "referenced_schema_name": dependency.referenced_schema_name,
                 "referenced_object_name": dependency.referenced_entity_name,
                 "referenced_column_name": dependency.referenced_column_name,
+                "referenced_class": dependency.referenced_class,
+                "is_selected": dependency.is_selected,
+                "is_updated": dependency.is_updated,
+                "is_select_all": dependency.is_select_all,
+                "is_all_columns_found": dependency.is_all_columns_found,
+                "is_caller_dependent": dependency.is_caller_dependent,
+                "is_ambiguous": dependency.is_ambiguous,
+                "is_incomplete": dependency.is_incomplete,
                 "resolution_status": resolution_status,
                 "lineage_status": lineage_status,
                 "reason_codes": reason_codes,
@@ -782,6 +808,39 @@ def _view_lineage_status(
     ):
         return "partial"
     return "complete"
+
+
+def _lineage_is_partial(
+    *,
+    snapshot: SchemaIntrospectionResult,
+    table: SchemaTableMetadata,
+    nodes_by_object: dict[tuple[str, str], QueryabilityNode],
+) -> bool:
+    if table.table_type != "view" or table.lineage_available is not True:
+        return False
+    source_columns = {column.name for column in table.columns}
+    for dependency in table.view_lineage:
+        resolution_status, target = _resolve_lineage_target(
+            snapshot=snapshot,
+            dependency=dependency,
+            nodes_by_object=nodes_by_object,
+        )
+        if resolution_status == "unresolved":
+            return True
+        if (
+            dependency.referencing_column
+            and dependency.referencing_column not in source_columns
+        ):
+            return True
+        if (
+            resolution_status == "resolved"
+            and dependency.referenced_column_name
+            and target is not None
+            and dependency.referenced_column_name
+            not in {column.name for column in target.columns}
+        ):
+            return True
+    return False
 
 
 def _resolve_lineage_target(

@@ -167,7 +167,11 @@ export async function introspectConnection({
         message: "Un import schema è già in corso o il limite è stato superato."
       };
     }
-    throw error;
+    return {
+      ok: false,
+      code: "schema_import_failed",
+      message: "Import schema fallito."
+    };
   }
 }
 

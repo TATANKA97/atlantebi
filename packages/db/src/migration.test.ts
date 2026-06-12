@@ -33,6 +33,13 @@ const queryabilityGraphMigration = readFileSync(
   ),
   "utf8"
 );
+const queryabilityGraphDerivationsMigration = readFileSync(
+  resolve(
+    migrationsDirectory,
+    "20260612193000_queryability_graph_derivations.sql"
+  ),
+  "utf8"
+);
 const purgeAdventureWorksPlanScript = readFileSync(
   resolve(
     import.meta.dirname,
@@ -509,6 +516,21 @@ describe("Supabase metadata migration", () => {
     );
     expect(concurrentSchemaImportsFixture).not.toContain(
       "public.persist_technical_schema_import("
+    );
+  });
+
+  it("maps every technical snapshot to its derived graph", () => {
+    expect(queryabilityGraphDerivationsMigration).toContain(
+      "create table public.queryability_graph_derivations"
+    );
+    expect(queryabilityGraphDerivationsMigration).toContain(
+      "'queryability_graph.deduplicated'"
+    );
+    expect(queryabilityGraphDerivationsMigration).toContain(
+      "automatic joins require enabled trusted database-verified foreign keys"
+    );
+    expect(queryabilityGraphDerivationsMigration).toContain(
+      "revoke all on public.queryability_graph_derivations"
     );
   });
 
