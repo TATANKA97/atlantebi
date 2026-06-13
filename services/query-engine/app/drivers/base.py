@@ -103,7 +103,8 @@ class SchemaColumnMetadata:
     computed_expression: str | None = None
     is_primary_key: bool = False
     is_foreign_key: bool = False
-    is_unique_member: bool = False
+    is_single_column_unique: bool = False
+    is_composite_unique_member: bool = False
     comment: str | None = None
 
 

@@ -472,6 +472,22 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
                     ),
                     (
                         "SalesLT",
+                        "Customer",
+                        "UQ_Customer_Name",
+                        "UQ",
+                        "FirstName",
+                        1,
+                    ),
+                    (
+                        "SalesLT",
+                        "Customer",
+                        "UQ_Customer_Name",
+                        "UQ",
+                        "MiddleName",
+                        2,
+                    ),
+                    (
+                        "SalesLT",
                         "SalesOrderHeader",
                         "PK_SalesOrderHeader",
                         "PK",
@@ -715,7 +731,11 @@ def test_sqlserver_driver_reads_only_metadata_queries(monkeypatch: pytest.Monkey
     assert customer_columns["CustomerID"].declared_type_available is True
     assert customer_columns["EmailAddress"].declared_type_available is True
     assert customer_columns["CustomerID"].technical_role == "identifier"
-    assert customer_columns["EmailAddress"].is_unique_member is True
+    assert customer_columns["EmailAddress"].is_single_column_unique is True
+    assert customer_columns["EmailAddress"].is_composite_unique_member is False
+    assert customer_columns["FirstName"].is_single_column_unique is False
+    assert customer_columns["FirstName"].is_composite_unique_member is True
+    assert customer_columns["MiddleName"].is_composite_unique_member is True
     assert result.tables[1].columns[1].name == "CustomerID"
     assert result.foreign_keys[0].from_table == "SalesOrderHeader"
     assert result.foreign_keys[0].to_table == "Customer"

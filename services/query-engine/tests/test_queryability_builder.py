@@ -428,6 +428,9 @@ def test_lineage_is_provenance_only_and_partial_status_is_preserved() -> None:
 
     assert graph.status == "partial"
     assert node_by_name(graph, "vCustomer").view_lineage_status == "partial"
+    assert (
+        node_by_name(graph, "vCustomer").view_column_lineage_status == "partial"
+    )
     assert all(edge.automatic_join_allowed is False for edge in graph.edges)
     assert {edge.edge_type for edge in graph.edges} == {
         "view_depends_on",
@@ -465,6 +468,39 @@ def test_incomplete_lineage_marks_graph_partial_without_warning() -> None:
     assert graph.status == "partial"
     assert graph.status_reasons == ["VIEW_LINEAGE_PARTIAL"]
     assert node_by_name(graph, "vCustomer").view_lineage_status == "partial"
+    assert (
+        node_by_name(graph, "vCustomer").view_column_lineage_status == "partial"
+    )
+
+
+def test_object_lineage_without_output_column_mapping_is_explicitly_unavailable() -> None:
+    customer = table(
+        "Customer",
+        [column("CustomerID", 1)],
+        primary_key=["CustomerID"],
+    )
+    view = replace(
+        table(
+            "vCustomer",
+            [column("CustomerID", 1)],
+            table_type="view",
+        ),
+        view_lineage=[
+            SchemaViewLineageDependency(
+                source="dm_sql_referenced_entities",
+                referenced_schema_name="SalesLT",
+                referenced_entity_name="Customer",
+                referenced_class="OBJECT_OR_COLUMN",
+            )
+        ],
+    )
+
+    graph = build(snapshot(tables=[customer, view]))
+    view_node = node_by_name(graph, "vCustomer")
+
+    assert view_node.view_lineage_status == "complete"
+    assert view_node.view_column_lineage_status == "unavailable"
+    assert [edge.edge_type for edge in graph.edges] == ["view_depends_on"]
 
 
 def test_unresolved_lineage_marks_graph_partial_without_upstream_warning() -> None:
@@ -610,6 +646,7 @@ def test_multiple_view_columns_share_one_object_dependency_edge() -> None:
     assert len(object_edges) == 1
     assert len(column_edges) == 2
     assert len({edge.edge_key for edge in graph.edges}) == 3
+    assert node_by_name(graph, "vCustomer").view_column_lineage_status == "complete"
 
 
 def test_unverified_fk_is_not_available_for_automatic_routing() -> None:

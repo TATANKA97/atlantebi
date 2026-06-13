@@ -52,6 +52,13 @@ Edge types:
 - `view_depends_on`: object-level provenance only.
 - `view_column_derives_from`: column-level provenance only.
 
+Object lineage and output-column lineage have separate coverage states.
+`view_column_derives_from` is emitted only when SQL Server returns both the
+referencing view column and the referenced source column. When the catalog
+exposes only object dependencies, object lineage may be `complete` while column
+lineage is explicitly `unavailable`; the builder does not infer mappings from
+view SQL text.
+
 Lineage edges never authorize joins. Indexed-view keys apply only to the view
 node and are not propagated to source tables.
 
@@ -64,6 +71,10 @@ child/referencing -> parent/referenced
 An FK retains ordered column pairs, nullability, directional cardinality,
 self-reference, enforcement state and validation state. Disabled and untrusted
 FKs remain visible but are excluded from automatic paths.
+
+Column metadata distinguishes a single-column unique key from membership in a
+composite unique key. A composite PK member is not presented as independently
+unique.
 
 `bridge_candidate` is a structural node trait, not a business classification.
 

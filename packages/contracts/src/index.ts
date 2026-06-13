@@ -118,7 +118,8 @@ export const SchemaColumnMetadataSchema = z.strictObject({
   computed_expression: z.string().min(1).optional(),
   is_primary_key: z.boolean().default(false),
   is_foreign_key: z.boolean().default(false),
-  is_unique_member: z.boolean().default(false),
+  is_single_column_unique: z.boolean().default(false),
+  is_composite_unique_member: z.boolean().default(false),
   comment: z.string().min(1).optional()
 });
 export type SchemaColumnMetadata = z.infer<typeof SchemaColumnMetadataSchema>;
@@ -429,6 +430,9 @@ export const QueryabilityNodeSchema = z.strictObject({
   columns: z.array(QueryabilityColumnSchema).max(50_000),
   view_definition_available: z.boolean().optional(),
   view_lineage_status: z
+    .enum(["complete", "partial", "unavailable"])
+    .optional(),
+  view_column_lineage_status: z
     .enum(["complete", "partial", "unavailable"])
     .optional()
 });

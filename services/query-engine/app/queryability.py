@@ -27,7 +27,7 @@ from app.models import (
 
 
 QUERYABILITY_GRAPH_CONTRACT_VERSION = "queryability_graph.v1"
-DEFAULT_BUILDER_VERSION = "1.0.0"
+DEFAULT_BUILDER_VERSION = "1.1.0"
 DEFAULT_POLICY_VERSION = "1.0.0"
 MAX_PATH_RESULTS = 100
 MAX_PATH_SEARCH_STATES = 100_000
@@ -354,6 +354,14 @@ def _build_node(
             snapshot=snapshot,
             table=table,
         )
+    view_column_lineage_status = (
+        _view_column_lineage_status(
+            table=table,
+            view_lineage_status=view_lineage_status,
+        )
+        if table.table_type == "view"
+        else None
+    )
 
     return QueryabilityNode(
         node_key=node_key,
@@ -372,6 +380,7 @@ def _build_node(
             else None
         ),
         view_lineage_status=view_lineage_status,
+        view_column_lineage_status=view_column_lineage_status,
     )
 
 
@@ -810,6 +819,30 @@ def _view_lineage_status(
     return "complete"
 
 
+def _view_column_lineage_status(
+    *,
+    table: SchemaTableMetadata,
+    view_lineage_status: Literal["complete", "partial", "unavailable"] | None,
+) -> Literal["complete", "partial", "unavailable"]:
+    if view_lineage_status == "unavailable":
+        return "unavailable"
+    column_dependencies = [
+        dependency
+        for dependency in table.view_lineage
+        if dependency.referencing_column is not None
+    ]
+    if not column_dependencies:
+        return "unavailable"
+    if view_lineage_status == "partial" or any(
+        dependency.referenced_column_name is None
+        or dependency.is_incomplete is True
+        or dependency.is_ambiguous is True
+        for dependency in column_dependencies
+    ):
+        return "partial"
+    return "complete"
+
+
 def _lineage_is_partial(
     *,
     snapshot: SchemaIntrospectionResult,
@@ -922,6 +955,7 @@ def _graph_input_payload(
                 "queryability_status": node.queryability_status,
                 "bridge_candidate": node.bridge_candidate,
                 "view_lineage_status": node.view_lineage_status,
+                "view_column_lineage_status": node.view_column_lineage_status,
                 "candidate_keys": [
                     key.model_dump(mode="json") for key in node.candidate_keys
                 ],

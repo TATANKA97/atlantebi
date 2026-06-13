@@ -960,6 +960,16 @@ Stati:
 * `partial`: routing utilizzabile con metadata non bloccanti incompleti;
 * `blocked`: graph non utilizzabile e import non persistito.
 
+La coverage lineage distingue:
+
+* object lineage, rappresentata da `view_depends_on`;
+* output-column lineage, rappresentata da `view_column_derives_from`.
+
+`view_column_derives_from` viene creato solo quando SQL Server restituisce un
+mapping deterministico tra colonna della view e colonna sorgente. Se sono
+disponibili solo dipendenze oggetto, la column lineage e' `unavailable`; non
+viene inferita analizzando manualmente il testo SQL.
+
 Hash:
 
 * `schema_hash`: DDL stabile osservabile;

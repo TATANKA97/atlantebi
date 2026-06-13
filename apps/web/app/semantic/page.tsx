@@ -17,6 +17,12 @@ import { PathInspector } from "./path-inspector";
 import { coverageWarningsLabel } from "../../lib/semantic/summary";
 import { createSupabaseAdminClient } from "../../lib/supabase/admin";
 import {
+  foreignKeyEdgeDetail,
+  graphLineageCounts,
+  schemaColumnFlags,
+  viewLineageLabel
+} from "../../lib/queryability/presentation";
+import {
   snapshotIdForGraphDisplay,
   snapshotIdForGraphRebuild
 } from "../../lib/queryability/snapshot-selection";
@@ -386,6 +392,7 @@ function GraphMetrics({ graph }: { graph: QueryabilityGraphArtifact }) {
   const fkEdges = graph.edges.filter(
     (edge): edge is QueryabilityForeignKeyEdge => edge.edge_type === "fk_join"
   );
+  const lineageCounts = graphLineageCounts(graph);
   const metrics = [
     ["Nodi", graph.nodes.length],
     ["Colonne", graph.nodes.reduce((count, node) => count + node.columns.length, 0)],
@@ -395,7 +402,8 @@ function GraphMetrics({ graph }: { graph: QueryabilityGraphArtifact }) {
     ["FK disabled", fkEdges.filter((edge) => edge.enforcement_status === "disabled").length],
     ["Self reference", fkEdges.filter((edge) => edge.self_reference).length],
     ["Bridge candidate", graph.nodes.filter((node) => node.bridge_candidate).length],
-    ["Lineage edge", graph.edges.filter((edge) => edge.edge_type !== "fk_join").length]
+    ["Object lineage edge", lineageCounts.objectEdges],
+    ["Column lineage edge", lineageCounts.columnEdges]
   ] as const;
 
   return (
@@ -458,7 +466,7 @@ function NodeTable({ graph }: { graph: QueryabilityGraphArtifact }) {
                   {[
                     node.bridge_candidate ? "bridge candidate" : null,
                     node.view_lineage_status
-                      ? `lineage ${node.view_lineage_status}`
+                      ? `lineage ${viewLineageLabel(node)}`
                       : null
                   ]
                     .filter(Boolean)
@@ -493,7 +501,15 @@ function EdgeTable({ graph }: { graph: QueryabilityGraphArtifact }) {
         <table className="w-full border-collapse text-left text-xs">
           <thead className="text-[color:var(--muted)]">
             <tr>
-              {["Tipo", "Da", "A", "Cardinalità", "Routing", "Stato"].map(
+              {[
+                "Tipo",
+                "Da",
+                "A",
+                "Dettaglio",
+                "Cardinalità",
+                "Routing",
+                "Stato"
+              ].map(
                 (label) => (
                   <th
                     className="border-b border-[color:var(--border)] py-2 pr-4 font-medium"
@@ -518,6 +534,18 @@ function EdgeTable({ graph }: { graph: QueryabilityGraphArtifact }) {
                   {edge.to_node_key
                     ? nodes.get(edge.to_node_key) ?? edge.to_node_key
                     : "external/unresolved"}
+                </td>
+                <td className="border-b border-[color:var(--border)] py-2 pr-4">
+                  {edge.edge_type === "fk_join"
+                    ? foreignKeyEdgeDetail(
+                        edge,
+                        edge.to_node_key
+                          ? nodes.get(edge.to_node_key) ?? edge.to_node_key
+                          : "external/unresolved"
+                      )
+                    : edge.edge_type === "view_column_derives_from"
+                      ? edge.referenced_column_name ?? "unresolved column"
+                      : edge.referenced_object_name ?? "unresolved object"}
                 </td>
                 <td className="border-b border-[color:var(--border)] py-2 pr-4">
                   {edge.edge_type === "fk_join"
@@ -715,9 +743,7 @@ function SnapshotObjects({
                         table.view_definition_available
                           ? "available"
                           : "not available"
-                      } - lineage ${
-                        graphNode?.view_lineage_status ?? "unavailable"
-                      }`
+                      } - lineage ${viewLineageLabel(graphNode)}`
                     : ""}
                 </p>
               </div>
@@ -759,7 +785,12 @@ function SnapshotObjects({
                             {schemaColumnTypeLabel(column)}
                           </td>
                           <td className="border-b border-[color:var(--border)] py-2 pr-4">
-                            {schemaColumnFlags(column).join(" ") || "-"}
+                            {schemaColumnFlags({
+                              column,
+                              primaryKeyColumnCount:
+                                table.primary_key?.columns.length ?? 0,
+                              tableType: table.table_type
+                            }).join(" ") || "-"}
                           </td>
                           <td className="border-b border-[color:var(--border)] py-2 pr-4">
                             {column.technical_role}
@@ -813,19 +844,6 @@ function schemaColumnTypeLabel(column: SchemaColumnMetadata) {
     return `${nativeType} (${column.declared_type})`;
   }
   return nativeType;
-}
-
-function schemaColumnFlags(column: SchemaColumnMetadata) {
-  return [
-    column.is_primary_key ? "PK" : null,
-    column.is_foreign_key ? "FK" : null,
-    column.is_unique_member ? "unique" : null,
-    column.is_identity ? "identity" : null,
-    column.is_computed ? "computed" : null,
-    column.default_value !== undefined ? "default" : null,
-    column.is_nullable ? "nullable" : "not null",
-    column.collation ? `collation ${column.collation}` : null
-  ].filter((value): value is string => value !== null);
 }
 
 function Stat({ label, value }: { label: string; value: string }) {
