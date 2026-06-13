@@ -358,11 +358,29 @@ select is(
 );
 
 update queryability_fixture
-set graph = jsonb_set(
-  graph,
-  '{schema_snapshot_id}',
-  '"40000000-0000-4000-8000-000000000021"'
-);
+set snapshot = jsonb_set(
+      jsonb_set(
+        snapshot,
+        '{introspected_at}',
+        '"2026-06-12T08:05:00Z"'
+      ),
+      '{duration_ms}',
+      '25'
+    ),
+    summary = jsonb_set(
+      jsonb_set(
+        summary,
+        '{captured_at}',
+        '"2026-06-12T08:05:00Z"'
+      ),
+      '{duration_ms}',
+      '25'
+    ),
+    graph = jsonb_set(
+      graph,
+      '{schema_snapshot_id}',
+      '"40000000-0000-4000-8000-000000000021"'
+    );
 
 create temporary table second_import as
 select *
@@ -377,30 +395,47 @@ from public.persist_queryability_graph_import(
   (select graph from queryability_fixture),
   1,
   0,
-  '2026-06-12T08:00:00Z'
+  '2026-06-12T08:05:00Z'
 );
 
 select is(
   (select deduplicated from second_import),
   true,
-  'same derivation key and graph hash are deduplicated'
+  'repeat introspection with unstable metadata is deduplicated'
 );
 
 select is(
   (select schema_snapshot_id from second_import),
   (select schema_snapshot_id from first_import),
-  'deduplication returns the original snapshot'
+  'snapshot hash deduplication returns the immutable original snapshot'
 );
 
 update queryability_fixture
 set snapshot = jsonb_set(
       jsonb_set(
-        snapshot,
+        jsonb_set(
+          jsonb_set(
+            snapshot,
+            '{introspected_at}',
+            '"2026-06-12T08:00:00Z"'
+          ),
+          '{duration_ms}',
+          '10'
+        ),
         '{snapshot_hash}',
         to_jsonb(repeat('c', 64))
       ),
       '{tables,0,row_count_estimate}',
       '42'
+    ),
+    summary = jsonb_set(
+      jsonb_set(
+        summary,
+        '{captured_at}',
+        '"2026-06-12T08:00:00Z"'
+      ),
+      '{duration_ms}',
+      '10'
     ),
     graph = jsonb_set(
       jsonb_set(
