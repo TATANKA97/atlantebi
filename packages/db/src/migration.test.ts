@@ -40,6 +40,13 @@ const queryabilityGraphDerivationsMigration = readFileSync(
   ),
   "utf8"
 );
+const queryabilityGraphColumnLineageMigration = readFileSync(
+  resolve(
+    migrationsDirectory,
+    "20260613002145_add_view_column_lineage_status.sql"
+  ),
+  "utf8"
+);
 const purgeAdventureWorksPlanScript = readFileSync(
   resolve(
     import.meta.dirname,
@@ -516,6 +523,18 @@ describe("Supabase metadata migration", () => {
     );
     expect(concurrentSchemaImportsFixture).not.toContain(
       "public.persist_technical_schema_import("
+    );
+  });
+
+  it("projects view column lineage coverage from immutable node payloads", () => {
+    expect(queryabilityGraphColumnLineageMigration).toContain(
+      "add column view_column_lineage_status text"
+    );
+    expect(queryabilityGraphColumnLineageMigration).toContain(
+      "generated always as (payload->>'view_column_lineage_status') stored"
+    );
+    expect(queryabilityGraphColumnLineageMigration).toContain(
+      "view_column_lineage_status in ('complete', 'partial', 'unavailable')"
     );
   });
 

@@ -121,7 +121,8 @@
         }
       ],
       "view_definition_available": true,
-      "view_lineage_status": "partial"
+      "view_lineage_status": "partial",
+      "view_column_lineage_status": "complete"
     }
   ],
   "edges": [

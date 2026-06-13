@@ -37,7 +37,8 @@ describe("technical schema summary", () => {
             is_computed: false,
             is_primary_key: false,
             is_foreign_key: false,
-            is_unique_member: false
+            is_single_column_unique: false,
+            is_composite_unique_member: false
           },
           {
             name: "EmailAddress",
@@ -50,7 +51,8 @@ describe("technical schema summary", () => {
             is_computed: false,
             is_primary_key: false,
             is_foreign_key: false,
-            is_unique_member: false
+            is_single_column_unique: false,
+            is_composite_unique_member: false
           },
           {
             name: "PasswordHash",
@@ -63,7 +65,8 @@ describe("technical schema summary", () => {
             is_computed: false,
             is_primary_key: false,
             is_foreign_key: false,
-            is_unique_member: false
+            is_single_column_unique: false,
+            is_composite_unique_member: false
           }
         ],
         is_system_object: false,

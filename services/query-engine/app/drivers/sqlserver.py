@@ -987,15 +987,47 @@ def _build_tables(
         for foreign_key in foreign_keys
         for column in foreign_key.from_columns
     }
-    unique_columns = {
-        (unique.schema_name, unique.table_name, column.lower())
+    unique_constraints_by_size = [
+        (unique, len(unique.columns))
         for unique in unique_constraints
-        for column in unique.columns
-    }
-    unique_columns.update(
-        (index.schema_name, index.table_name, column.name.lower())
+    ]
+    eligible_unique_indexes = [
+        index
         for index in indexes
         if index.is_unique
+        and not index.is_primary_key
+        and not index.is_disabled
+        and index.filter_definition is None
+        and index.key_columns
+    ]
+    single_unique_columns = {
+        (unique.schema_name, unique.table_name, column.lower())
+        for unique, size in unique_constraints_by_size
+        if size == 1
+        for column in unique.columns
+    }
+    single_unique_columns.update(
+        (index.schema_name, index.table_name, column.name.lower())
+        for index in eligible_unique_indexes
+        if len(index.key_columns) == 1
+        for column in index.key_columns
+    )
+    composite_unique_columns = {
+        (schema, table, column.lower())
+        for (schema, table), primary_key in primary_keys_by_table.items()
+        if len(primary_key.columns) > 1
+        for column in primary_key.columns
+    }
+    composite_unique_columns.update(
+        (unique.schema_name, unique.table_name, column.lower())
+        for unique, size in unique_constraints_by_size
+        if size > 1
+        for column in unique.columns
+    )
+    composite_unique_columns.update(
+        (index.schema_name, index.table_name, column.name.lower())
+        for index in eligible_unique_indexes
+        if len(index.key_columns) > 1
         for column in index.key_columns
     )
 
@@ -1089,8 +1121,18 @@ def _build_tables(
                 comment=_optional_string(row[19]),
                 is_primary_key=is_primary_key,
                 is_foreign_key=is_foreign_key,
-                is_unique_member=(table_schema, table_name, column_name.lower())
-                in unique_columns,
+                is_single_column_unique=(
+                    table_schema,
+                    table_name,
+                    column_name.lower(),
+                )
+                in single_unique_columns,
+                is_composite_unique_member=(
+                    table_schema,
+                    table_name,
+                    column_name.lower(),
+                )
+                in composite_unique_columns,
             )
         )
 

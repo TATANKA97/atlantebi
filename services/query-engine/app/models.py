@@ -144,7 +144,8 @@ class SchemaColumnMetadata(StrictModel):
     computed_expression: str | None = Field(default=None, min_length=1)
     is_primary_key: bool = False
     is_foreign_key: bool = False
-    is_unique_member: bool = False
+    is_single_column_unique: bool = False
+    is_composite_unique_member: bool = False
     comment: str | None = Field(default=None, min_length=1)
 
 
@@ -416,6 +417,9 @@ class QueryabilityNode(StrictModel):
     columns: list[QueryabilityColumn] = Field(max_length=50_000)
     view_definition_available: bool | None = None
     view_lineage_status: Literal["complete", "partial", "unavailable"] | None = None
+    view_column_lineage_status: (
+        Literal["complete", "partial", "unavailable"] | None
+    ) = None
 
 
 class QueryabilityColumnPair(StrictModel):
