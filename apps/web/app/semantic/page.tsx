@@ -1,6 +1,5 @@
 import Link from "next/link";
 import {
-  QueryabilityGraphArtifactSchema,
   SchemaImportSummarySchema,
   SchemaIntrospectionResponseSchema,
   type QueryabilityForeignKeyEdge,
@@ -22,6 +21,10 @@ import {
   schemaColumnFlags,
   viewLineageLabel
 } from "../../lib/queryability/presentation";
+import {
+  parsePersistedQueryabilityGraph,
+  parsePersistedTechnicalSnapshot
+} from "../../lib/queryability/persisted-artifacts";
 import {
   snapshotIdForGraphDisplay,
   snapshotIdForGraphRebuild
@@ -82,7 +85,9 @@ const MESSAGE_COPY: Record<string, string> = {
   queryability_rebuild_save_failed: "Queryability Graph rigenerato ma non salvato.",
   queryability_graph_not_found: "Queryability Graph richiesto non trovato.",
   schema_import_failed: "Import schema fallito.",
-  schema_snapshot_not_found: "Snapshot tecnico non trovato."
+  schema_snapshot_not_found: "Snapshot tecnico non trovato.",
+  stored_artifact_incompatible:
+    "Snapshot o Queryability Graph salvato con un contract precedente: artefatto ignorato. Reimporta lo schema."
 };
 
 export const dynamic = "force-dynamic";
@@ -150,9 +155,9 @@ export default async function QueryabilityPage({
   const selectedGraphRow =
     (selectedGraphResult.data as SelectedGraphVersionRow | null) ?? null;
   const selectedGraph = selectedGraphRow
-    ? QueryabilityGraphArtifactSchema.parse(selectedGraphRow.graph)
+    ? parsePersistedQueryabilityGraph(selectedGraphRow.graph)
     : null;
-  const snapshot = selectedGraphRow
+  const snapshotResult = selectedGraph && selectedGraphRow
     ? await readSnapshotSummary({
         admin,
         connectionId: selectedGraphRow.connection_id,
@@ -165,8 +170,16 @@ export default async function QueryabilityPage({
         tenantId: context.tenantId
       })
     : null;
+  const snapshot =
+    snapshotResult?.status === "available" ? snapshotResult.data : null;
+  const storedArtifactIncompatible =
+    (selectedGraphRow !== null && selectedGraph === null) ||
+    snapshotResult?.status === "incompatible";
   const message =
     (params.message ? MESSAGE_COPY[params.message] : undefined) ??
+    (storedArtifactIncompatible
+      ? MESSAGE_COPY.stored_artifact_incompatible
+      : undefined) ??
     (params.graph && !selectedGraphRow
       ? MESSAGE_COPY.queryability_graph_not_found
       : undefined);
@@ -895,9 +908,17 @@ async function readSnapshotSummary({
   if (!derivation) {
     return null;
   }
+  const summary = SchemaImportSummarySchema.safeParse(data.summary);
+  const snapshot = parsePersistedTechnicalSnapshot(data.snapshot);
+  if (!summary.success || !snapshot) {
+    return { status: "incompatible" } as const;
+  }
   return {
-    id: data.id as string,
-    summary: SchemaImportSummarySchema.parse(data.summary),
-    snapshot: SchemaIntrospectionResponseSchema.parse(data.snapshot)
-  } satisfies SnapshotSummaryRow;
+    status: "available",
+    data: {
+      id: data.id as string,
+      summary: summary.data,
+      snapshot
+    } satisfies SnapshotSummaryRow
+  } as const;
 }
