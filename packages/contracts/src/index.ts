@@ -1344,6 +1344,229 @@ export type SemanticGenerationResult = z.infer<
   typeof SemanticGenerationResultSchema
 >;
 
+export const NorthStarValueTypeSchema = z.enum([
+  "currency",
+  "number",
+  "percentage",
+  "count"
+]);
+export type NorthStarValueType = z.infer<typeof NorthStarValueTypeSchema>;
+
+export const NorthStarPeriodTypeSchema = z.enum([
+  "day",
+  "week",
+  "month",
+  "quarter",
+  "year",
+  "rolling_12_months",
+  "custom"
+]);
+export type NorthStarPeriodType = z.infer<typeof NorthStarPeriodTypeSchema>;
+
+export const NorthStarToleranceModeSchema = z.enum([
+  "percentage",
+  "absolute",
+  "range"
+]);
+export type NorthStarToleranceMode = z.infer<
+  typeof NorthStarToleranceModeSchema
+>;
+
+export const NorthStarSeveritySchema = z.enum([
+  "low",
+  "medium",
+  "high",
+  "critical"
+]);
+export type NorthStarSeverity = z.infer<typeof NorthStarSeveritySchema>;
+
+export const NorthStarBenchmarkSchema = z
+  .strictObject({
+    benchmark_key: z.string().uuid(),
+    tenant_id: z.string().uuid(),
+    connection_id: z.string().uuid(),
+    dashboard_id: z.string().uuid().nullable(),
+    semantic_version_id: z.string().uuid().nullable(),
+    metric_key: z.string().uuid().nullable(),
+    name: z.string().min(1).max(255),
+    description: z.string().max(2_000).nullable(),
+    expected_value: z.number().finite(),
+    value_type: NorthStarValueTypeSchema,
+    currency: z.string().regex(/^[A-Z]{3}$/).nullable(),
+    period_type: NorthStarPeriodTypeSchema,
+    period_start: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .nullable(),
+    period_end: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .nullable(),
+    tolerance_mode: NorthStarToleranceModeSchema,
+    tolerance_percentage: z.number().finite().positive().nullable(),
+    min_value: z.number().finite().nullable(),
+    max_value: z.number().finite().nullable(),
+    severity: NorthStarSeveritySchema,
+    enabled: z.boolean(),
+    created_by: z.string().uuid(),
+    updated_by: z.string().uuid(),
+    created_at: Rfc3339DateTimeSchema,
+    updated_at: Rfc3339DateTimeSchema
+  })
+  .superRefine((benchmark, context) => {
+    if (benchmark.value_type === "currency" && !benchmark.currency) {
+      context.addIssue({
+        code: "custom",
+        path: ["currency"],
+        message: "currency benchmarks require an ISO currency code"
+      });
+    }
+    if (benchmark.period_type === "custom") {
+      if (!benchmark.period_start || !benchmark.period_end) {
+        context.addIssue({
+          code: "custom",
+          path: ["period_start"],
+          message: "custom periods require start and end dates"
+        });
+      } else if (benchmark.period_start > benchmark.period_end) {
+        context.addIssue({
+          code: "custom",
+          path: ["period_end"],
+          message: "period_end must be on or after period_start"
+        });
+      }
+    }
+    if (benchmark.tolerance_mode === "percentage") {
+      if (
+        benchmark.tolerance_percentage === null ||
+        benchmark.min_value !== null ||
+        benchmark.max_value !== null
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["tolerance_percentage"],
+          message:
+            "percentage tolerance requires tolerance_percentage and no range"
+        });
+      }
+    } else if (
+      benchmark.tolerance_percentage !== null ||
+      benchmark.min_value === null ||
+      benchmark.max_value === null ||
+      benchmark.min_value > benchmark.max_value
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["min_value"],
+        message:
+          "absolute/range tolerance requires a valid min_value and max_value"
+      });
+    }
+    if (
+      (benchmark.metric_key === null) !==
+      (benchmark.semantic_version_id === null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["metric_key"],
+        message: "metric benchmarks require semantic_version_id and metric_key"
+      });
+    }
+  });
+export type NorthStarBenchmark = z.infer<typeof NorthStarBenchmarkSchema>;
+
+export const NorthStarBenchmarkInputSchema = z
+  .strictObject({
+    connection_id: z.string().uuid(),
+    dashboard_id: z.string().uuid().nullable().optional(),
+    semantic_version_id: z.string().uuid().nullable().optional(),
+    metric_key: z.string().uuid().nullable().optional(),
+    name: z.string().trim().min(1).max(255),
+    description: z.string().trim().max(2_000).nullable().optional(),
+    expected_value: z.number().finite(),
+    value_type: NorthStarValueTypeSchema,
+    currency: z.string().trim().regex(/^[A-Z]{3}$/).nullable().optional(),
+    period_type: NorthStarPeriodTypeSchema,
+    period_start: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .nullable()
+      .optional(),
+    period_end: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .nullable()
+      .optional(),
+    tolerance_mode: NorthStarToleranceModeSchema,
+    tolerance_percentage: z.number().finite().positive().nullable().optional(),
+    min_value: z.number().finite().nullable().optional(),
+    max_value: z.number().finite().nullable().optional(),
+    severity: NorthStarSeveritySchema,
+    enabled: z.boolean().optional()
+  })
+  .superRefine((input, context) => {
+    const metricKey = input.metric_key ?? null;
+    const semanticVersionId = input.semantic_version_id ?? null;
+    if ((metricKey === null) !== (semanticVersionId === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["metric_key"],
+        message: "metric benchmarks require semantic_version_id and metric_key"
+      });
+    }
+    if (input.value_type === "currency" && !input.currency) {
+      context.addIssue({
+        code: "custom",
+        path: ["currency"],
+        message: "currency benchmarks require an ISO currency code"
+      });
+    }
+    if (input.period_type === "custom") {
+      if (!input.period_start || !input.period_end) {
+        context.addIssue({
+          code: "custom",
+          path: ["period_start"],
+          message: "custom periods require start and end dates"
+        });
+      } else if (input.period_start > input.period_end) {
+        context.addIssue({
+          code: "custom",
+          path: ["period_end"],
+          message: "period_end must be on or after period_start"
+        });
+      }
+    }
+    if (input.tolerance_mode === "percentage") {
+      if (
+        input.tolerance_percentage == null ||
+        input.min_value != null ||
+        input.max_value != null
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["tolerance_percentage"],
+          message:
+            "percentage tolerance requires tolerance_percentage and no range"
+        });
+      }
+    } else if (
+      input.tolerance_percentage != null ||
+      input.min_value == null ||
+      input.max_value == null ||
+      input.min_value > input.max_value
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["min_value"],
+        message:
+          "absolute/range tolerance requires a valid min_value and max_value"
+      });
+    }
+  });
+export type NorthStarBenchmarkInput = z.infer<
+  typeof NorthStarBenchmarkInputSchema
+>;
+
 export const CHART_TYPE_VALUES = [
   "table",
   "kpi_number",
@@ -1421,7 +1644,7 @@ export const VerificationCheckSchema = z.strictObject({
     "join_amplification",
     "total_vs_breakdown",
     "header_detail_reconciliation",
-    "business_anchor_plausibility",
+    "north_star_plausibility",
     "metric_consistency",
     "historical_plausibility",
     "privacy"

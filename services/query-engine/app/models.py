@@ -1462,7 +1462,7 @@ class VerificationCheck(StrictModel):
         "join_amplification",
         "total_vs_breakdown",
         "header_detail_reconciliation",
-        "business_anchor_plausibility",
+        "north_star_plausibility",
         "metric_consistency",
         "historical_plausibility",
         "privacy",
