@@ -2,9 +2,10 @@
 
 Atlante BI is an AI-powered BI platform for Italian SMBs. This repository starts with the product foundation only: application metadata, strict shared contracts, a technical web shell, and a query-engine boundary.
 
-The current technical foundation includes SQL Server Technical Snapshot V1 and
-Queryability Graph V1. It does not yet include semantic AI, query execution,
-chart rendering, or dashboard generation.
+The current foundation includes SQL Server Technical Snapshot V1,
+Queryability Graph V1, and the versioned AI-first Semantic Layer workspace.
+It does not yet include query compilation/execution, chart rendering, or
+dashboard generation.
 
 ## Architecture
 
@@ -84,7 +85,7 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<supabase publishable key>
 SUPABASE_SECRET_KEY=<server-only Supabase secret key>
 GCP_PROJECT_ID=business-intelligence-495312
 QUERY_ENGINE_URL=http://127.0.0.1:8080
-QUERY_ENGINE_AUTH_MODE=
+QUERY_ENGINE_AUTH_MODE=static_token
 QUERY_ENGINE_API_TOKEN=<same non-empty server-only token in web and query-engine>
 ```
 
@@ -98,6 +99,8 @@ QUERY_ENGINE_API_TOKEN=
 
 The deployed query-engine uses `QUERY_ENGINE_AUTH_MODE=cloud_run_iam`. Protected
 endpoints fail closed unless an internal token or that explicit IAM mode is configured.
+The web client accepts only `google_id_token`, `static_token`, or
+`local_insecure`; the last option is restricted to loopback URLs outside production.
 
 When the query-engine runs in Cloud Run with the GCP proxy VM, connection
 metadata should use the proxy internal IP `10.128.0.2` rather than the proxy
@@ -121,7 +124,25 @@ environment variables.
 - Query engine schema introspection: `POST /schema/introspect`
 - Queryability graph compile: `POST /queryability/compile`
 - Queryability path search: `POST /queryability/paths`
+- Semantic seed: `POST /semantic/seed`
+- Semantic AI discovery: `POST /semantic/generate`
+- Semantic review and revalidation: `POST /semantic/review`
+- Semantic rebase: `POST /semantic/rebase`
 - Query engine run boundary: `POST /query/run` validates the request contract and returns `501` until real execution is implemented.
+
+## Semantic discovery environment
+
+The query-engine loads the OpenAI key only at runtime:
+
+```bash
+OPENAI_API_KEY=<server-only OpenAI API key>
+SEMANTIC_DISCOVERY_MODEL=gpt-5.5
+```
+
+`OPENAI_API_KEY` must be provided to Cloud Run through Secret Manager before
+enabling live semantic generation. It must not be committed, logged, returned
+to the browser, or stored in Supabase. Tests use an injected fake gateway and
+do not require network access or an API key.
 
 ## Sources Checked
 

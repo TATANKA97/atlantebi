@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from time import perf_counter
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
+from openai import AsyncOpenAI, OpenAIError
 
 from app.drivers.base import (
     ConnectionMetadata,
@@ -27,16 +28,35 @@ from app.models import (
     SchemaIntrospectionRequest,
     SchemaIntrospectionResponse,
     SemanticLayer,
+    SemanticGenerationRequest,
+    SemanticGenerationResult,
     SemanticRebaseRequest,
     SemanticRebaseResult,
+    SemanticReviewRequest,
     SemanticSeedRequest,
+    SemanticValidationRequest,
 )
 from app.queryability import build_queryability_graph, find_queryability_paths
-from app.semantic import build_semantic_seed, rebase_semantic_layer
+from app.semantic import (
+    build_semantic_seed,
+    rebase_semantic_layer,
+    review_semantic_layer,
+    validate_semantic_layer,
+)
+from app.semantic_discovery import (
+    DEFAULT_SEMANTIC_DISCOVERY_MODEL,
+    OpenAISemanticDiscoveryGateway,
+    SemanticDiscoveryError,
+    SemanticDiscoveryInputTooLarge,
+    SemanticDiscoveryRefused,
+    SemanticProposalInvalid,
+    generate_semantic_layer,
+)
 from app.secrets import GcpSecretResolver, SecretResolutionError
 
 app = FastAPI(title="Atlante BI Query Engine", version="0.1.0")
 app.state.secret_resolver = GcpSecretResolver()
+app.state.semantic_discovery_gateway = None
 MAX_SCHEMA_SNAPSHOT_BYTES = 32 * 1024 * 1024
 
 
@@ -293,6 +313,75 @@ async def semantic_seed(
 
 
 @app.post(
+    "/semantic/generate",
+    response_model=SemanticGenerationResult,
+)
+async def semantic_generate(
+    request: SemanticGenerationRequest,
+    _: None = Depends(require_internal_auth),
+) -> SemanticGenerationResult:
+    try:
+        gateway = _get_semantic_discovery_gateway()
+        return await generate_semantic_layer(
+            graph=request.graph,
+            seed=request.seed,
+            gateway=gateway,
+        )
+    except SemanticDiscoveryInputTooLarge as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=str(exc),
+        ) from exc
+    except (SemanticDiscoveryRefused, SemanticProposalInvalid) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    except (SemanticDiscoveryError, OpenAIError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Semantic discovery provider request failed.",
+        ) from exc
+
+
+@app.post(
+    "/semantic/review",
+    response_model=SemanticLayer,
+    response_model_exclude_none=True,
+)
+async def semantic_review(
+    request: SemanticReviewRequest,
+    _: None = Depends(require_internal_auth),
+) -> SemanticLayer:
+    try:
+        return review_semantic_layer(
+            source_layer=request.source_layer,
+            graph=request.graph,
+            patch=request.patch,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+
+
+@app.post(
+    "/semantic/validate",
+    response_model=SemanticLayer,
+    response_model_exclude_none=True,
+)
+async def semantic_validate(
+    request: SemanticValidationRequest,
+    _: None = Depends(require_internal_auth),
+) -> SemanticLayer:
+    return validate_semantic_layer(
+        layer=request.semantic_layer,
+        graph=request.graph,
+    )
+
+
+@app.post(
     "/semantic/rebase",
     response_model=SemanticRebaseResult,
     response_model_exclude_none=True,
@@ -316,6 +405,29 @@ async def semantic_rebase(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(exc),
         ) from exc
+
+
+def _get_semantic_discovery_gateway() -> OpenAISemanticDiscoveryGateway:
+    gateway = app.state.semantic_discovery_gateway
+    if gateway is not None:
+        return gateway
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Semantic discovery provider is not configured.",
+        )
+
+    gateway = OpenAISemanticDiscoveryGateway(
+        client=AsyncOpenAI(api_key=api_key),
+        model_version=(
+            os.getenv("SEMANTIC_DISCOVERY_MODEL")
+            or DEFAULT_SEMANTIC_DISCOVERY_MODEL
+        ),
+    )
+    app.state.semantic_discovery_gateway = gateway
+    return gateway
 
 
 def _connection_test_error(

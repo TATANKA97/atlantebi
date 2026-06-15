@@ -291,18 +291,25 @@ async def generate_semantic_layer(
     generated_at: datetime | None = None,
 ) -> SemanticGenerationResult:
     timestamp = generated_at or datetime.now(UTC)
+    if seed.semantic_hash != compute_semantic_hash(seed):
+        raise SemanticProposalInvalid("Semantic seed hash is invalid.")
     discovery_input = build_semantic_discovery_input(graph)
     response = await gateway.generate(discovery_input)
     proposal = response.proposal
     if proposal.contract_version != SEMANTIC_AI_DRAFT_VERSION:
         raise SemanticProposalInvalid("Unsupported AI semantic draft version.")
 
-    compiled = compile_semantic_proposal(
-        graph=graph,
-        seed=seed,
-        proposal=proposal,
-        model_version=gateway.model_version,
-    )
+    try:
+        compiled = compile_semantic_proposal(
+            graph=graph,
+            seed=seed,
+            proposal=proposal,
+            model_version=gateway.model_version,
+        )
+    except ValueError as exc:
+        raise SemanticProposalInvalid(
+            "AI semantic proposal violates queryability graph constraints."
+        ) from exc
     validated = validate_semantic_layer(
         layer=compiled,
         graph=graph,

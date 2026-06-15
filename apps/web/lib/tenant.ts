@@ -122,3 +122,7 @@ export async function getActiveTenantContextForApi(
 export function canManageConnections(role: ActiveTenantContext["role"]) {
   return ["owner", "admin", "editor"].includes(role);
 }
+
+export function canManageSemanticLayer(role: ActiveTenantContext["role"]) {
+  return ["owner", "admin"].includes(role);
+}

@@ -698,6 +698,57 @@ def test_generation_result_wire_dump_keeps_required_nullable_fields() -> None:
     assert detail_metric["default_date_column_key"] is None
 
 
+def test_generation_rejects_tampered_seed_before_provider_call() -> None:
+    seed = semantic_seed().model_copy(
+        update={"semantic_hash": "f" * 64}
+    )
+    gateway = FakeGateway(proposal_from_fixture())
+
+    with pytest.raises(SemanticProposalInvalid, match="seed hash"):
+        asyncio.run(
+            generate_semantic_layer(
+                graph=adventureworks_graph(),
+                seed=seed,
+                gateway=gateway,
+                generated_at=GENERATED_AT,
+            )
+        )
+    assert gateway.received is None
+
+
+def test_generation_maps_disconnected_dimension_path_to_invalid_proposal() -> None:
+    proposal = proposal_from_fixture()
+    metrics = list(proposal.metrics)
+    metrics[0] = metrics[0].model_copy(
+        update={
+            "common_dimensions": [
+                AISemanticDimensionProposal(
+                    dimension_column_key=column_key(
+                        "ProductCategory",
+                        "ProductCategoryID",
+                    ),
+                    edge_path=[edge_key("FK_Detail_Product")],
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(
+        SemanticProposalInvalid,
+        match="queryability graph constraints",
+    ):
+        asyncio.run(
+            generate_semantic_layer(
+                graph=adventureworks_graph(),
+                seed=semantic_seed(),
+                gateway=FakeGateway(
+                    proposal.model_copy(update={"metrics": metrics})
+                ),
+                generated_at=GENERATED_AT,
+            )
+        )
+
+
 def test_openai_sdk_can_generate_strict_schema_for_ai_contract() -> None:
     from openai.lib._pydantic import to_strict_json_schema
 
