@@ -28,7 +28,11 @@ jobs:
           )" = "0"
           test "$(
             docker exec supabase_db_atlantebi psql -At -U postgres \
-              -c "select count(*) from public.semantic_versions where tenant_id = '20000000-0000-4000-8000-000000000003';"
+              -c "select to_regclass('public.semantic_versions') is null;"
+          )" = "t"
+          test "$(
+            docker exec supabase_db_atlantebi psql -At -U postgres \
+              -c "select count(*) from public.semantic_layer_versions where tenant_id = '20000000-0000-4000-8000-000000000003';"
           )" = "0"
           test "$(
             docker exec supabase_db_atlantebi psql -At -U postgres \
