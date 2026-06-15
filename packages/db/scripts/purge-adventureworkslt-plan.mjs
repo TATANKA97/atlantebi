@@ -168,7 +168,7 @@ async function main() {
 
   await scopedDelete("widgets");
   await scopedDelete("query_history");
-  await scopedDelete("semantic_versions");
+  await scopedDelete("semantic_layer_versions");
   await scopedDelete("schema_snapshots");
   await request(
     tablePath("audit_logs", [
@@ -182,7 +182,7 @@ async function main() {
   for (const table of [
     "widgets",
     "query_history",
-    "semantic_versions",
+    "semantic_layer_versions",
     "queryability_graph_versions",
     "schema_snapshots"
   ]) {

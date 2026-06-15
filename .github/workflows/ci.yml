@@ -58,6 +58,19 @@ jobs:
             docker exec supabase_db_atlantebi psql -At -U postgres \
               -c "select count(*) from public.queryability_graph_versions where connection_id = '30000000-0000-4000-8000-000000000002';"
           )" = "1"
+          docker exec supabase_db_atlantebi psql -At -U postgres \
+            -c "select public.hardening_test_concurrent_semantic_version();" > /tmp/semantic-1 &
+          first_semantic_pid=$!
+          docker exec supabase_db_atlantebi psql -At -U postgres \
+            -c "select public.hardening_test_concurrent_semantic_version();" > /tmp/semantic-2 &
+          second_semantic_pid=$!
+          wait "$first_semantic_pid"
+          wait "$second_semantic_pid"
+          test "$(cat /tmp/semantic-1 /tmp/semantic-2 | sort -n | tr '\n' ' ')" = "0 1 "
+          test "$(
+            docker exec supabase_db_atlantebi psql -At -U postgres \
+              -c "select count(*) from public.semantic_layer_versions where connection_id = '30000000-0000-4000-8000-000000000002';"
+          )" = "1"
       - if: always()
         run: npx -y supabase@2.104.0 stop --no-backup
 

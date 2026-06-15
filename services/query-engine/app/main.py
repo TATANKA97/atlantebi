@@ -26,8 +26,13 @@ from app.models import (
     QueryabilityPathResult,
     SchemaIntrospectionRequest,
     SchemaIntrospectionResponse,
+    SemanticLayer,
+    SemanticRebaseRequest,
+    SemanticRebaseResult,
+    SemanticSeedRequest,
 )
 from app.queryability import build_queryability_graph, find_queryability_paths
+from app.semantic import build_semantic_seed, rebase_semantic_layer
 from app.secrets import GcpSecretResolver, SecretResolutionError
 
 app = FastAPI(title="Atlante BI Query Engine", version="0.1.0")
@@ -266,6 +271,51 @@ async def queryability_paths(
         to_node_key=request.to_node_key,
         max_hops=request.max_hops,
     )
+
+
+@app.post(
+    "/semantic/seed",
+    response_model=SemanticLayer,
+    response_model_exclude_none=True,
+)
+async def semantic_seed(
+    request: SemanticSeedRequest,
+    _: None = Depends(require_internal_auth),
+) -> SemanticLayer:
+    return build_semantic_seed(
+        graph=request.graph,
+        semantic_version_id=str(request.semantic_version_id),
+        queryability_graph_version_id=str(
+            request.queryability_graph_version_id
+        ),
+        version=request.version,
+    )
+
+
+@app.post(
+    "/semantic/rebase",
+    response_model=SemanticRebaseResult,
+    response_model_exclude_none=True,
+)
+async def semantic_rebase(
+    request: SemanticRebaseRequest,
+    _: None = Depends(require_internal_auth),
+) -> SemanticRebaseResult:
+    try:
+        return rebase_semantic_layer(
+            source_layer=request.source_layer,
+            target_graph=request.target_graph,
+            semantic_version_id=str(request.semantic_version_id),
+            queryability_graph_version_id=str(
+                request.queryability_graph_version_id
+            ),
+            version=request.version,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
 
 
 def _connection_test_error(

@@ -350,7 +350,7 @@ select is(
 select is(
   (
     select count(*)::integer
-    from public.semantic_versions
+    from public.semantic_layer_versions
     where tenant_id = '20000000-0000-4000-8000-000000000020'
   ),
   0,

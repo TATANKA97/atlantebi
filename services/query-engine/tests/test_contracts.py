@@ -26,7 +26,7 @@ from app.models import (
     Engine,
     QueryRequest,
     QueryResponse,
-    Relationship,
+    SemanticRelationship,
     VerificationSummary,
 )
 from app.secrets import (
@@ -36,6 +36,16 @@ from app.secrets import (
     secret_binding_fingerprint,
     validate_secret_ref_for_connection,
 )
+from tests.shared_fixtures import contract_fixture_path
+
+
+SEMANTIC_FIXTURE_PATH = contract_fixture_path("semantic-layer-v1.json")
+
+
+def semantic_layer_fixture() -> dict:
+    if SEMANTIC_FIXTURE_PATH is None:
+        pytest.skip("Shared TypeScript contract fixtures are not in this image.")
+    return json.loads(SEMANTIC_FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(autouse=True)
@@ -502,42 +512,34 @@ def test_sqlserver_odbc_values_are_brace_escaped() -> None:
     assert "PWD={secret}};UID=attacker}" in connection_string
 
 
-def test_relationship_confidence_is_not_numeric() -> None:
-    relationship = Relationship(
-        id=UUID("55555555-5555-4555-8555-555555555555"),
-        from_table="SalesOrderHeader",
-        from_columns=["CustomerID"],
-        to_table="Customer",
-        to_columns=["CustomerID"],
-        cardinality="many_to_one",
-        semantic_status="confirmed",
-        source="database_fk",
+def test_semantic_relationship_requires_graph_stable_keys() -> None:
+    relationship = SemanticRelationship(
+        edge_key="a" * 64,
+        from_node_key="b" * 64,
+        to_node_key="c" * 64,
+        status="system_seeded",
+        enabled=True,
+        relationship_shape="many_to_one",
+        child_to_parent="exactly_one",
+        parent_to_child="zero_or_many",
+        nullable_fk=False,
+        self_reference=False,
     )
 
-    assert relationship.semantic_status == "confirmed"
+    assert relationship.status == "system_seeded"
 
     with pytest.raises(ValidationError):
-        Relationship(
-            id=UUID("55555555-5555-4555-8555-555555555555"),
-            from_table="SalesOrderHeader",
-            from_columns=["CustomerID"],
-            to_table="Customer",
-            to_columns=["CustomerID"],
-            cardinality="many_to_one",
-            semantic_status=0.91,
-            source="database_fk",
-        )
-
-    with pytest.raises(ValidationError):
-        Relationship(
-            id=UUID("55555555-5555-4555-8555-555555555555"),
-            from_table="SalesOrderHeader",
-            from_columns=[""],
-            to_table="Customer",
-            to_columns=["CustomerID"],
-            cardinality="many_to_one",
-            semantic_status="confirmed",
-            source="database_fk",
+        SemanticRelationship(
+            edge_key="FK_SalesOrder_Customer",
+            from_node_key="b" * 64,
+            to_node_key="c" * 64,
+            status="system_seeded",
+            enabled=True,
+            relationship_shape="many_to_one",
+            child_to_parent="exactly_one",
+            parent_to_child="zero_or_many",
+            nullable_fk=False,
+            self_reference=False,
         )
 
 
@@ -562,21 +564,11 @@ def test_verification_summary_keeps_skips_visible() -> None:
 def test_query_run_validates_contract_then_returns_not_implemented() -> None:
     client = TestClient(app)
     request = {
-        "tenant_id": "11111111-1111-4111-8111-111111111111",
-        "connection_id": "33333333-3333-4333-8333-333333333333",
+        "tenant_id": semantic_layer_fixture()["tenant_id"],
+        "connection_id": semantic_layer_fixture()["connection_id"],
         "user_id": "44444444-4444-4444-8444-444444444444",
         "question": "Fatturato 2025 per mese",
-        "semantic_layer": {
-            "tenant_id": "11111111-1111-4111-8111-111111111111",
-            "version_id": "22222222-2222-4222-8222-222222222222",
-            "version": 1,
-            "status": "active",
-            "engine": "sqlserver",
-            "tables": [],
-            "relationships": [],
-            "metrics": [],
-            "business_anchors": [],
-        },
+        "semantic_layer": semantic_layer_fixture(),
         "permissions": {
             "can_view_sql": False,
             "can_save_widget": True,
@@ -599,21 +591,11 @@ def test_query_run_validates_contract_then_returns_not_implemented() -> None:
 
 def test_query_request_rejects_coercion() -> None:
     request = {
-        "tenant_id": "11111111-1111-4111-8111-111111111111",
-        "connection_id": "33333333-3333-4333-8333-333333333333",
+        "tenant_id": semantic_layer_fixture()["tenant_id"],
+        "connection_id": semantic_layer_fixture()["connection_id"],
         "user_id": "44444444-4444-4444-8444-444444444444",
         "question": "Fatturato 2025 per mese",
-        "semantic_layer": {
-            "tenant_id": "11111111-1111-4111-8111-111111111111",
-            "version_id": "22222222-2222-4222-8222-222222222222",
-            "version": 1,
-            "status": "active",
-            "engine": "sqlserver",
-            "tables": [],
-            "relationships": [],
-            "metrics": [],
-            "business_anchors": [],
-        },
+        "semantic_layer": semantic_layer_fixture(),
         "permissions": {
             "can_view_sql": "false",
             "can_save_widget": True,
@@ -627,6 +609,68 @@ def test_query_request_rejects_coercion() -> None:
 
     with pytest.raises(ValidationError):
         QueryRequest.model_validate_json(json.dumps(request))
+
+
+def test_query_request_rejects_mismatched_or_unusable_semantic_layer() -> None:
+    request = {
+        "tenant_id": semantic_layer_fixture()["tenant_id"],
+        "connection_id": semantic_layer_fixture()["connection_id"],
+        "user_id": "44444444-4444-4444-8444-444444444444",
+        "question": "Fatturato 2025 per mese",
+        "semantic_layer": semantic_layer_fixture(),
+        "permissions": {
+            "can_view_sql": False,
+            "can_save_widget": True,
+        },
+        "execution": {
+            "mode": "plan_only",
+            "row_limit": 500,
+            "timeout_ms": 30_000,
+        },
+    }
+
+    QueryRequest.model_validate(request)
+
+    with pytest.raises(ValidationError):
+        QueryRequest.model_validate(
+            {
+                **request,
+                "connection_id": "33333333-3333-4333-8333-333333333333",
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        QueryRequest.model_validate(
+            {
+                **request,
+                "semantic_layer": {
+                    **request["semantic_layer"],
+                    "status": "draft",
+                },
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        QueryRequest.model_validate(
+            {
+                **request,
+                "semantic_layer": {
+                    **request["semantic_layer"],
+                    "revision": request["semantic_layer"]["revision"] + 1,
+                },
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        QueryRequest.model_validate(
+            {
+                **request,
+                "semantic_layer": {
+                    **request["semantic_layer"],
+                    "freshness": "stale",
+                },
+            }
+        )
 
 
 def test_query_response_omits_optional_none_fields_for_zod_compatibility() -> None:
