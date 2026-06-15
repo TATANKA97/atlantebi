@@ -2,7 +2,10 @@
 
 ## AI-Powered BI Platform per PMI italiane
 
-### Versione 1.0 — Next.js + Supabase + GCP
+### Versione 1.1 — Next.js + Supabase + GCP
+
+Aggiornato al 16 giugno 2026. Questo documento sostituisce le assunzioni
+manual-first e la generazione SQL libera presenti nelle revisioni precedenti.
 
 ---
 
@@ -22,7 +25,7 @@ Questa versione riparte da zero con scelte più solide.
 | Customer data warehouse       | Non previsto in V1                                                          |
 | Parquet / object storage push | Non previsto in V1                                                          |
 | Connessione DB clienti        | Pull live read-only via GCP                                                 |
-| Engines V1                    | SQL Server + MySQL                                                          |
+| Engines V1                    | SQL Server                                                                  |
 | Hosting                       | Google Cloud Platform                                                       |
 | Auth                          | Supabase Auth oppure Clerk, con preferenza Supabase Auth per ridurre vendor |
 | Metadata app                  | Supabase                                                                    |
@@ -30,7 +33,7 @@ Questa versione riparte da zero con scelte più solide.
 | AI runtime                    | Provider singolo configurabile, inizialmente Claude/OpenAI production model |
 | Sviluppo                      | GitHub + Codex + CI/CD                                                      |
 | Grafici                       | ECharts con compiler deterministico                                         |
-| Semantic layer                | Persistente, versionato, arricchito dall’AI ma validato dall’utente         |
+| Semantic layer                | AI-first, strutturato, versionato e validato deterministicamente            |
 | Verification                  | Proporzionale, deterministica, non ansiogena                                |
 | MCP runtime                   | Non previsto in V1                                                          |
 
@@ -52,11 +55,12 @@ Il sistema:
 
 1. capisce l’intento;
 2. chiede chiarimenti se la domanda è ambigua;
-3. genera SQL read-only;
-4. esegue la query sul DB cliente;
-5. verifica il risultato con query di controllo proporzionate;
-6. genera grafico/tabella/KPI;
-7. permette di salvare il risultato come widget in dashboard.
+3. risolve metriche, dimensioni e filtri su artifact semantici validati;
+4. compila SQL read-only tramite un Query Compiler deterministico;
+5. esegue la query sul DB cliente;
+6. verifica il risultato con controlli proporzionati;
+7. genera grafico/tabella/KPI;
+8. permette di salvare il risultato come widget in dashboard.
 
 Il prodotto non deve sembrare Power BI o Qlik. Deve essere più vicino a Claude, Superpower e Function Health: pulito, editoriale, chiaro, con pochi elementi ma ad alta qualità percepita.
 
@@ -67,6 +71,7 @@ Il prodotto non deve sembrare Power BI o Qlik. Deve essere più vicino a Claude,
 La versione precedente ha mostrato problemi strutturali:
 
 1. L’AI stava decidendo troppe cose insieme: SQL, grafico, formattazione, verifiche, confidence.
+   La stessa domanda poteva produrre query e risultati diversi.
 2. Il renderer grafici accettava spec fragili.
 3. Il verification engine era troppo ansioso: molte verifiche tecniche venivano interpretate come problemi reali sui dati.
 4. La confidence numerica generava falsi blocchi.
@@ -82,8 +87,22 @@ La versione precedente ha mostrato problemi strutturali:
 8. L’AI poteva aggiungere colonne non richieste, ad esempio TaxAmt/Freight/TotalDue quando l’utente chiedeva solo fatturato.
 9. La formattazione era globale e sbagliava colonne come “numero ordini” mostrandole in valuta.
 10. Le CTE e i controlli SQL generati avevano bug specifici di dialect.
+11. “Fatturato” non era una definizione stabile: poteva usare `SubTotal`,
+    `TotalDue` o combinazioni non richieste.
+12. Le metriche header potevano essere duplicate da join verso righe detail,
+    producendo risultati SQL-validi ma numericamente falsi.
+13. PII, sensitivity ed exclusion venivano trattati come un unico concetto.
+14. Mancava un controllo indipendente sull’ordine di grandezza del risultato.
 
-La nuova architettura corregge questi punti alla radice.
+La nuova architettura corregge questi punti separando:
+
+* AI interpretation e semantic proposal;
+* Semantic Validator deterministico;
+* Query Intent Resolver strutturato;
+* Query Compiler SQL Server deterministico;
+* Result Validator;
+* North Star Benchmarks;
+* Triangulation Engine.
 
 ---
 
@@ -118,13 +137,21 @@ L’utente fa una domanda, ottiene:
 
 ### 3.3 Semantic layer che migliora nel tempo
 
-Il sistema deve imparare il significato business del DB:
+Atlante deve proporre automaticamente una mappa business del DB:
 
 * quali tabelle sono utili;
 * quali colonne rappresentano fatturato, clienti, ordini, agenti, scadenze;
-* quali join sono corretti;
-* quali errori sono già stati incontrati;
-* quali metriche aziendali sono “stelle polari”.
+* quali metriche strutturate sono candidate;
+* quale grain e quali dimensioni sono sicuri per ogni metrica;
+* quali ambiguità richiedono chiarimento.
+
+Il Queryability Graph resta l’unica autorità per join, queryability e
+sensitivity. L’AI propone significato business, ma non può inventare join,
+ampliare l’accesso tecnico o scrivere SQL finale.
+
+Le North Star non sono metriche semantiche. Sono benchmark inseriti
+dall’utente per controllare l’ordine di grandezza dei risultati dopo
+l’esecuzione.
 
 ---
 
@@ -142,7 +169,9 @@ Non implementare in V1:
 * multi-provider AI avanzato;
 * forecast;
 * anomaly detection evoluta;
-* semantic layer completamente automatico senza revisione;
+* onboarding manuale obbligatorio del semantic layer;
+* SQL finale scritto liberamente dall’AI;
+* allocation di metriche header su dimensioni detail;
 * reportistica PDF avanzata;
 * mobile app;
 * React Native;
@@ -206,7 +235,7 @@ Queste cose potranno arrivare dopo, ma non ora.
 │                                                            │
 │  Python / FastAPI                                          │
 │  - SQL Server adapter                                      │
-│  - MySQL adapter                                           │
+│  - future engine adapters                                  │
 │  - schema introspection                                    │
 │  - SQL validation with sqlglot                             │
 │  - query execution                                         │
@@ -284,7 +313,6 @@ Angular non è sbagliato in assoluto, ma per questo prodotto aumenterebbe rigidi
 | Framework              | FastAPI                               |
 | SQL parsing/validation | sqlglot                               |
 | SQL Server driver      | Microsoft ODBC Driver 18 via pyodbc   |
-| MySQL driver           | mysql-connector-python oppure PyMySQL |
 | Dataframe leggero      | pandas solo dove utile                |
 | Deployment             | GCP Cloud Run                         |
 | Networking             | VPC Connector + Cloud NAT / VPN       |
@@ -310,7 +338,7 @@ Supabase salva dati applicativi, non il database cliente.
 * query history;
 * audit log;
 * memorie semantiche;
-* business anchors;
+* North Star benchmark;
 * eventuali cache aggregate dei widget.
 
 ### 8.2 Supabase non salva
@@ -433,19 +461,9 @@ Per introspection servono permessi di lettura su:
 
 ### 10.2 MySQL
 
-Accesso minimo consigliato:
-
-```sql
-GRANT SELECT, SHOW VIEW ON database_name.* TO 'atlante_bi_ro'@'%';
-```
-
-Per introspection servono:
-
-* `information_schema.tables`
-* `information_schema.columns`
-* `information_schema.key_column_usage`
-* `information_schema.referential_constraints`
-* `information_schema.statistics`
+MySQL è fuori dal perimetro V1 corrente. Il data model può riservare il valore
+engine, ma adapter, introspection, compiler e acceptance MySQL verranno
+specificati solo dopo il gate SQL Server end-to-end.
 
 ### 10.3 Nome database obbligatorio
 
@@ -472,11 +490,7 @@ Usare ODBC Driver 18 con:
 
 ### 11.3 MySQL
 
-Usare TLS con:
-
-* `ssl_mode=VERIFY_IDENTITY` quando possibile;
-* CA certificate configurabile;
-* fallback a `REQUIRED` solo con warning esplicito.
+Requisiti TLS da definire insieme alla futura milestone MySQL.
 
 ### 11.4 TrustServerCertificate
 
@@ -739,6 +753,10 @@ edge_key text
 from_node_key text
 to_node_key text
 relationship_shape text -- one_to_one | many_to_one
+nullable_fk boolean
+self_reference boolean
+trusted boolean
+verified_by_db boolean
 enabled boolean
 status text
 created_at timestamptz
@@ -784,15 +802,25 @@ aggregation text -- count | count_distinct | sum | avg | min | max
 measure_column_key text nullable
 grain_table_key text
 grain_column_keys text[]
+aggregation_level text
+additivity text -- additive | semi_additive | non_additive
 default_date_column_key text nullable
 required_join_edge_keys text[]
 dimension_policy jsonb
 common_dimension_compatibility jsonb
+preferred_for_grains text[]
+preferred_for_dimensions text[]
 filters jsonb
 format jsonb
-confidence numeric
+value_type text
+currency text nullable
+synonyms text[]
+confidence_score numeric
+confidence_label text
 compiler_eligibility text
 eligibility_reasons text[]
+reasoning_summary text
+validation_warnings jsonb
 status text
 provenance text
 enabled boolean
@@ -815,7 +843,7 @@ JSONB canonico: servono per review, audit e interrogazioni operative.
 
 ### 13.13 north_star_benchmarks
 
-Le “stelle polari”.
+Benchmark di plausibilità collegabili a una metrica tramite stable key.
 
 ```txt
 benchmark_key uuid pk
@@ -1161,11 +1189,16 @@ L’AI può suggerire:
 * descrizione business;
 * dominio;
 * metriche candidate;
-* join candidate;
-* colonne da escludere;
 * sinonimi business.
 
-L’AI non decide in modo definitivo. Il semantic layer attivo deve essere revisionabile.
+L’AI non può suggerire o modificare join tecnici, queryability, exclusion o
+sensitivity. Questi campi derivano dal Queryability Graph e dalle policy
+server-side.
+
+Una versione `active` è immutabile. Una correzione crea una nuova draft,
+la rivalida e, quando attivata, archivia la versione precedente. La review
+umana è governance opzionale e gestione delle eccezioni, non un requisito
+per iniziare a usare proposte valide ad alta confidenza.
 
 View definitions redatte, sample rows autorizzati e profiling leggero sono
 evoluzioni future, non requisiti della foundation V1.
@@ -1192,9 +1225,10 @@ Le memorie sono:
 
 ---
 
-## 15. Business anchors / Stelle polari
+## 15. North Star Benchmarks
 
-Le stelle polari sono valori guida inseriti dall’utente/admin.
+Le North Star sono valori di riferimento inseriti dall’utente o da un admin
+per controllare plausibilità e ordine di grandezza dei risultati.
 
 Esempi:
 
@@ -1223,44 +1257,38 @@ Esempio:
 
 ### 15.2 Come vengono usate
 
-Le stelle polari vanno incluse nel contesto AI in forma sintetica.
+La North Star viene collegata tramite `metric_key` stabile, periodo,
+tolleranza e unità. Viene letta dal Result Validator dopo l’esecuzione della
+query, quando metrica e periodo sono compatibili.
 
-Esempio prompt context:
+Non viene inviata di default all’AI Semantic Discovery e non deve influenzare:
 
-```json
-{
-  "business_anchors": [
-    {
-      "metric": "fatturato",
-      "period": "2025",
-      "value": 10000000,
-      "unit": "EUR",
-      "tolerance_percent": 5
-    }
-  ]
-}
-```
+* formula o grain della metrica;
+* selezione dei join;
+* queryability o sensitivity;
+* `metric_definition_hash` o `semantic_hash`;
+* risultato della query primaria.
 
-In parallelo, il sistema fa anche controllo deterministico quando la metrica e il periodo sono compatibili.
+Il futuro Intent Resolver può sapere che un benchmark esiste, ma non può
+usarlo per alterare il calcolo. L’eventuale triangolazione parte solo dopo
+un anomaly flag del Result Validator.
 
 ### 15.3 Importante
 
-La stella polare non sostituisce la query.
-
-È un controllo di plausibilità, non una fonte dati primaria.
+La North Star non è una metrica e non sostituisce la query. È un controllo
+di plausibilità, non una fonte dati primaria e non una validazione semantica.
 
 ---
 
 ## 16. Query pipeline
 
-### 16.1 Fase 1 — Intent planner
+### 16.1 Fase 1 — Query Intent Resolver
 
 Input:
 
 * domanda utente;
-* semantic layer;
+* Semantic Layer `active`, `fresh` e compiler-eligible;
 * memorie rilevanti;
-* business anchors;
 * permessi utente;
 * connessione attiva.
 
@@ -1270,16 +1298,29 @@ Output strutturato:
 {
   "status": "ready | needs_clarification",
   "intent": "...",
-  "metric": "...",
-  "dimensions": [],
-  "filters": [],
+  "metric_keys": [],
+  "dimension_column_keys": [],
+  "filters": [
+    {
+      "column_key": "...",
+      "operator": "eq",
+      "value": "...",
+      "value_type": "string"
+    }
+  ],
   "time_range": null,
   "requested_chart_type": null,
   "ambiguities": [],
+  "interpretations": [],
   "clarifying_question": null,
   "options": []
 }
 ```
+
+L’Intent Resolver seleziona soltanto metriche richieste o strettamente
+necessarie alla risposta. Non aggiunge metriche arbitrarie. Può usare una
+metrica `ai_proposed` solo quando è valida, fresh e compiler-eligible secondo
+la policy. In quel caso deve esporre l’interpretazione applicata.
 
 ### 16.2 Ambiguità
 
@@ -1295,42 +1336,59 @@ Domanda da fare:
 
 Non deve indovinare.
 
-### 16.3 Fase 2 — SQL generation
+Esempio specifico:
 
-L’AI genera SQL solo dopo intent chiaro.
+* “fatturato” usa per default `revenue/net_header` se la domanda è compatibile
+  con il grain header;
+* “totale documento” usa `revenue/document_total`;
+* “fatturato per categoria prodotto” usa `revenue/line_detail`;
+* se manca una variante grain-safe, il sistema chiede chiarimento invece di
+  compilare un join moltiplicativo.
 
-Regole:
+### 16.3 Fase 2 — Query Plan strutturato
 
-* solo SELECT;
-* niente INSERT/UPDATE/DELETE;
-* niente DDL;
-* niente EXEC;
-* niente stored procedure;
-* niente cross-database;
-* usare solo tabelle/colonne incluse nel semantic layer;
-* rispettare metriche verificate;
-* non aggiungere colonne non richieste.
+Il resolver produce un piano tipizzato, non SQL:
 
-Esempio regola importante:
+```txt
+selected metrics
+dimensions
+structured filters
+time range
+required FK edge paths
+grain
+ordering
+limit
+interpretation disclosure
+```
 
-Se l’utente chiede “fatturato”, e il semantic layer dice che fatturato = SubTotal, il SELECT deve includere:
+Il piano viene rifiutato se:
 
-* periodo;
-* fatturato;
-* al massimo numero ordini come contesto.
+* la Semantic Layer è stale;
+* una metrica è `clarification_required` o `not_eligible`;
+* una stable key non esiste;
+* una dimensione viola la grain policy;
+* il path richiede FK disabled, untrusted o lineage view;
+* una colonna è esclusa;
+* la sensitivity viola la policy dell’utente.
 
-Non deve aggiungere automaticamente:
+### 16.4 Fase 3 — Query Compiler deterministico
 
-* IVA;
-* spedizione;
-* TotalDue;
-* cumulati;
-* margini;
-* colonne accessorie.
+Il Query Compiler SQL Server trasforma esclusivamente il piano validato in
+SQL read-only. Non accetta SQL generato dall’AI e non fa wrapping cieco di
+query o CTE.
 
-### 16.4 Fase 3 — SQL validation
+Responsabilità:
 
-Il query engine valida SQL con:
+* selezionare tabelle e colonne tramite stable key;
+* usare solo `required_join_edge_keys` trusted/enabled;
+* rispettare direzione, grain e cardinalità;
+* applicare aggregazioni e filtri strutturati;
+* impedire header/detail multiplication;
+* generare SQL specifico per il dialect SQL Server;
+* produrre un manifest compilato per audit e result validation;
+* includere soltanto output richiesti.
+
+Regole di sicurezza:
 
 * sqlglot;
 * dialect specifico;
@@ -1342,7 +1400,10 @@ Il query engine valida SQL con:
 * row limit;
 * statement singolo.
 
-### 16.5 Fase 4 — Execution
+Il compilatore non può emettere INSERT, UPDATE, DELETE, DDL, EXEC, stored
+procedure o riferimenti cross-database.
+
+### 16.5 Fase 4 — Execution read-only
 
 Default:
 
@@ -1353,7 +1414,7 @@ Default:
 * connessione pool per tenant/connection;
 * retry solo su errori transienti, mai su errori SQL logici.
 
-### 16.6 Fase 5 — Verification
+### 16.6 Fase 5 — Result Validator
 
 Verification proporzionale, non ansiosa.
 
@@ -1374,7 +1435,7 @@ Per SUM additive:
 * total vs breakdown;
 * header/detail reconciliation se join 1:N;
 * join amplification;
-* business anchor plausibility se disponibile.
+* North Star plausibility se disponibile e compatibile.
 
 #### Skip onesto
 
@@ -1398,6 +1459,10 @@ severity = info/warning
 
 Non deve essere confuso con dato errato.
 
+Se una North Star segnala uno scostamento rilevante, il Result Validator
+produce un anomaly flag. Il futuro Triangulation Engine può eseguire query
+diagnostiche controllate; non modifica la metrica né la query primaria.
+
 ### 16.7 Fase 6 — Result policy
 
 Il risultato viene bloccato solo se:
@@ -1415,9 +1480,8 @@ Non bloccare per:
 * skip;
 * privacy finding;
 * engine error del controllo;
-* join non confermato ma runtime checks passati;
 * mancanza baseline storica;
-* mancanza business anchor.
+* mancanza North Star.
 
 ---
 
@@ -1768,11 +1832,11 @@ Non flaggare come PII di default:
 
 L’AI viene usata per:
 
-* interpretare domanda;
+* proporre il Semantic Draft tramite output strutturato;
+* interpretare la domanda in metriche, dimensioni, filtri e periodo;
 * chiedere chiarimenti;
-* proporre SQL;
 * spiegare risultato;
-* suggerire chart_spec;
+* suggerire intent visuali al Chart Compiler;
 * arricchire semantic layer;
 * creare memorie;
 * rispondere a domande sul grafico.
@@ -1782,39 +1846,44 @@ L’AI viene usata per:
 L’AI non deve essere unica fonte di verità per:
 
 * sicurezza SQL;
+* SQL finale;
+* selezione o invenzione dei join;
 * permessi;
 * chart rendering;
 * confidence finale;
 * formattazione colonne;
 * accesso a tabelle;
+* queryability, exclusion e sensitivity;
+* grain e dimension safety;
 * validazione tenant;
-* business anchor check.
+* North Star check.
 
 ### 22.3 Prompt contract
 
-Output AI sempre JSON strutturato.
+Ogni fase AI usa un contract JSON dedicato. Non esiste un singolo prompt che
+decide insieme semantica, SQL, chart, verification e confidence.
 
-Esempio:
+Esempio di output dell’Intent Resolver:
 
 ```json
 {
-  "intent": "fatturato mensile",
-  "needs_clarification": false,
-  "sql": "...",
-  "assumptions": [],
-  "chart": {
-    "type": "bar",
-    "x": "mese",
-    "y": "fatturato"
+  "status": "ready",
+  "metric_keys": ["<opaque metric uuid>"],
+  "dimension_column_keys": ["<month column key>"],
+  "filters": [],
+  "time_range": {
+    "start": "2025-01-01",
+    "end": "2025-12-31"
   },
-  "verification_plan": [
-    {
-      "type": "total_vs_breakdown",
-      "purpose": "Confronta somma mensile con totale diretto"
-    }
-  ]
+  "interpretations": [
+    "fatturato = revenue/net_header"
+  ],
+  "ambiguities": []
 }
 ```
+
+Il server valida il payload contro Semantic Layer e Queryability Graph. Il
+Query Compiler produce SQL solo dopo questa validazione.
 
 ### 22.4 AI su dati risultato
 
@@ -1860,7 +1929,7 @@ Non penalizzare:
 * privacy finding;
 * engine error;
 * mancanza baseline;
-* mancanza business anchor.
+* mancanza North Star.
 
 Penalizzare:
 
@@ -1870,7 +1939,7 @@ Penalizzare:
 * risultato vuoto inatteso;
 * null/negativi su metrica dove non ammessi;
 * join amplification reale;
-* business anchor mismatch forte;
+* North Star mismatch forte;
 * total vs breakdown mismatch.
 
 ### 23.4 Controlli V1
@@ -1885,7 +1954,7 @@ Penalizzare:
 * join amplification;
 * total vs breakdown;
 * header/detail reconciliation;
-* business anchor plausibility;
+* North Star plausibility;
 * metric consistency se metrica ha grain;
 * historical plausibility solo se baseline disponibile.
 
@@ -1923,7 +1992,7 @@ Ogni domanda ha budget:
 | lookup semplice          | 1-2                     |
 | aggregazione semplice    | 2-4                     |
 | join + aggregazione      | 4-6                     |
-| business anchor mismatch | +2 debug query          |
+| North Star mismatch      | +2 query diagnostiche   |
 | ambigua                  | zero, prima chiarimento |
 
 ---
@@ -1973,15 +2042,29 @@ PATCH /api/connections/:id
 DELETE /api/connections/:id
 ```
 
-### Schema / semantic
+### Technical Snapshot / Queryability Graph
 
 ```txt
 POST /api/schema/introspect
-POST /api/semantic/build
-GET  /api/semantic
-PATCH /api/semantic/tables/:id
-PATCH /api/semantic/columns/:id
-POST /api/semantic/activate
+GET  /api/queryability/graphs/current
+GET  /api/queryability/graphs/:id
+POST /api/queryability/rebuild
+POST /api/queryability/paths
+```
+
+### Semantic Layer
+
+```txt
+GET  /api/semantic/current
+GET  /api/semantic/versions
+GET  /api/semantic/versions/:id
+POST /api/semantic/drafts
+PATCH /api/semantic/drafts/:id
+POST /api/semantic/drafts/:id/generate-ai-draft
+POST /api/semantic/drafts/:id/validate
+POST /api/semantic/drafts/:id/activate
+POST /api/semantic/drafts/:id/rebase
+POST /api/semantic/versions/:id/archive
 ```
 
 ### Query
@@ -2017,13 +2100,13 @@ POST   /api/widgets/:id/detach
 POST   /api/widgets/:id/ask
 ```
 
-### Business anchors
+### North Star Benchmarks
 
 ```txt
-GET    /api/business-anchors
-POST   /api/business-anchors
-PATCH  /api/business-anchors/:id
-DELETE /api/business-anchors/:id
+GET    /api/north-star-benchmarks
+POST   /api/north-star-benchmarks
+PATCH  /api/north-star-benchmarks/:id
+DELETE /api/north-star-benchmarks/:id
 ```
 
 ---
@@ -2052,16 +2135,17 @@ Wizard connessione:
 
 ### 27.4 `/semantic`
 
-Semantic layer admin:
+Workspace con tab distinti:
 
-* lista tabelle;
-* ricerca;
-* filtri;
-* colonne;
-* relazioni;
-* metriche;
-* memorie;
-* stelle polari.
+* Semantic Layer;
+* Technical Snapshot;
+* Queryability Graph;
+* North Star Benchmarks.
+
+Il tab Semantic Layer mostra proposte già costruite, metriche, concept,
+grain, eligibility, confidence, warning e riferimenti tecnici. Le azioni
+principali sono conferma, correzione, disable, rigenerazione e rebase. Non è
+un editor manuale di tabelle, join e SQL.
 
 Deve reggere migliaia di tabelle con virtualizzazione.
 
@@ -2108,10 +2192,8 @@ Testing previsto:
 
 ### 28.2 DB demo cloud
 
-Mantenere almeno:
-
-* Azure SQL AdventureWorksLT;
-* MySQL demo equivalente.
+Mantenere Azure SQL AdventureWorksLT come fixture cloud SQL Server
+end-to-end. Una fixture MySQL verrà aggiunta con la relativa milestone.
 
 Servono per test reali:
 
@@ -2128,13 +2210,13 @@ Servono per test reali:
 Obbligatori:
 
 * SQL validator;
-* SQL dialect SQL Server/MySQL;
+* SQL dialect SQL Server;
 * chart compiler;
 * column formatting;
 * tenant isolation;
 * permission gates;
 * query engine timeout;
-* business anchor plausibility;
+* North Star plausibility;
 * total vs breakdown;
 * join amplification;
 * CTE handling;
@@ -2233,7 +2315,10 @@ Servizi:
 
 ## 31. Milestone MVP
 
-### Milestone 1 — Fondamenta
+Stato aggiornato al 16 giugno 2026. Le milestone completate restano
+documentate perché definiscono le dipendenze delle fasi successive.
+
+### Milestone 1 — Fondamenta e sicurezza di base — completata
 
 * repo;
 * Next.js app;
@@ -2244,48 +2329,99 @@ Servizi:
 * query-engine skeleton;
 * CI.
 
-### Milestone 2 — Connessioni DB
+### Milestone 2 — Connessione SQL Server — completata
 
 * SQL Server adapter;
-* MySQL adapter;
 * public allowlist mode;
 * TLS;
 * Secret Manager;
 * test connessione;
-* Azure SQL demo;
-* MySQL demo.
+* Azure SQL AdventureWorksLT demo.
 
-### Milestone 3 — Snapshot, Queryability Graph, Semantic Layer
+MySQL è differito. Non deve rallentare il percorso SQL Server end-to-end.
 
-* **3A Technical Snapshot V1**: schema scan SQL Server, PK/FK, constraint,
-  indici, view definition, lineage, coverage e hash tecnici;
-* **3B Queryability Graph V1**: graph tecnico immutabile, cardinalita',
-  trust, nullability, self-reference, path fino a quattro hop, ambiguity e
-  fanout warning;
-* **3C.1 Semantic Foundation**: contract `semantic_layer.v1`, deterministic
-  seed, business concept, metric identity/definition hash, grain safety,
-  compact dimension policy, compiler eligibility e validator puro;
-* **3C.2 AI Semantic Discovery**: structured output, prompt/model versioning,
-  input allowlisted, identity e safety server-side, eval offline
-  AdventureWorksLT e provenance;
-* **3C.3 Semantic Lifecycle**: schema canonico e purge legacy, persistenza
-  transazionale, optimistic concurrency, freshness effettiva, rebase per
-  stable key, activation atomica, immutabilita' active/archived, RLS/RPC e
-  audit. Non include API o UI;
-* **3C.4 Semantic API e Workspace**: API tenant-scoped e UI AI-first per
-  generazione, review, correzione, validation, activation e rebase.
+### Milestone 3 — Technical Snapshot SQL Server V1 — completata
 
-### Milestone 4 — Query AI
+* catalog views `sys.*`;
+* oggetti, colonne, PK/FK, constraint e indici;
+* indexed view;
+* view definition e lineage;
+* coverage deterministica;
+* schema e snapshot hash;
+* audit AdventureWorksLT.
 
-* intent planner;
+### Milestone 4 — Queryability Graph V1 — completata
+
+* graph tecnico immutabile e versionato;
+* stable key;
+* cardinalità, trust, nullability e self-reference;
+* bridge candidate;
+* path finding fino a quattro hop;
+* ambiguity e fanout warning;
+* lineage object e column separato dai join.
+
+### Milestone 5 — Semantic Layer V1 — completata
+
+* **5.1 Foundation pura**: contract, deterministic seed, business concept,
+  metric identity/definition hash, grain safety, compact dimension policy,
+  compiler eligibility e validator puro;
+* **5.2 AI Semantic Discovery**: structured output, prompt/model versioning,
+  allowlisted input, identity e safety server-side, eval AdventureWorksLT;
+* **5.3 Persistence e lifecycle**: persistenza transazionale, optimistic
+  concurrency, freshness, rebase per stable key, activation atomica,
+  immutabilità, RLS/RPC e audit;
+* **5.4 API e Workspace**: API tenant-scoped e UI AI-first per generazione,
+  review, correzione, validation, activation e rebase.
+
+### Milestone 6 — North Star Foundation — prossima
+
+* contract `north_star_benchmarks`;
+* persistence tenant-scoped;
+* CRUD controllato;
+* collegamento tramite `metric_key`;
+* tolleranze, periodo, unità e severità;
+* tab UI dedicato;
+* nessuna triangolazione o modifica del calcolo metrica.
+
+### Milestone 7 — Semantic End-to-End Gate
+
+* graph -> seed -> AI draft -> validation -> activation;
+* auto-activation e manual review policy;
+* stale e rebase;
+* eval AdventureWorksLT;
+* verifica DB/API/UI e security suite;
+* semantic active pronto come input del compiler.
+
+### Milestone 8 — Query Intent Resolver
+
+* intent strutturato;
+* selezione metriche richiesta;
+* business concept e metric variant;
 * clarification flow;
-* SQL generation;
-* SQL validation;
-* execution;
-* result table;
-* query history.
+* disclosure delle interpretazioni;
+* nessun SQL libero.
 
-### Milestone 5 — Chart Compiler
+### Milestone 9 — Query Compiler SQL Server
+
+* query plan tipizzato;
+* compiler deterministico;
+* grain e join safety;
+* filtri strutturati;
+* SQL validation;
+* execution read-only;
+* result table e query history.
+
+### Milestone 10 — Result Validator e triangolazione controllata
+
+* total vs breakdown;
+* join amplification;
+* null/outlier;
+* North Star anomaly flag;
+* triangolazione interna quando necessaria;
+* confidence labels;
+* verification drawer.
+
+### Milestone 11 — Chart Compiler
 
 * chart spec;
 * ECharts renderer;
@@ -2294,16 +2430,7 @@ Servizi:
 * edit chart;
 * save widget.
 
-### Milestone 6 — Verification
-
-* total vs breakdown;
-* join amplification;
-* null/outlier;
-* business anchors;
-* confidence labels;
-* verification drawer.
-
-### Milestone 7 — Dashboard
+### Milestone 12 — Dashboard
 
 * dashboard CRUD;
 * widget grid;
@@ -2312,7 +2439,7 @@ Servizi:
 * cache;
 * export.
 
-### Milestone 8 — Pilot hardening
+### Milestone 13 — Pilot hardening
 
 * rate limits;
 * cost caps;
@@ -2329,24 +2456,26 @@ Servizi:
 Il prodotto è pronto per pilot se:
 
 1. connessione SQL Server via IP allowlist funziona;
-2. connessione MySQL via IP allowlist funziona;
-3. almeno una VPN pilot è documentata o testata;
-4. Queryability Graph viene generato e validato prima del Semantic Layer;
-5. semantic layer viene derivato da una graph version e revisionato;
-6. “fatturato 2008” su DB demo produce grafico corretto;
-7. “prodotti più venduti” produce risultato visibile;
-8. query ambigua chiede chiarimento;
-9. chart `bar` renderizza sempre se dati compatibili;
-10. colonne count non sono formattate come valuta;
-11. AI non aggiunge metriche non richieste;
-12. Supabase non contiene password DB;
-13. SQL validator blocca DDL/DML;
-14. risultati non vengono nascosti per skip o engine error;
-15. business anchor rileva mismatch grossolani;
-16. widget copiato su dashboard non duplica query;
-17. audit log traccia azioni sensibili;
-18. rate limit e AI cost cap attivi;
-19. demo end-to-end ripetibile.
+2. almeno una VPN pilot è documentata o testata;
+3. Technical Snapshot e Queryability Graph precedono sempre il Semantic Layer;
+4. Semantic Layer deriva da una graph version tramite stable key;
+5. una versione active è fresh, validata e immutabile;
+6. una versione stale non è compilabile;
+7. “fatturato 2008” viene risolto senza configurazione manuale;
+8. “fatturato per categoria prodotto” usa una metrica detail grain-safe;
+9. una query ambigua chiede chiarimento;
+10. l’AI non genera SQL finale e non inventa join;
+11. il Query Compiler emette solo SQL Server read-only validato;
+12. l’AI non aggiunge metriche o colonne non richieste;
+13. una North Star rileva mismatch grossolani senza cambiare la metrica;
+14. chart `bar` renderizza sempre se i dati sono compatibili;
+15. colonne count non sono formattate come valuta;
+16. Supabase non contiene password DB;
+17. risultati non vengono nascosti per skip o engine error;
+18. widget copiato su dashboard non duplica query;
+19. audit log traccia azioni sensibili;
+20. rate limit e AI cost cap sono attivi;
+21. demo SQL Server end-to-end è ripetibile.
 
 ---
 
@@ -2356,14 +2485,17 @@ Il prodotto è pronto per pilot se:
 2. Non indovinare quando il rischio semantico è alto.
 3. Non aggiungere colonne non richieste.
 4. Non usare AI come validatore di sicurezza.
-5. Non usare Supabase come copia del DB cliente.
-6. Non mostrare percentuali di confidence come verità scientifica.
-7. Non penalizzare privacy finding come errore dati.
-8. Non bloccare risultati corretti per controlli non applicabili.
-9. Non salvare password DB nel database app.
-10. Non costruire verification engine paranoico.
-11. Non fare overfitting su AdventureWorksLT.
-12. Ogni fix deve essere sistemico, non patch specifica su un dataset.
+5. Non permettere all’AI di scrivere SQL finale o inventare join.
+6. Non usare Semantic Layer stale nel Query Compiler.
+7. Non usare Supabase come copia del DB cliente.
+8. Non mostrare percentuali di confidence come verità scientifica.
+9. Non penalizzare privacy finding come errore dati.
+10. Non bloccare risultati corretti per controlli non applicabili.
+11. Non salvare password DB nel database app.
+12. Non costruire verification engine paranoico.
+13. Non fare overfitting su AdventureWorksLT.
+14. Non confondere North Star e metriche semantiche.
+15. Ogni fix deve essere sistemico, non patch specifica su un dataset.
 
 ---
 
@@ -2380,9 +2512,10 @@ Sistema:
 * usa metrica fatturato verificata;
 * usa data default della metrica;
 * raggruppa per mese;
+* il Query Compiler genera SQL dal piano strutturato;
 * produce bar/line chart;
 * fa total vs breakdown;
-* confronta business anchor se presente;
+* confronta la North Star se presente;
 * mostra risultato.
 
 ### 34.2 Domanda ambigua
@@ -2423,37 +2556,27 @@ Sistema:
 
 ---
 
-## 35. Prima implementazione Codex
+## 35. Prossima implementazione
 
-Il primo task da dare a Codex non deve essere “costruisci tutto”.
+Fondamenta, connessione SQL Server, Technical Snapshot, Queryability Graph e
+Semantic Layer V1 fino al workspace API/UI sono completati.
 
-Primo task corretto:
-
-```txt
-Crea monorepo Atlante BI con:
-- Next.js app in apps/web
-- Supabase schema/migrations in packages/db
-- Query engine FastAPI in services/query-engine
-- Contracts TypeScript condivisi in packages/contracts
-- Dockerfile query-engine
-- GitHub Actions con lint/typecheck/test/build
-- README architetturale
-Non implementare AI, dashboard o grafici. Solo fondazione pulita.
-```
-
-Secondo task:
+Il prossimo task è **Milestone 6 — North Star Foundation**:
 
 ```txt
-Implementa db_connections + Secret Manager integration + test connessione SQL Server/MySQL dal query-engine.
+Implementare contract, persistenza tenant-scoped, RPC/API e UI minima per
+North Star Benchmarks collegati tramite metric_key.
+
+La North Star deve contenere valore atteso, unità, periodo, tolleranza e
+severità. Non deve modificare semantic metric, metric_definition_hash,
+semantic_hash, queryability o compiler eligibility.
+
+Non implementare ancora Query Compiler, triangolazione completa, chart o
+dashboard.
 ```
 
-Terzo task:
-
-```txt
-Implementa introspection SQL Server/MySQL e salva schema_snapshot.
-```
-
-Solo dopo si passa all’AI.
+Dopo il gate North Star si esegue il Semantic End-to-End Gate, poi si
+implementano Query Intent Resolver e Query Compiler SQL Server.
 
 ---
 
