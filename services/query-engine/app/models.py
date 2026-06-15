@@ -1212,6 +1212,189 @@ class SemanticGenerationResult(StrictModel):
         return BaseModel.model_dump_json(self, *args, **kwargs)
 
 
+class SemanticGenerationRequest(StrictModel):
+    graph: QueryabilityGraphArtifact
+    seed: SemanticLayer
+
+    @model_validator(mode="after")
+    def validate_generation_scope(self) -> "SemanticGenerationRequest":
+        if self.graph.status == "blocked":
+            raise ValueError("graph must not be blocked")
+        if (
+            self.seed.tenant_id != self.graph.tenant_id
+            or self.seed.connection_id != self.graph.connection_id
+        ):
+            raise ValueError("seed tenant and connection must match graph")
+        if self.seed.base_graph_hash != self.graph.graph_hash:
+            raise ValueError("seed must be based on the supplied graph")
+        if self.seed.status != "draft" or self.seed.freshness != "fresh":
+            raise ValueError("seed must be a fresh draft")
+        return self
+
+
+class SemanticValidationRequest(StrictModel):
+    graph: QueryabilityGraphArtifact
+    semantic_layer: SemanticLayer
+
+
+SemanticReviewElementStatus = Literal[
+    "human_verified",
+    "rejected",
+    "disabled",
+]
+
+
+class SemanticTableReviewPatch(StrictModel):
+    node_key: Sha256
+    display_name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, min_length=1, max_length=2_000)
+    business_domain: str | None = Field(default=None, min_length=1, max_length=255)
+    synonyms: list[str] | None = Field(default=None, max_length=100)
+    status: SemanticReviewElementStatus | None = None
+    included: bool | None = None
+
+
+class SemanticColumnReviewPatch(StrictModel):
+    column_key: Sha256
+    display_name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, min_length=1, max_length=2_000)
+    synonyms: list[str] | None = Field(default=None, max_length=100)
+    semantic_role: str | None = Field(default=None, min_length=1, max_length=100)
+    format_hint: Literal[
+        "text",
+        "integer",
+        "decimal",
+        "currency",
+        "percentage",
+        "date",
+        "datetime",
+        "boolean",
+        "identifier",
+    ] | None = None
+    status: SemanticReviewElementStatus | None = None
+    included: bool | None = None
+
+
+class SemanticBusinessConceptReviewPatch(StrictModel):
+    business_concept_key: CanonicalJsonUUID
+    display_name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, min_length=1, max_length=2_000)
+    synonyms: list[str] | None = Field(default=None, max_length=100)
+    status: SemanticReviewElementStatus | None = None
+
+
+class SemanticMetricReviewPatch(StrictModel):
+    metric_key: CanonicalJsonUUID
+    canonical_name: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_]{1,99}$",
+    )
+    business_concept_key: CanonicalJsonUUID | None = None
+    metric_variant: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_]{1,99}$",
+    )
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, min_length=1, max_length=2_000)
+    source_table_key: Sha256 | None = None
+    aggregation: Literal[
+        "count",
+        "count_distinct",
+        "sum",
+        "avg",
+        "min",
+        "max",
+    ] | None = None
+    measure_column_key: Sha256 | None = None
+    grain_table_key: Sha256 | None = None
+    grain_column_keys: list[Sha256] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+    )
+    aggregation_level: Literal["row", "entity", "period"] | None = None
+    additivity: Literal[
+        "additive",
+        "semi_additive",
+        "non_additive",
+    ] | None = None
+    default_date_column_key: Sha256 | None = None
+    required_join_edge_keys: list[Sha256] | None = Field(
+        default=None,
+        max_length=4,
+    )
+    common_dimensions: list[AISemanticDimensionProposal] | None = Field(
+        default=None,
+        max_length=100,
+    )
+    preferred_for_grains: list[str] | None = Field(default=None, max_length=100)
+    preferred_for_dimensions: list[Sha256] | None = Field(
+        default=None,
+        max_length=100,
+    )
+    filters: list[SemanticFilter] | None = Field(default=None, max_length=100)
+    format: SemanticMetricFormat | None = None
+    synonyms: list[str] | None = Field(default=None, max_length=100)
+    reasoning_summary: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=1_000,
+    )
+    status: SemanticReviewElementStatus | None = None
+    enabled: bool | None = None
+
+
+class SemanticAmbiguityReviewPatch(StrictModel):
+    ambiguity_key: CanonicalJsonUUID
+    status: Literal["resolved"]
+
+
+class SemanticReviewPatch(StrictModel):
+    tables: list[SemanticTableReviewPatch] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+    columns: list[SemanticColumnReviewPatch] = Field(
+        default_factory=list,
+        max_length=2_000,
+    )
+    business_concepts: list[SemanticBusinessConceptReviewPatch] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+    metrics: list[SemanticMetricReviewPatch] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+    ambiguities: list[SemanticAmbiguityReviewPatch] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+
+
+class SemanticReviewRequest(StrictModel):
+    graph: QueryabilityGraphArtifact
+    source_layer: SemanticLayer
+    patch: SemanticReviewPatch
+
+    @model_validator(mode="after")
+    def validate_review_scope(self) -> "SemanticReviewRequest":
+        if self.graph.status == "blocked":
+            raise ValueError("graph must not be blocked")
+        if (
+            self.source_layer.tenant_id != self.graph.tenant_id
+            or self.source_layer.connection_id != self.graph.connection_id
+            or self.source_layer.base_graph_hash != self.graph.graph_hash
+        ):
+            raise ValueError("source layer must target the supplied graph")
+        if (
+            self.source_layer.status not in {"draft", "proposed"}
+            or self.source_layer.freshness != "fresh"
+        ):
+            raise ValueError("source layer must be a fresh mutable version")
+        return self
+
+
 class ChartType(StrEnum):
     table = "table"
     kpi_number = "kpi_number"

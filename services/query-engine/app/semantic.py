@@ -14,6 +14,7 @@ from app.models import (
     SemanticLayer,
     SemanticAmbiguity,
     SemanticMetric,
+    SemanticReviewPatch,
     SemanticRebaseDropReasonCode,
     SemanticRebaseDroppedColumn,
     SemanticRebaseDroppedMetric,
@@ -947,6 +948,235 @@ def validate_semantic_layer(
     )
     return updated.model_copy(
         update={"semantic_hash": compute_semantic_hash(updated)}
+    )
+
+
+def review_semantic_layer(
+    *,
+    source_layer: SemanticLayer,
+    graph: QueryabilityGraphArtifact,
+    patch: SemanticReviewPatch,
+    validated_at: datetime | None = None,
+) -> SemanticLayer:
+    if source_layer.semantic_hash != compute_semantic_hash(source_layer):
+        raise ValueError("source semantic layer hash is invalid")
+
+    table_patches = _unique_review_patches(
+        patch.tables,
+        "node_key",
+        "table review patch",
+    )
+    column_patches = _unique_review_patches(
+        patch.columns,
+        "column_key",
+        "column review patch",
+    )
+    concept_patches = _unique_review_patches(
+        patch.business_concepts,
+        "business_concept_key",
+        "business concept review patch",
+    )
+    metric_patches = _unique_review_patches(
+        patch.metrics,
+        "metric_key",
+        "metric review patch",
+    )
+    ambiguity_patches = _unique_review_patches(
+        patch.ambiguities,
+        "ambiguity_key",
+        "ambiguity review patch",
+    )
+
+    _reject_missing_review_targets(
+        table_patches,
+        {table.node_key for table in source_layer.tables},
+        "table",
+    )
+    _reject_missing_review_targets(
+        column_patches,
+        {column.column_key for column in source_layer.columns},
+        "column",
+    )
+    _reject_missing_review_targets(
+        concept_patches,
+        {
+            str(concept.business_concept_key)
+            for concept in source_layer.business_concepts
+        },
+        "business concept",
+    )
+    _reject_missing_review_targets(
+        metric_patches,
+        {str(metric.metric_key) for metric in source_layer.metrics},
+        "metric",
+    )
+    _reject_missing_review_targets(
+        ambiguity_patches,
+        {
+            str(ambiguity.ambiguity_key)
+            for ambiguity in source_layer.ambiguities
+        },
+        "ambiguity",
+    )
+
+    tables = [
+        _apply_review_patch(
+            table,
+            table_patches.get(table.node_key),
+        )
+        for table in source_layer.tables
+    ]
+    columns = [
+        _apply_review_patch(
+            column,
+            column_patches.get(column.column_key),
+        )
+        for column in source_layer.columns
+    ]
+    concepts = [
+        _apply_review_patch(
+            concept,
+            concept_patches.get(str(concept.business_concept_key)),
+            force_provenance="human",
+        )
+        for concept in source_layer.business_concepts
+    ]
+    metrics = [
+        _apply_metric_review_patch(
+            metric=metric,
+            patch=metric_patches.get(str(metric.metric_key)),
+            graph=graph,
+        )
+        for metric in source_layer.metrics
+    ]
+    ambiguities = [
+        _apply_review_patch(
+            ambiguity,
+            ambiguity_patches.get(str(ambiguity.ambiguity_key)),
+            force_provenance="human",
+        )
+        for ambiguity in source_layer.ambiguities
+    ]
+    candidate = source_layer.model_copy(
+        update={
+            "status": "draft",
+            "revision": source_layer.revision + 1,
+            "tables": tables,
+            "columns": columns,
+            "business_concepts": concepts,
+            "metrics": metrics,
+            "ambiguities": ambiguities,
+            "validation_report": SemanticValidationReport(
+                status="not_validated",
+                validator_version=source_layer.validator_version,
+            ),
+        }
+    )
+    candidate = SemanticLayer.model_validate(candidate.model_dump())
+    candidate = candidate.model_copy(
+        update={"semantic_hash": compute_semantic_hash(candidate)}
+    )
+    return validate_semantic_layer(
+        layer=candidate,
+        graph=graph,
+        validated_at=validated_at,
+    )
+
+
+def _unique_review_patches(items, key_name: str, label: str) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for item in items:
+        key = str(getattr(item, key_name))
+        if key in result:
+            raise ValueError(f"duplicate {label}: {key}")
+        result[key] = item
+    return result
+
+
+def _reject_missing_review_targets(
+    patches: dict[str, object],
+    existing_keys: set[str],
+    label: str,
+) -> None:
+    missing = sorted(set(patches) - existing_keys)
+    if missing:
+        raise ValueError(f"{label} review target not found: {missing[0]}")
+
+
+def _apply_review_patch(
+    item,
+    patch,
+    *,
+    force_provenance: str | None = None,
+):
+    if patch is None:
+        return item
+    updates = patch.model_dump(exclude_unset=True, exclude_none=False)
+    for identity_key in (
+        "node_key",
+        "column_key",
+        "business_concept_key",
+        "metric_key",
+        "ambiguity_key",
+    ):
+        updates.pop(identity_key, None)
+    if force_provenance is not None:
+        updates["provenance"] = force_provenance
+    if updates.get("status") in {"disabled", "rejected"}:
+        if hasattr(item, "included"):
+            updates["included"] = False
+        if hasattr(item, "enabled"):
+            updates["enabled"] = False
+    return item.model_copy(update=updates)
+
+
+def _apply_metric_review_patch(
+    *,
+    metric: SemanticMetric,
+    patch,
+    graph: QueryabilityGraphArtifact,
+) -> SemanticMetric:
+    if patch is None:
+        return metric
+    updates = patch.model_dump(exclude_unset=True, exclude_none=False)
+    updates.pop("metric_key", None)
+    common_dimensions = updates.pop("common_dimensions", None)
+    if common_dimensions is not None:
+        updates["common_dimension_compatibility"] = [
+            evaluate_dimension_compatibility(
+                graph=graph,
+                grain_node_key=(
+                    updates.get("grain_table_key")
+                    or metric.grain_table_key
+                ),
+                dimension_column_key=item.dimension_column_key,
+                edge_path=item.edge_path,
+            )
+            for item in common_dimensions
+        ]
+    elif {
+        "grain_table_key",
+        "required_join_edge_keys",
+    } & updates.keys():
+        updates["common_dimension_compatibility"] = []
+    updates["provenance"] = "human"
+    if updates.get("status") in {"disabled", "rejected"}:
+        updates["enabled"] = False
+    updates.update(
+        {
+            "confidence_score": 0,
+            "confidence_label": "blocked",
+            "compiler_eligibility": "not_eligible",
+            "eligibility_reasons": ["NOT_VALIDATED"],
+            "validation_warnings": [],
+        }
+    )
+    reviewed = metric.model_copy(update=updates)
+    reviewed = SemanticMetric.model_validate(reviewed.model_dump())
+    return reviewed.model_copy(
+        update={
+            "metric_definition_hash": compute_metric_definition_hash(reviewed)
+        }
     )
 
 

@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(28);
+select plan(35);
 
 select ok(
   to_regclass('public.semantic_versions') is null,
@@ -368,6 +368,60 @@ values (
   '{}'::jsonb
 );
 
+insert into public.queryability_graph_nodes (
+  id,
+  tenant_id,
+  graph_version_id,
+  node_key,
+  database_name,
+  schema_name,
+  object_name,
+  object_type,
+  queryability_status,
+  bridge_candidate,
+  payload
+)
+values (
+  '51000000-0000-4000-8000-000000000032',
+  '20000000-0000-4000-8000-000000000031',
+  '50000000-0000-4000-8000-000000000031',
+  repeat('3', 64),
+  'demo',
+  'dbo',
+  'Child',
+  'table',
+  'queryable',
+  false,
+  '{}'::jsonb
+);
+
+insert into public.queryability_graph_edges (
+  tenant_id,
+  graph_version_id,
+  edge_key,
+  edge_type,
+  from_node_id,
+  to_node_id,
+  automatic_join_allowed,
+  relationship_shape,
+  enforcement_status,
+  validation_status,
+  payload
+)
+values (
+  '20000000-0000-4000-8000-000000000031',
+  '50000000-0000-4000-8000-000000000031',
+  repeat('4', 64),
+  'fk_join',
+  '51000000-0000-4000-8000-000000000031',
+  '51000000-0000-4000-8000-000000000032',
+  true,
+  'many_to_one',
+  'enabled',
+  'trusted',
+  '{}'::jsonb
+);
+
 insert into public.queryability_graph_derivations (
   tenant_id,
   connection_id,
@@ -466,6 +520,558 @@ as $$
     )
   );
 $$;
+
+select throws_ok(
+  $test$
+    select *
+    from public.persist_semantic_layer_version(
+      '10000000-0000-4000-8000-000000000031',
+      '20000000-0000-4000-8000-000000000031',
+      '30000000-0000-4000-8000-000000000031',
+      '50000000-0000-4000-8000-000000000031',
+      jsonb_set(
+        jsonb_set(
+          pg_temp.semantic_artifact(
+            '60000000-0000-4000-8000-000000000041',
+            1,
+            1,
+            'draft',
+            '50000000-0000-4000-8000-000000000031',
+            repeat('e', 64),
+            repeat('f', 64)
+          ),
+          '{tables}',
+          pg_temp.semantic_artifact(
+            '60000000-0000-4000-8000-000000000041',
+            1,
+            1,
+            'draft',
+            '50000000-0000-4000-8000-000000000031',
+            repeat('e', 64),
+            repeat('f', 64)
+          )->'tables' || jsonb_build_array(
+            jsonb_build_object(
+              'node_key', repeat('3', 64),
+              'schema_name', 'dbo',
+              'object_name', 'Child',
+              'object_type', 'table',
+              'display_name', 'Child',
+              'synonyms', jsonb_build_array(),
+              'status', 'system_seeded',
+              'included', true,
+              'queryability_status', 'queryable'
+            )
+          )
+        ),
+        '{columns,0,node_key}',
+        to_jsonb(repeat('3', 64))
+      )
+    )
+  $test$,
+  '22023',
+  'semantic layer graph topology is invalid',
+  'semantic columns must belong to their declared graph node'
+);
+
+select throws_ok(
+  $test$
+    select *
+    from public.persist_semantic_layer_version(
+      '10000000-0000-4000-8000-000000000031',
+      '20000000-0000-4000-8000-000000000031',
+      '30000000-0000-4000-8000-000000000031',
+      '50000000-0000-4000-8000-000000000031',
+      jsonb_set(
+        pg_temp.semantic_artifact(
+          '60000000-0000-4000-8000-000000000042',
+          1,
+          1,
+          'draft',
+          '50000000-0000-4000-8000-000000000031',
+          repeat('e', 64),
+          repeat('f', 64)
+        ),
+        '{relationships}',
+        jsonb_build_array(
+          jsonb_build_object(
+            'edge_key', repeat('4', 64),
+            'from_node_key', repeat('3', 64),
+            'to_node_key', repeat('1', 64),
+            'status', 'system_seeded',
+            'enabled', true,
+            'relationship_shape', 'many_to_one'
+          )
+        )
+      )
+    )
+  $test$,
+  '22023',
+  'semantic layer graph topology is invalid',
+  'semantic relationship endpoints must match the graph edge'
+);
+
+select throws_ok(
+  $test$
+    select *
+    from public.persist_semantic_layer_version(
+      '10000000-0000-4000-8000-000000000031',
+      '20000000-0000-4000-8000-000000000031',
+      '30000000-0000-4000-8000-000000000031',
+      '50000000-0000-4000-8000-000000000031',
+      jsonb_set(
+        jsonb_set(
+          pg_temp.semantic_artifact(
+            '60000000-0000-4000-8000-000000000043',
+            1,
+            1,
+            'draft',
+            '50000000-0000-4000-8000-000000000031',
+            repeat('e', 64),
+            repeat('f', 64)
+          ),
+          '{tables}',
+          pg_temp.semantic_artifact(
+            '60000000-0000-4000-8000-000000000043',
+            1,
+            1,
+            'draft',
+            '50000000-0000-4000-8000-000000000031',
+            repeat('e', 64),
+            repeat('f', 64)
+          )->'tables' || jsonb_build_array(
+            jsonb_build_object(
+              'node_key', repeat('3', 64),
+              'schema_name', 'dbo',
+              'object_name', 'Child',
+              'object_type', 'table',
+              'display_name', 'Child',
+              'synonyms', jsonb_build_array(),
+              'status', 'system_seeded',
+              'included', true,
+              'queryability_status', 'queryable'
+            )
+          )
+        ),
+        '{business_concepts}',
+        jsonb_build_array(
+          jsonb_build_object(
+            'business_concept_key',
+              '70000000-0000-4000-8000-000000000031',
+            'canonical_name', 'parent_count',
+            'display_name', 'Parent count',
+            'synonyms', jsonb_build_array(),
+            'status', 'system_seeded',
+            'provenance', 'system'
+          )
+        )
+      ) || jsonb_build_object(
+        'metrics',
+        jsonb_build_array(
+          jsonb_build_object(
+            'metric_key', '71000000-0000-4000-8000-000000000031',
+            'canonical_name', 'parent_count',
+            'metric_definition_hash', repeat('8', 64),
+            'business_concept_key',
+              '70000000-0000-4000-8000-000000000031',
+            'metric_variant', 'count',
+            'name', 'Parent count',
+            'status', 'system_seeded',
+            'source_table_key', repeat('3', 64),
+            'aggregation', 'count',
+            'measure_column_key', repeat('2', 64),
+            'grain_table_key', repeat('1', 64),
+            'grain_column_keys', jsonb_build_array(repeat('2', 64)),
+            'aggregation_level', 'entity',
+            'additivity', 'additive',
+            'default_date_column_key', null,
+            'required_join_edge_keys', jsonb_build_array(),
+            'common_dimension_compatibility', jsonb_build_array(),
+            'dimension_policy', jsonb_build_object(
+              'same_grain', 'safe',
+              'parent_many_to_one', 'safe',
+              'child_one_to_many', 'forbidden',
+              'bridge_or_many_to_many', 'forbidden',
+              'self_reference', 'conditional'
+            ),
+            'preferred_for_grains', jsonb_build_array(),
+            'preferred_for_dimensions', jsonb_build_array(),
+            'filters', jsonb_build_array(),
+            'format', jsonb_build_object(
+              'value_type', 'count',
+              'currency', null,
+              'decimals', 0
+            ),
+            'synonyms', jsonb_build_array(),
+            'confidence_score', 1,
+            'confidence_label', 'high',
+            'compiler_eligibility', 'eligible',
+            'eligibility_reasons', jsonb_build_array(),
+            'validation_warnings', jsonb_build_array(),
+            'provenance', 'system',
+            'enabled', true
+          )
+        )
+      )
+    )
+  $test$,
+  '22023',
+  'semantic layer graph topology is invalid',
+  'semantic metric measures must belong to their source table'
+);
+
+select throws_ok(
+  $test$
+    select *
+    from public.persist_semantic_layer_version(
+      '10000000-0000-4000-8000-000000000031',
+      '20000000-0000-4000-8000-000000000031',
+      '30000000-0000-4000-8000-000000000031',
+      '50000000-0000-4000-8000-000000000031',
+      jsonb_set(
+        pg_temp.semantic_artifact(
+          '60000000-0000-4000-8000-000000000044',
+          1,
+          1,
+          'draft',
+          '50000000-0000-4000-8000-000000000031',
+          repeat('e', 64),
+          repeat('f', 64)
+        ),
+        '{metrics}',
+        jsonb_build_array(
+          jsonb_build_object(
+            'metric_key', '71000000-0000-4000-8000-000000000044',
+            'canonical_name', 'invalid_date',
+            'metric_definition_hash', repeat('8', 64),
+            'business_concept_key',
+              '70000000-0000-4000-8000-000000000044',
+            'metric_variant', 'count',
+            'name', 'Invalid date',
+            'status', 'system_seeded',
+            'source_table_key', repeat('1', 64),
+            'aggregation', 'count',
+            'measure_column_key', repeat('2', 64),
+            'grain_table_key', repeat('1', 64),
+            'grain_column_keys', jsonb_build_array(repeat('2', 64)),
+            'aggregation_level', 'entity',
+            'additivity', 'additive',
+            'default_date_column_key', repeat('9', 64),
+            'required_join_edge_keys', jsonb_build_array(),
+            'common_dimension_compatibility', jsonb_build_array(),
+            'dimension_policy', jsonb_build_object(
+              'same_grain', 'safe',
+              'parent_many_to_one', 'safe',
+              'child_one_to_many', 'forbidden',
+              'bridge_or_many_to_many', 'forbidden',
+              'self_reference', 'conditional'
+            ),
+            'preferred_for_grains', jsonb_build_array(),
+            'preferred_for_dimensions', jsonb_build_array(),
+            'filters', jsonb_build_array(),
+            'format', jsonb_build_object(
+              'value_type', 'count',
+              'currency', null,
+              'decimals', 0
+            ),
+            'synonyms', jsonb_build_array(),
+            'confidence_score', 1,
+            'confidence_label', 'high',
+            'compiler_eligibility', 'eligible',
+            'eligibility_reasons', jsonb_build_array(),
+            'validation_warnings', jsonb_build_array(),
+            'provenance', 'system',
+            'enabled', true
+          )
+        )
+      ) || jsonb_build_object(
+        'business_concepts',
+        jsonb_build_array(
+          jsonb_build_object(
+            'business_concept_key',
+              '70000000-0000-4000-8000-000000000044',
+            'canonical_name', 'invalid_date',
+            'display_name', 'Invalid date',
+            'synonyms', jsonb_build_array(),
+            'status', 'system_seeded',
+            'provenance', 'system'
+          )
+        )
+      )
+    )
+  $test$,
+  '22023',
+  'semantic layer graph references are invalid',
+  'metric default dates must reference semantic columns'
+);
+
+select throws_ok(
+  $test$
+    select *
+    from public.persist_semantic_layer_version(
+      '10000000-0000-4000-8000-000000000031',
+      '20000000-0000-4000-8000-000000000031',
+      '30000000-0000-4000-8000-000000000031',
+      '50000000-0000-4000-8000-000000000031',
+      jsonb_set(
+        pg_temp.semantic_artifact(
+          '60000000-0000-4000-8000-000000000045',
+          1,
+          1,
+          'draft',
+          '50000000-0000-4000-8000-000000000031',
+          repeat('e', 64),
+          repeat('f', 64)
+        ),
+        '{metrics}',
+        jsonb_build_array(
+          jsonb_build_object(
+            'metric_key', '71000000-0000-4000-8000-000000000045',
+            'canonical_name', 'invalid_join',
+            'metric_definition_hash', repeat('8', 64),
+            'business_concept_key',
+              '70000000-0000-4000-8000-000000000045',
+            'metric_variant', 'count',
+            'name', 'Invalid join',
+            'status', 'system_seeded',
+            'source_table_key', repeat('1', 64),
+            'aggregation', 'count',
+            'measure_column_key', repeat('2', 64),
+            'grain_table_key', repeat('1', 64),
+            'grain_column_keys', jsonb_build_array(repeat('2', 64)),
+            'aggregation_level', 'entity',
+            'additivity', 'additive',
+            'default_date_column_key', null,
+            'required_join_edge_keys', jsonb_build_array(repeat('9', 64)),
+            'common_dimension_compatibility', jsonb_build_array(),
+            'dimension_policy', jsonb_build_object(
+              'same_grain', 'safe',
+              'parent_many_to_one', 'safe',
+              'child_one_to_many', 'forbidden',
+              'bridge_or_many_to_many', 'forbidden',
+              'self_reference', 'conditional'
+            ),
+            'preferred_for_grains', jsonb_build_array(),
+            'preferred_for_dimensions', jsonb_build_array(),
+            'filters', jsonb_build_array(),
+            'format', jsonb_build_object(
+              'value_type', 'count',
+              'currency', null,
+              'decimals', 0
+            ),
+            'synonyms', jsonb_build_array(),
+            'confidence_score', 1,
+            'confidence_label', 'high',
+            'compiler_eligibility', 'eligible',
+            'eligibility_reasons', jsonb_build_array(),
+            'validation_warnings', jsonb_build_array(),
+            'provenance', 'system',
+            'enabled', true
+          )
+        )
+      ) || jsonb_build_object(
+        'business_concepts',
+        jsonb_build_array(
+          jsonb_build_object(
+            'business_concept_key',
+              '70000000-0000-4000-8000-000000000045',
+            'canonical_name', 'invalid_join',
+            'display_name', 'Invalid join',
+            'synonyms', jsonb_build_array(),
+            'status', 'system_seeded',
+            'provenance', 'system'
+          )
+        )
+      )
+    )
+  $test$,
+  '22023',
+  'semantic layer graph references are invalid',
+  'metric join paths must reference enabled semantic graph edges'
+);
+
+select throws_ok(
+  $test$
+    select *
+    from public.persist_semantic_layer_version(
+      '10000000-0000-4000-8000-000000000031',
+      '20000000-0000-4000-8000-000000000031',
+      '30000000-0000-4000-8000-000000000031',
+      '50000000-0000-4000-8000-000000000031',
+      jsonb_set(
+        pg_temp.semantic_artifact(
+          '60000000-0000-4000-8000-000000000046',
+          1,
+          1,
+          'draft',
+          '50000000-0000-4000-8000-000000000031',
+          repeat('e', 64),
+          repeat('f', 64)
+        ),
+        '{metrics}',
+        jsonb_build_array(
+          jsonb_build_object(
+            'metric_key', '71000000-0000-4000-8000-000000000046',
+            'canonical_name', 'invalid_filter',
+            'metric_definition_hash', repeat('8', 64),
+            'business_concept_key',
+              '70000000-0000-4000-8000-000000000046',
+            'metric_variant', 'count',
+            'name', 'Invalid filter',
+            'status', 'system_seeded',
+            'source_table_key', repeat('1', 64),
+            'aggregation', 'count',
+            'measure_column_key', repeat('2', 64),
+            'grain_table_key', repeat('1', 64),
+            'grain_column_keys', jsonb_build_array(repeat('2', 64)),
+            'aggregation_level', 'entity',
+            'additivity', 'additive',
+            'default_date_column_key', null,
+            'required_join_edge_keys', jsonb_build_array(),
+            'common_dimension_compatibility', jsonb_build_array(),
+            'dimension_policy', jsonb_build_object(
+              'same_grain', 'safe',
+              'parent_many_to_one', 'safe',
+              'child_one_to_many', 'forbidden',
+              'bridge_or_many_to_many', 'forbidden',
+              'self_reference', 'conditional'
+            ),
+            'preferred_for_grains', jsonb_build_array(),
+            'preferred_for_dimensions', jsonb_build_array(),
+            'filters', jsonb_build_array(
+              jsonb_build_object(
+                'column_key', repeat('9', 64),
+                'operator', 'eq',
+                'value', 1,
+                'value_type', 'integer'
+              )
+            ),
+            'format', jsonb_build_object(
+              'value_type', 'count',
+              'currency', null,
+              'decimals', 0
+            ),
+            'synonyms', jsonb_build_array(),
+            'confidence_score', 1,
+            'confidence_label', 'high',
+            'compiler_eligibility', 'eligible',
+            'eligibility_reasons', jsonb_build_array(),
+            'validation_warnings', jsonb_build_array(),
+            'provenance', 'system',
+            'enabled', true
+          )
+        )
+      ) || jsonb_build_object(
+        'business_concepts',
+        jsonb_build_array(
+          jsonb_build_object(
+            'business_concept_key',
+              '70000000-0000-4000-8000-000000000046',
+            'canonical_name', 'invalid_filter',
+            'display_name', 'Invalid filter',
+            'synonyms', jsonb_build_array(),
+            'status', 'system_seeded',
+            'provenance', 'system'
+          )
+        )
+      )
+    )
+  $test$,
+  '22023',
+  'semantic layer graph references are invalid',
+  'metric filters must reference semantic columns'
+);
+
+select throws_ok(
+  $test$
+    select *
+    from public.persist_semantic_layer_version(
+      '10000000-0000-4000-8000-000000000031',
+      '20000000-0000-4000-8000-000000000031',
+      '30000000-0000-4000-8000-000000000031',
+      '50000000-0000-4000-8000-000000000031',
+      jsonb_set(
+        pg_temp.semantic_artifact(
+          '60000000-0000-4000-8000-000000000047',
+          1,
+          1,
+          'draft',
+          '50000000-0000-4000-8000-000000000031',
+          repeat('e', 64),
+          repeat('f', 64)
+        ),
+        '{metrics}',
+        jsonb_build_array(
+          jsonb_build_object(
+            'metric_key', '71000000-0000-4000-8000-000000000047',
+            'canonical_name', 'invalid_dimension',
+            'metric_definition_hash', repeat('8', 64),
+            'business_concept_key',
+              '70000000-0000-4000-8000-000000000047',
+            'metric_variant', 'count',
+            'name', 'Invalid dimension',
+            'status', 'system_seeded',
+            'source_table_key', repeat('1', 64),
+            'aggregation', 'count',
+            'measure_column_key', repeat('2', 64),
+            'grain_table_key', repeat('1', 64),
+            'grain_column_keys', jsonb_build_array(repeat('2', 64)),
+            'aggregation_level', 'entity',
+            'additivity', 'additive',
+            'default_date_column_key', null,
+            'required_join_edge_keys', jsonb_build_array(),
+            'common_dimension_compatibility', jsonb_build_array(
+              jsonb_build_object(
+                'dimension_column_key', repeat('9', 64),
+                'edge_path', jsonb_build_array(),
+                'safety', 'safe',
+                'reason_code', 'same_grain'
+              )
+            ),
+            'dimension_policy', jsonb_build_object(
+              'same_grain', 'safe',
+              'parent_many_to_one', 'safe',
+              'child_one_to_many', 'forbidden',
+              'bridge_or_many_to_many', 'forbidden',
+              'self_reference', 'conditional'
+            ),
+            'preferred_for_grains', jsonb_build_array(),
+            'preferred_for_dimensions', jsonb_build_array(),
+            'filters', jsonb_build_array(),
+            'format', jsonb_build_object(
+              'value_type', 'count',
+              'currency', null,
+              'decimals', 0
+            ),
+            'synonyms', jsonb_build_array(),
+            'confidence_score', 1,
+            'confidence_label', 'high',
+            'compiler_eligibility', 'eligible',
+            'eligibility_reasons', jsonb_build_array(),
+            'validation_warnings', jsonb_build_array(),
+            'provenance', 'system',
+            'enabled', true
+          )
+        )
+      ) || jsonb_build_object(
+        'business_concepts',
+        jsonb_build_array(
+          jsonb_build_object(
+            'business_concept_key',
+              '70000000-0000-4000-8000-000000000047',
+            'canonical_name', 'invalid_dimension',
+            'display_name', 'Invalid dimension',
+            'synonyms', jsonb_build_array(),
+            'status', 'system_seeded',
+            'provenance', 'system'
+          )
+        )
+      )
+    )
+  $test$,
+  '22023',
+  'semantic layer graph references are invalid',
+  'common dimensions must reference semantic columns'
+);
 
 select throws_ok(
   $$

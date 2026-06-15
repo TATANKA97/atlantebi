@@ -13,6 +13,10 @@ import {
   rebuildQueryabilityGraphAction
 } from "./actions";
 import { PathInspector } from "./path-inspector";
+import {
+  SemanticWorkspace,
+  WorkspaceTabs
+} from "./semantic-workspace";
 import { coverageWarningsLabel } from "../../lib/semantic/summary";
 import { createSupabaseAdminClient } from "../../lib/supabase/admin";
 import {
@@ -100,12 +104,46 @@ const MAX_RENDERED_OBJECT_COLUMNS = 200;
 export default async function QueryabilityPage({
   searchParams
 }: {
-  searchParams: Promise<{ graph?: string; message?: string; snapshot?: string }>;
+  searchParams: Promise<{
+    connection?: string;
+    graph?: string;
+    message?: string;
+    semantic?: string;
+    snapshot?: string;
+    tab?: string;
+  }>;
 }) {
   const params = await searchParams;
+  if (params.tab !== "technical") {
+    return <SemanticWorkspace searchParams={params} />;
+  }
   const context = await getActiveTenantContext();
   const canManage = canManageConnections(context.role);
   const admin = createSupabaseAdminClient();
+  let graphVersionsQuery = admin
+    .from("queryability_graph_versions")
+    .select(
+      "id,connection_id,schema_snapshot_id,version,status,graph_hash,graph_input_hash,builder_version,policy_version,node_count,column_count,edge_count,created_at"
+    )
+    .eq("tenant_id", context.tenantId)
+    .order("created_at", { ascending: false })
+    .limit(20);
+  let latestDerivationQuery = admin
+    .from("queryability_graph_derivations")
+    .select("graph_version_id")
+    .eq("tenant_id", context.tenantId)
+    .order("created_at", { ascending: false })
+    .limit(1);
+  if (params.connection) {
+    graphVersionsQuery = graphVersionsQuery.eq(
+      "connection_id",
+      params.connection
+    );
+    latestDerivationQuery = latestDerivationQuery.eq(
+      "connection_id",
+      params.connection
+    );
+  }
   const [connectionsResult, graphsResult, latestDerivationResult] =
     await Promise.all([
     context.supabase
@@ -115,23 +153,10 @@ export default async function QueryabilityPage({
       .eq("status", "ready")
       .order("created_at", { ascending: false }),
     canManage
-      ? admin
-          .from("queryability_graph_versions")
-          .select(
-            "id,connection_id,schema_snapshot_id,version,status,graph_hash,graph_input_hash,builder_version,policy_version,node_count,column_count,edge_count,created_at"
-          )
-          .eq("tenant_id", context.tenantId)
-          .order("created_at", { ascending: false })
-          .limit(20)
+      ? graphVersionsQuery
       : Promise.resolve({ data: [], error: null }),
     canManage
-      ? admin
-          .from("queryability_graph_derivations")
-          .select("graph_version_id")
-          .eq("tenant_id", context.tenantId)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle()
+      ? latestDerivationQuery.maybeSingle()
       : Promise.resolve({ data: null, error: null })
   ]);
 
@@ -205,6 +230,16 @@ export default async function QueryabilityPage({
           </Link>
         </header>
 
+        <WorkspaceTabs
+          active="technical"
+          {...(selectedGraphRow?.connection_id ?? params.connection
+            ? {
+                connectionId:
+                  selectedGraphRow?.connection_id ?? params.connection!
+              }
+            : {})}
+        />
+
         {message ? (
           <p className="border border-[color:var(--border)] px-4 py-3 text-sm text-[color:var(--muted)]">
             {message}
@@ -240,7 +275,7 @@ export default async function QueryabilityPage({
                         ? "border-[color:var(--accent)]"
                         : "border-[color:var(--border)]"
                     }`}
-                    href={`/semantic?graph=${graph.id}`}
+                    href={`/semantic?tab=technical&connection=${graph.connection_id}&graph=${graph.id}`}
                     key={graph.id}
                   >
                     v{graph.version} {graph.status}
@@ -256,6 +291,11 @@ export default async function QueryabilityPage({
             <GraphHeader graph={selectedGraph} row={selectedGraphRow} />
             <form action={rebuildQueryabilityGraphAction}>
               <input name="tenant_id" type="hidden" value={context.tenantId} />
+              <input
+                name="connection_id"
+                type="hidden"
+                value={selectedGraphRow.connection_id}
+              />
               <input
                 name="schema_snapshot_id"
                 type="hidden"

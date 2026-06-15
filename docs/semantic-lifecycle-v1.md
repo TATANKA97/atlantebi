@@ -14,7 +14,37 @@ It includes:
 - atomic activation and archival;
 - tenant-scoped RPCs, RLS and audit records.
 
-API routes and the AI-first workspace are Milestone 3C.4.
+Milestone 3C.4 adds the tenant-scoped API routes and AI-first workspace on top
+of these lifecycle guarantees.
+
+## Milestone 3C.4 API and Workspace
+
+The web BFF exposes:
+
+- `GET /api/semantic/current`;
+- `GET /api/semantic/versions`;
+- `GET /api/semantic/versions/:id`;
+- `POST /api/semantic/drafts`;
+- `PATCH /api/semantic/drafts/:id`;
+- `POST /api/semantic/drafts/:id/generate-ai-draft`;
+- `POST /api/semantic/drafts/:id/validate`;
+- `POST /api/semantic/drafts/:id/activate`;
+- `POST /api/semantic/drafts/:id/rebase`;
+- `POST /api/semantic/versions/:id/archive`.
+
+All mutations require an active owner/admin membership. The BFF uses the
+service role only after tenant and role verification; browser clients never
+receive it and cannot write semantic tables directly.
+
+Semantic edits are not applied in Next.js. The query-engine receives the
+current graph, canonical source artifact, and an allowlisted structured patch.
+It applies the patch, advances the revision, recalculates metric and semantic
+hashes, runs the deterministic validator, and returns the next canonical
+artifact. Unknown stable keys and raw SQL are rejected.
+
+AI generation is serialized per connection through a distributed operation
+lease and rate-limited per tenant actor. Re-generating a proposed version
+creates a new immutable version rather than overwriting reviewed work.
 
 ## Breaking Change
 

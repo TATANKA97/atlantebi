@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
@@ -10,6 +10,10 @@ vi.mock("../supabase/admin", () => ({
 const lease = await import("./operation-lease");
 
 describe("security operation leases", () => {
+  beforeEach(() => {
+    rpc.mockReset();
+  });
+
   it("releases the distributed lease after successful work", async () => {
     rpc
       .mockResolvedValueOnce({
@@ -50,5 +54,33 @@ describe("security operation leases", () => {
         tenantId: "20000000-0000-4000-8000-000000000001"
       })
     ).rejects.toBeInstanceOf(lease.SecurityOperationLimitError);
+  });
+
+  it("passes semantic generation leases to the database unchanged", async () => {
+    rpc
+      .mockResolvedValueOnce({
+        data: "30000000-0000-4000-8000-000000000009",
+        error: null
+      })
+      .mockResolvedValueOnce({ data: null, error: null });
+
+    await lease.withSecurityOperationLease({
+      actorUserId: "10000000-0000-4000-8000-000000000001",
+      operation: "semantic_generation",
+      resourceKey: "connection-id",
+      run: async () => "generated",
+      tenantId: "20000000-0000-4000-8000-000000000001"
+    });
+
+    expect(rpc).toHaveBeenNthCalledWith(
+      1,
+      "acquire_security_operation_lease",
+      {
+        target_actor_user_id: "10000000-0000-4000-8000-000000000001",
+        target_operation: "semantic_generation",
+        target_resource_key: "connection-id",
+        target_tenant_id: "20000000-0000-4000-8000-000000000001"
+      }
+    );
   });
 });

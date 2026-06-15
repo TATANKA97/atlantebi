@@ -4,7 +4,8 @@ import { createSupabaseAdminClient } from "../supabase/admin";
 
 export type SecurityOperation =
   | "connection_test"
-  | "schema_introspection";
+  | "schema_introspection"
+  | "semantic_generation";
 
 export class SecurityOperationLimitError extends Error {
   constructor() {
