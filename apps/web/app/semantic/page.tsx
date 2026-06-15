@@ -17,6 +17,7 @@ import {
   SemanticWorkspace,
   WorkspaceTabs
 } from "./semantic-workspace";
+import { NorthStarWorkspace } from "./north-star-workspace";
 import { coverageWarningsLabel } from "../../lib/semantic/summary";
 import { createSupabaseAdminClient } from "../../lib/supabase/admin";
 import {
@@ -114,6 +115,9 @@ export default async function QueryabilityPage({
   }>;
 }) {
   const params = await searchParams;
+  if (params.tab === "north-stars") {
+    return <NorthStarWorkspace searchParams={params} />;
+  }
   if (params.tab !== "technical") {
     return <SemanticWorkspace searchParams={params} />;
   }

@@ -220,7 +220,7 @@ export function WorkspaceTabs({
   active,
   connectionId
 }: {
-  active: "semantic" | "technical";
+  active: "semantic" | "technical" | "north-stars";
   connectionId?: string;
 }) {
   const semanticHref = connectionId
@@ -229,6 +229,9 @@ export function WorkspaceTabs({
   const technicalHref = connectionId
     ? `/semantic?tab=technical&connection=${connectionId}`
     : "/semantic?tab=technical";
+  const northStarsHref = connectionId
+    ? `/semantic?tab=north-stars&connection=${connectionId}`
+    : "/semantic?tab=north-stars";
   return (
     <nav
       aria-label="Workspace schema"
@@ -255,6 +258,17 @@ export function WorkspaceTabs({
         href={technicalHref}
       >
         Technical Snapshot &amp; Graph
+      </Link>
+      <Link
+        className={`pb-3 ${
+          active === "north-stars"
+            ? "border-b-2 border-[color:var(--accent)] font-medium"
+            : "text-[color:var(--muted)]"
+        }`}
+        aria-current={active === "north-stars" ? "page" : undefined}
+        href={northStarsHref}
+      >
+        North Star Benchmarks
       </Link>
     </nav>
   );

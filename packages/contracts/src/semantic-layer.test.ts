@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import semanticFixture from "./fixtures/semantic-layer-v1.json";
 import {
+  NorthStarBenchmarkInputSchema,
+  NorthStarBenchmarkSchema,
   SemanticLayerSchema,
   SemanticMetricSchema
 } from "./index";
@@ -135,6 +137,87 @@ describe("semantic layer contracts", () => {
           ...semanticFixture.validation_report,
           validated_at: "2026-06-14T08:00Z"
         }
+      })
+    ).toThrow();
+  });
+
+  it("accepts strict north star benchmarks without changing semantic metrics", () => {
+    const benchmark = NorthStarBenchmarkSchema.parse({
+      benchmark_key: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      tenant_id: semanticFixture.tenant_id,
+      connection_id: semanticFixture.connection_id,
+      dashboard_id: null,
+      semantic_version_id: semanticFixture.semantic_version_id,
+      metric_key: semanticFixture.metrics[0]!.metric_key,
+      name: "Fatturato annuo atteso",
+      description: null,
+      expected_value: 10_000_000,
+      value_type: "currency",
+      currency: "EUR",
+      period_type: "year",
+      period_start: null,
+      period_end: null,
+      tolerance_mode: "percentage",
+      tolerance_percentage: 10,
+      min_value: null,
+      max_value: null,
+      severity: "high",
+      enabled: true,
+      created_by: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      updated_by: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      created_at: "2026-06-16T09:00:00Z",
+      updated_at: "2026-06-16T09:00:00Z"
+    });
+
+    expect(benchmark.metric_key).toBe(semanticFixture.metrics[0]!.metric_key);
+  });
+
+  it("rejects ambiguous north star benchmark inputs", () => {
+    const input = {
+      connection_id: semanticFixture.connection_id,
+      semantic_version_id: semanticFixture.semantic_version_id,
+      metric_key: semanticFixture.metrics[0]!.metric_key,
+      name: "Fatturato annuo atteso",
+      expected_value: 10_000_000,
+      value_type: "currency",
+      currency: "EUR",
+      period_type: "year",
+      period_start: null,
+      period_end: null,
+      tolerance_mode: "percentage",
+      tolerance_percentage: 10,
+      min_value: null,
+      max_value: null,
+      severity: "high",
+      enabled: true
+    } as const;
+
+    expect(() =>
+      NorthStarBenchmarkInputSchema.parse({
+        ...input,
+        currency: null
+      })
+    ).toThrow();
+
+    expect(() =>
+      NorthStarBenchmarkInputSchema.parse({
+        ...input,
+        metric_key: null
+      })
+    ).toThrow();
+
+    expect(() =>
+      NorthStarBenchmarkInputSchema.parse({
+        ...input,
+        tolerance_mode: "range",
+        tolerance_percentage: 10
+      })
+    ).toThrow();
+
+    expect(() =>
+      NorthStarBenchmarkInputSchema.parse({
+        ...input,
+        unexpected: true
       })
     ).toThrow();
   });

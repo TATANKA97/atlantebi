@@ -61,6 +61,13 @@ const semanticLayerLifecycleMigration = readFileSync(
   ),
   "utf8"
 );
+const northStarBenchmarksMigration = readFileSync(
+  resolve(
+    migrationsDirectory,
+    "20260615223915_north_star_benchmarks.sql"
+  ),
+  "utf8"
+);
 const purgeAdventureWorksPlanScript = readFileSync(
   resolve(
     import.meta.dirname,
@@ -142,6 +149,7 @@ const tenantScopedTables = [
   "semantic_layer_metrics",
   "semantic_layer_metric_common_dimensions",
   "semantic_generation_runs",
+  "north_star_benchmarks",
   "dashboards",
   "widgets",
   "dashboard_widgets",
@@ -627,6 +635,39 @@ describe("Supabase metadata migration", () => {
     );
   });
 
+  it("keeps North Star benchmarks separate from semantic definitions", () => {
+    expect(northStarBenchmarksMigration).toContain(
+      "create table public.north_star_benchmarks"
+    );
+    expect(northStarBenchmarksMigration).toContain(
+      "alter table public.north_star_benchmarks enable row level security"
+    );
+    expect(northStarBenchmarksMigration).toContain(
+      "revoke all privileges on table public.north_star_benchmarks"
+    );
+    expect(northStarBenchmarksMigration).toContain(
+      "grant select on table public.north_star_benchmarks to service_role"
+    );
+    expect(northStarBenchmarksMigration).toContain(
+      "create or replace function public.create_north_star_benchmark"
+    );
+    expect(northStarBenchmarksMigration).toContain(
+      "create or replace function public.update_north_star_benchmark"
+    );
+    expect(northStarBenchmarksMigration).toContain(
+      "create or replace function public.delete_north_star_benchmark"
+    );
+    expect(northStarBenchmarksMigration).toContain(
+      "eligible active metric not found for north star benchmark"
+    );
+    expect(northStarBenchmarksMigration).not.toContain(
+      "update public.semantic_layer_versions"
+    );
+    expect(northStarBenchmarksMigration).not.toContain(
+      "update public.semantic_layer_metrics"
+    );
+  });
+
   it("deploys one verified main SHA in dependency order", () => {
     expect(queryEngineDeployWorkflow).toContain('workflows: ["CI"]');
     expect(supabaseMigrationsWorkflow).toContain(
@@ -646,6 +687,25 @@ describe("Supabase metadata migration", () => {
       );
       expect(workflow).toContain("Verify triggering SHA is current main");
     }
+  });
+
+  it("does not pull the SQL Server fixture for docs-only changes", () => {
+    expect(workflows).toContain("workflow_dispatch:");
+    expect(workflows).toContain("run_sqlserver_integration:");
+    expect(workflows).toContain("Detect SQL Server integration scope");
+    expect(workflows).toContain(
+      "Skipping real SQL Server fixture; no SQL Server integration files changed."
+    );
+    expect(workflows).toContain(
+      "if: steps.sqlserver-integration-scope.outputs.run == 'true'"
+    );
+    expect(workflows).toContain(
+      "services/query-engine/app/drivers/sqlserver\\.py"
+    );
+    expect(workflows).toContain(
+      "services/query-engine/tests/test_sqlserver_integration\\.py"
+    );
+    expect(workflows).not.toContain("\\.github/workflows/ci\\.yml)$");
   });
 
   it("tests the breaking graph migration against a legacy demo snapshot", () => {

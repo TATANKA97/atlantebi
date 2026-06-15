@@ -4,6 +4,16 @@ on:
   push:
     branches: ["main"]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      run_sqlserver_integration:
+        description: "Run the real SQL Server integration fixture even if SQL Server files did not change."
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   database:
@@ -100,6 +110,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.12"
@@ -109,10 +121,45 @@ jobs:
         working-directory: services/query-engine
       - run: python -m pytest
         working-directory: services/query-engine
+      - name: Detect SQL Server integration scope
+        id: sqlserver-integration-scope
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            test "${{ inputs.run_sqlserver_integration }}" = "true" \
+              && echo "run=true" >> "$GITHUB_OUTPUT" \
+              || echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base_sha="${{ github.event.pull_request.base.sha }}"
+          else
+            base_sha="${{ github.event.before }}"
+          fi
+
+          if [ -z "$base_sha" ] || [[ "$base_sha" =~ ^0+$ ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          changed_files="$(git diff --name-only "$base_sha" "$GITHUB_SHA")"
+          echo "$changed_files"
+
+          if echo "$changed_files" | grep -Eq '^(services/query-engine/app/drivers/sqlserver\.py|services/query-engine/tests/test_sqlserver_integration\.py|services/query-engine/tests/fixtures/sqlserver_snapshot_v1\.sql|services/query-engine/Dockerfile|services/query-engine/requirements(-dev)?\.txt)$'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Skip SQL Server integration fixture
+        if: steps.sqlserver-integration-scope.outputs.run != 'true'
+        run: echo "Skipping real SQL Server fixture; no SQL Server integration files changed."
       - name: Build query-engine integration test image
+        if: steps.sqlserver-integration-scope.outputs.run == 'true'
         run: docker build --target test -t atlantebi-query-engine-test .
         working-directory: services/query-engine
       - name: Start SQL Server fixture
+        if: steps.sqlserver-integration-scope.outputs.run == 'true'
         run: |
           docker network create atlantebi-integration
           docker run -d \
@@ -131,6 +178,7 @@ jobs:
           docker logs atlantebi-sqlserver
           exit 1
       - name: Initialize SQL Server fixture
+        if: steps.sqlserver-integration-scope.outputs.run == 'true'
         run: |
           docker cp tests/fixtures/sqlserver_snapshot_v1.sql atlantebi-sqlserver:/tmp/fixture.sql
           docker exec atlantebi-sqlserver /opt/mssql-tools18/bin/sqlcmd -b \
@@ -138,6 +186,7 @@ jobs:
             -i /tmp/fixture.sql
         working-directory: services/query-engine
       - name: Run real SQL Server introspection test
+        if: steps.sqlserver-integration-scope.outputs.run == 'true'
         run: |
           docker run --rm \
             --network atlantebi-integration \
