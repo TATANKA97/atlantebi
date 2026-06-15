@@ -176,3 +176,72 @@ begin
   return imported_graph_version;
 end;
 $$;
+
+create or replace function public.hardening_test_concurrent_semantic_version()
+returns integer
+language plpgsql
+as $$
+declare
+  current_graph record;
+  persisted_version integer;
+begin
+  select graph.id, graph.graph_hash
+  into current_graph
+  from public.queryability_graph_derivations derivation
+  join public.queryability_graph_versions graph
+    on graph.id = derivation.graph_version_id
+   and graph.tenant_id = derivation.tenant_id
+   and graph.connection_id = derivation.connection_id
+  where derivation.tenant_id = '20000000-0000-4000-8000-000000000002'
+    and derivation.connection_id = '30000000-0000-4000-8000-000000000002'
+  order by derivation.created_at desc, derivation.graph_version_id desc
+  limit 1;
+
+  select semantic_version_number
+  into persisted_version
+  from public.persist_semantic_layer_version(
+    '10000000-0000-4000-8000-000000000002',
+    '20000000-0000-4000-8000-000000000002',
+    '30000000-0000-4000-8000-000000000002',
+    current_graph.id,
+    jsonb_build_object(
+      'contract_version', 'semantic_layer.v1',
+      'tenant_id', '20000000-0000-4000-8000-000000000002',
+      'connection_id', '30000000-0000-4000-8000-000000000002',
+      'semantic_version_id', gen_random_uuid(),
+      'queryability_graph_version_id', current_graph.id,
+      'base_graph_hash', current_graph.graph_hash,
+      'version', 1,
+      'status', 'draft',
+      'freshness', 'fresh',
+      'builder_version', '1.0.0',
+      'ai_model_version', null,
+      'ai_prompt_version', null,
+      'validator_version', '1.0.0',
+      'policy_version', '1.0.0',
+      'revision', 1,
+      'semantic_hash', repeat('f', 64),
+      'tables', jsonb_build_array(),
+      'columns', jsonb_build_array(),
+      'relationships', jsonb_build_array(),
+      'business_concepts', jsonb_build_array(),
+      'ambiguities', jsonb_build_array(),
+      'metrics', jsonb_build_array(),
+      'validation_report', jsonb_build_object(
+        'status', 'not_validated',
+        'blocking_errors', jsonb_build_array(),
+        'warnings', jsonb_build_array(),
+        'info', jsonb_build_array(),
+        'validated_revision', null,
+        'validated_at', null,
+        'validator_version', '1.0.0'
+      )
+    )
+  );
+
+  return persisted_version;
+exception
+  when serialization_failure then
+    return 0;
+end;
+$$;

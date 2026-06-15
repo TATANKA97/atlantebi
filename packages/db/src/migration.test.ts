@@ -26,6 +26,13 @@ const schemaImportSummaryGrantsMigration = readFileSync(
   ),
   "utf8"
 );
+const schemaImportSummaryVolatilityMigration = readFileSync(
+  resolve(
+    migrationsDirectory,
+    "20260615001558_fix_schema_summary_function_volatility.sql"
+  ),
+  "utf8"
+);
 const queryabilityGraphMigration = readFileSync(
   resolve(
     migrationsDirectory,
@@ -44,6 +51,13 @@ const queryabilityGraphColumnLineageMigration = readFileSync(
   resolve(
     migrationsDirectory,
     "20260613002145_add_view_column_lineage_status.sql"
+  ),
+  "utf8"
+);
+const semanticLayerLifecycleMigration = readFileSync(
+  resolve(
+    migrationsDirectory,
+    "20260614172852_semantic_layer_v1_lifecycle.sql"
   ),
   "utf8"
 );
@@ -119,12 +133,15 @@ const tenantScopedTables = [
   "queryability_graph_nodes",
   "queryability_graph_columns",
   "queryability_graph_edges",
-  "semantic_versions",
-  "semantic_tables",
-  "semantic_columns",
-  "semantic_relationships",
-  "semantic_metrics",
-  "business_anchors",
+  "semantic_layer_versions",
+  "semantic_layer_tables",
+  "semantic_layer_columns",
+  "semantic_layer_relationships",
+  "semantic_layer_business_concepts",
+  "semantic_layer_ambiguities",
+  "semantic_layer_metrics",
+  "semantic_layer_metric_common_dimensions",
+  "semantic_generation_runs",
   "dashboards",
   "widgets",
   "dashboard_widgets",
@@ -387,6 +404,15 @@ describe("Supabase metadata migration", () => {
     );
   });
 
+  it("declares schema summary validators with their real stable volatility", () => {
+    expect(schemaImportSummaryVolatilityMigration).toContain(
+      "alter function app_private.sanitize_schema_import_summary(jsonb) stable"
+    );
+    expect(schemaImportSummaryVolatilityMigration).toContain(
+      "alter function app_private.is_valid_schema_import_summary(jsonb) stable"
+    );
+  });
+
   it("provides a guarded pre-migration AdventureWorksLT purge command", () => {
     expect(purgeAdventureWorksPlanScript).toContain(
       'const REQUIRED_CONFIRMATION = "AdventureWorksLT"'
@@ -398,7 +424,7 @@ describe("Supabase metadata migration", () => {
       "isDemoOrTestTenant"
     );
     expect(purgeAdventureWorksPlanScript).toContain(
-      'await scopedDelete("semantic_versions")'
+      'await scopedDelete("semantic_layer_versions")'
     );
     expect(purgeAdventureWorksPlanScript).toContain(
       'await scopedDelete("schema_snapshots")'
@@ -524,6 +550,12 @@ describe("Supabase metadata migration", () => {
     expect(concurrentSchemaImportsFixture).not.toContain(
       "public.persist_technical_schema_import("
     );
+    expect(concurrentSchemaImportsFixture).toContain(
+      "public.hardening_test_concurrent_semantic_version()"
+    );
+    expect(concurrentSchemaImportsFixture).toContain(
+      "public.persist_semantic_layer_version("
+    );
   });
 
   it("projects view column lineage coverage from immutable node payloads", () => {
@@ -550,6 +582,48 @@ describe("Supabase metadata migration", () => {
     );
     expect(queryabilityGraphDerivationsMigration).toContain(
       "revoke all on public.queryability_graph_derivations"
+    );
+  });
+
+  it("installs the controlled Semantic Layer V1 lifecycle", () => {
+    expect(semanticLayerLifecycleMigration).toContain(
+      "rename to semantic_layer_versions"
+    );
+    expect(semanticLayerLifecycleMigration).toContain(
+      "create unique index semantic_layer_versions_one_active_per_connection_idx"
+    );
+    expect(semanticLayerLifecycleMigration).toContain(
+      "semantic_layer_versions_tenant_connection_id_unique"
+    );
+    expect(semanticLayerLifecycleMigration).toContain(
+      "create or replace function app_private.persist_semantic_layer_version"
+    );
+    expect(semanticLayerLifecycleMigration).toContain(
+      "create or replace function app_private.activate_semantic_layer_version"
+    );
+    expect(semanticLayerLifecycleMigration).toContain(
+      "create or replace function app_private.archive_semantic_layer_version"
+    );
+    expect(semanticLayerLifecycleMigration).toContain(
+      "queryability_derivation_refreshes_semantic_freshness"
+    );
+    expect(semanticLayerLifecycleMigration).toContain(
+      "from public.queryability_graph_derivations derivation"
+    );
+    expect(semanticLayerLifecycleMigration).toContain(
+      "semantic layer references unavailable graph elements"
+    );
+    expect(semanticLayerLifecycleMigration).toContain(
+      "active and archived semantic layer artifacts are immutable"
+    );
+    expect(semanticLayerLifecycleMigration).toContain(
+      "semantic version graph and rebase provenance are immutable"
+    );
+    expect(semanticLayerLifecycleMigration).toContain(
+      "semantic layer owner or admin role required"
+    );
+    expect(semanticLayerLifecycleMigration).not.toContain(
+      "grant insert, update, delete on table public.semantic_layer_versions to service_role"
     );
   });
 

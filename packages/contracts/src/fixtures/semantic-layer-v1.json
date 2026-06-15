@@ -1,0 +1,217 @@
+{
+  "contract_version": "semantic_layer.v1",
+  "tenant_id": "11111111-1111-4111-8111-111111111111",
+  "connection_id": "22222222-2222-4222-8222-222222222222",
+  "semantic_version_id": "88888888-8888-4888-8888-888888888888",
+  "queryability_graph_version_id": "44444444-4444-4444-8444-444444444444",
+  "base_graph_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "version": 1,
+  "status": "active",
+  "freshness": "fresh",
+  "builder_version": "1.0.0",
+  "ai_model_version": "fixture-model-v1",
+  "ai_prompt_version": "semantic-discovery.v1",
+  "validator_version": "1.0.0",
+  "policy_version": "1.0.0",
+  "revision": 2,
+  "semantic_hash": "ebd1dfbce3d7cc4c2201b69b8d530c264348b14a10330d88cf30dfdc1f3f6bd3",
+  "tables": [
+    {
+      "node_key": "1111111111111111111111111111111111111111111111111111111111111111",
+      "schema_name": "SalesLT",
+      "object_name": "Parent",
+      "object_type": "table",
+      "display_name": "Genitori",
+      "synonyms": [],
+      "status": "ai_proposed",
+      "included": true,
+      "queryability_status": "queryable"
+    },
+    {
+      "node_key": "3111111111111111111111111111111111111111111111111111111111111111",
+      "schema_name": "SalesLT",
+      "object_name": "Child",
+      "object_type": "table",
+      "display_name": "Dettagli",
+      "synonyms": [],
+      "status": "ai_proposed",
+      "included": true,
+      "queryability_status": "queryable"
+    },
+    {
+      "node_key": "4111111111111111111111111111111111111111111111111111111111111111",
+      "schema_name": "SalesLT",
+      "object_name": "vChild",
+      "object_type": "view",
+      "synonyms": [],
+      "status": "system_seeded",
+      "included": true,
+      "queryability_status": "queryable"
+    }
+  ],
+  "columns": [
+    {
+      "column_key": "2111111111111111111111111111111111111111111111111111111111111111",
+      "node_key": "1111111111111111111111111111111111111111111111111111111111111111",
+      "physical_name": "TenantID",
+      "synonyms": [],
+      "native_type": "int",
+      "normalized_type": "int",
+      "technical_role": "identifier",
+      "nullable": false,
+      "status": "system_seeded",
+      "included": true,
+      "queryability_status": "queryable",
+      "inherited_sensitivity": "none",
+      "sensitivity": "none"
+    },
+    {
+      "column_key": "2211111111111111111111111111111111111111111111111111111111111111",
+      "node_key": "1111111111111111111111111111111111111111111111111111111111111111",
+      "physical_name": "ParentID",
+      "synonyms": [],
+      "native_type": "int",
+      "normalized_type": "int",
+      "technical_role": "identifier",
+      "nullable": false,
+      "status": "system_seeded",
+      "included": true,
+      "queryability_status": "queryable",
+      "inherited_sensitivity": "none",
+      "sensitivity": "none"
+    },
+    {
+      "column_key": "3211111111111111111111111111111111111111111111111111111111111111",
+      "node_key": "3111111111111111111111111111111111111111111111111111111111111111",
+      "physical_name": "TenantID",
+      "synonyms": [],
+      "native_type": "int",
+      "normalized_type": "int",
+      "technical_role": "identifier",
+      "nullable": false,
+      "status": "system_seeded",
+      "included": true,
+      "queryability_status": "queryable",
+      "inherited_sensitivity": "none",
+      "sensitivity": "none"
+    },
+    {
+      "column_key": "3311111111111111111111111111111111111111111111111111111111111111",
+      "node_key": "3111111111111111111111111111111111111111111111111111111111111111",
+      "physical_name": "ParentID",
+      "synonyms": [],
+      "native_type": "int",
+      "normalized_type": "int",
+      "technical_role": "identifier",
+      "nullable": true,
+      "status": "system_seeded",
+      "included": true,
+      "queryability_status": "queryable",
+      "inherited_sensitivity": "none",
+      "sensitivity": "none"
+    },
+    {
+      "column_key": "4211111111111111111111111111111111111111111111111111111111111111",
+      "node_key": "4111111111111111111111111111111111111111111111111111111111111111",
+      "physical_name": "ParentID",
+      "synonyms": [],
+      "native_type": "int",
+      "normalized_type": "int",
+      "technical_role": "identifier",
+      "nullable": true,
+      "status": "system_seeded",
+      "included": true,
+      "queryability_status": "queryable",
+      "inherited_sensitivity": "none",
+      "sensitivity": "none"
+    }
+  ],
+  "relationships": [
+    {
+      "edge_key": "5111111111111111111111111111111111111111111111111111111111111111",
+      "from_node_key": "3111111111111111111111111111111111111111111111111111111111111111",
+      "to_node_key": "1111111111111111111111111111111111111111111111111111111111111111",
+      "status": "system_seeded",
+      "enabled": true,
+      "relationship_shape": "many_to_one",
+      "child_to_parent": "zero_or_one",
+      "parent_to_child": "zero_or_many",
+      "nullable_fk": true,
+      "self_reference": false
+    }
+  ],
+  "business_concepts": [
+    {
+      "business_concept_key": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "canonical_name": "records",
+      "display_name": "Record",
+      "synonyms": ["elementi"],
+      "status": "ai_proposed",
+      "provenance": "ai"
+    }
+  ],
+  "ambiguities": [],
+  "metrics": [
+    {
+      "metric_key": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "canonical_name": "record_count",
+      "metric_definition_hash": "584f67c3dd1c0fb428004e9e671d898e0ba9864cf86d9dd7aec2206dcfb2cff6",
+      "business_concept_key": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "metric_variant": "parent_count",
+      "name": "Numero record",
+      "status": "ai_proposed",
+      "source_table_key": "1111111111111111111111111111111111111111111111111111111111111111",
+      "aggregation": "count",
+      "grain_table_key": "1111111111111111111111111111111111111111111111111111111111111111",
+      "grain_column_keys": [
+        "2111111111111111111111111111111111111111111111111111111111111111",
+        "2211111111111111111111111111111111111111111111111111111111111111"
+      ],
+      "aggregation_level": "entity",
+      "additivity": "additive",
+      "required_join_edge_keys": [],
+      "common_dimension_compatibility": [],
+      "dimension_policy": {
+        "same_grain": "safe",
+        "parent_many_to_one": "safe",
+        "child_one_to_many": "forbidden",
+        "bridge_or_many_to_many": "forbidden",
+        "self_reference": "conditional"
+      },
+      "preferred_for_grains": ["parent"],
+      "preferred_for_dimensions": [],
+      "filters": [],
+      "format": {
+        "value_type": "count",
+        "decimals": 0
+      },
+      "synonyms": ["conteggio record"],
+      "confidence_score": 0.9,
+      "confidence_label": "high",
+      "compiler_eligibility": "eligible_with_disclosure",
+      "eligibility_reasons": ["AI_PROPOSED_DISCLOSURE_REQUIRED"],
+      "reasoning_summary": "Primary key supports a stable entity count.",
+      "validation_warnings": [],
+      "provenance": "ai",
+      "enabled": true
+    }
+  ],
+  "validation_report": {
+    "status": "valid_with_warnings",
+    "blocking_errors": [],
+    "warnings": [
+      {
+        "code": "QUERYABILITY_GRAPH_PARTIAL",
+        "severity": "warning",
+        "target_type": "layer",
+        "target_key": "88888888-8888-4888-8888-888888888888",
+        "message": "Queryability Graph is usable but has non-blocking coverage gaps.",
+        "evidence": {}
+      }
+    ],
+    "info": [],
+    "validated_revision": 2,
+    "validated_at": "2026-06-14T08:00:00.000Z",
+    "validator_version": "1.0.0"
+  }
+}

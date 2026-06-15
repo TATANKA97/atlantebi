@@ -616,6 +616,734 @@ export type QueryabilityPathRequest = z.infer<
   typeof QueryabilityPathRequestSchema
 >;
 
+export const SemanticElementStatusSchema = z.enum([
+  "system_seeded",
+  "ai_proposed",
+  "human_verified",
+  "rejected",
+  "disabled",
+  "stale"
+]);
+export type SemanticElementStatus = z.infer<
+  typeof SemanticElementStatusSchema
+>;
+
+export const SemanticConfidenceLabelSchema = z.enum([
+  "high",
+  "medium",
+  "low",
+  "blocked"
+]);
+export type SemanticConfidenceLabel = z.infer<
+  typeof SemanticConfidenceLabelSchema
+>;
+
+export const CompilerEligibilitySchema = z.enum([
+  "eligible",
+  "eligible_with_disclosure",
+  "clarification_required",
+  "not_eligible"
+]);
+export type CompilerEligibility = z.infer<
+  typeof CompilerEligibilitySchema
+>;
+
+export const SemanticTableSchema = z.strictObject({
+  node_key: Sha256Schema,
+  schema_name: z.string().min(1).max(255),
+  object_name: z.string().min(1).max(255),
+  object_type: z.enum(["table", "view"]),
+  display_name: z.string().min(1).max(255).nullish(),
+  description: z.string().min(1).max(2_000).nullish(),
+  business_domain: z.string().min(1).max(255).nullish(),
+  synonyms: z.array(z.string().min(1).max(255)).max(100).default([]),
+  status: SemanticElementStatusSchema,
+  included: z.boolean(),
+  queryability_status: QueryabilityStatusSchema
+});
+export type SemanticTable = z.infer<typeof SemanticTableSchema>;
+
+export const SemanticColumnSchema = z.strictObject({
+  column_key: Sha256Schema,
+  node_key: Sha256Schema,
+  physical_name: z.string().min(1).max(255),
+  display_name: z.string().min(1).max(255).nullish(),
+  description: z.string().min(1).max(2_000).nullish(),
+  synonyms: z.array(z.string().min(1).max(255)).max(100).default([]),
+  native_type: z.string().min(1).max(255).nullish(),
+  normalized_type: z.string().min(1).max(255).nullish(),
+  technical_role: SchemaTechnicalRoleSchema,
+  semantic_role: z.string().min(1).max(100).nullish(),
+  format_hint: z
+    .enum([
+      "text",
+      "integer",
+      "decimal",
+      "currency",
+      "percentage",
+      "date",
+      "datetime",
+      "boolean",
+      "identifier"
+    ])
+    .nullish(),
+  nullable: z.boolean(),
+  status: SemanticElementStatusSchema,
+  included: z.boolean(),
+  queryability_status: QueryabilityStatusSchema,
+  inherited_sensitivity: QueryabilitySensitivitySchema,
+  sensitivity: QueryabilitySensitivitySchema
+});
+export type SemanticColumn = z.infer<typeof SemanticColumnSchema>;
+
+export const SemanticRelationshipSchema = z.strictObject({
+  edge_key: Sha256Schema,
+  from_node_key: Sha256Schema,
+  to_node_key: Sha256Schema,
+  status: SemanticElementStatusSchema,
+  enabled: z.boolean(),
+  relationship_shape: z.enum(["one_to_one", "many_to_one"]),
+  child_to_parent: z.enum(["zero_or_one", "exactly_one"]),
+  parent_to_child: z.enum(["zero_or_one", "zero_or_many"]),
+  nullable_fk: z.boolean(),
+  self_reference: z.boolean()
+});
+export type SemanticRelationship = z.infer<
+  typeof SemanticRelationshipSchema
+>;
+
+export const SemanticBusinessConceptSchema = z.strictObject({
+  business_concept_key: z.string().uuid(),
+  canonical_name: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
+  display_name: z.string().min(1).max(255),
+  description: z.string().min(1).max(2_000).nullish(),
+  synonyms: z.array(z.string().min(1).max(255)).max(100).default([]),
+  status: SemanticElementStatusSchema,
+  provenance: z.enum(["system", "ai", "human"])
+});
+export type SemanticBusinessConcept = z.infer<
+  typeof SemanticBusinessConceptSchema
+>;
+
+export const SemanticAmbiguitySchema = z.strictObject({
+  ambiguity_key: z.string().uuid(),
+  code: z.string().regex(/^[A-Z][A-Z0-9_]{1,99}$/),
+  target_type: z.enum([
+    "table",
+    "column",
+    "business_concept",
+    "metric"
+  ]),
+  target_key: z.string().min(1).max(255),
+  summary: z.string().min(1).max(500),
+  clarification_question: z.string().min(1).max(500),
+  status: z.enum(["open", "resolved"]),
+  provenance: z.enum(["ai", "human"])
+});
+export type SemanticAmbiguity = z.infer<typeof SemanticAmbiguitySchema>;
+
+const SemanticFilterValueSchema = z.union([
+  z.string(),
+  z.number().finite(),
+  z.boolean(),
+  z.array(z.union([z.string(), z.number().finite(), z.boolean()])).min(1)
+]);
+
+export const SemanticFilterSchema = z.strictObject({
+  column_key: Sha256Schema,
+  operator: z.enum([
+    "eq",
+    "neq",
+    "in",
+    "not_in",
+    "gt",
+    "gte",
+    "lt",
+    "lte",
+    "between",
+    "is_null",
+    "is_not_null"
+  ]),
+  value: SemanticFilterValueSchema.nullish(),
+  value_type: z.enum([
+    "string",
+    "integer",
+    "decimal",
+    "boolean",
+    "date",
+    "datetime"
+  ])
+});
+export type SemanticFilter = z.infer<typeof SemanticFilterSchema>;
+
+export const SemanticDimensionCompatibilitySchema = z.strictObject({
+  dimension_column_key: Sha256Schema,
+  edge_path: z.array(Sha256Schema).max(4).default([]),
+  safety: z.enum(["safe", "forbidden"]),
+  reason_code: z.string().min(1).max(100)
+});
+export type SemanticDimensionCompatibility = z.infer<
+  typeof SemanticDimensionCompatibilitySchema
+>;
+
+export const SemanticDimensionPolicySchema = z.strictObject({
+  same_grain: z.literal("safe"),
+  parent_many_to_one: z.literal("safe"),
+  child_one_to_many: z.literal("forbidden"),
+  bridge_or_many_to_many: z.literal("forbidden"),
+  self_reference: z.literal("conditional")
+});
+export type SemanticDimensionPolicy = z.infer<
+  typeof SemanticDimensionPolicySchema
+>;
+
+export const SemanticMetricFormatSchema = z.strictObject({
+  value_type: z.enum([
+    "currency",
+    "number",
+    "percentage",
+    "count",
+    "duration"
+  ]),
+  currency: z.string().regex(/^[A-Z]{3}$/).nullish(),
+  decimals: z.number().int().min(0).max(6).nullish()
+});
+export type SemanticMetricFormat = z.infer<
+  typeof SemanticMetricFormatSchema
+>;
+
+export const SemanticMetricSchema = z.strictObject({
+  metric_key: z.string().uuid(),
+  canonical_name: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
+  metric_definition_hash: Sha256Schema,
+  business_concept_key: z.string().uuid(),
+  metric_variant: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
+  name: z.string().min(1).max(255),
+  description: z.string().min(1).max(2_000).nullish(),
+  status: SemanticElementStatusSchema,
+  source_table_key: Sha256Schema,
+  aggregation: z.enum([
+    "count",
+    "count_distinct",
+    "sum",
+    "avg",
+    "min",
+    "max"
+  ]),
+  measure_column_key: Sha256Schema.nullish(),
+  grain_table_key: Sha256Schema,
+  grain_column_keys: z.array(Sha256Schema).min(1).max(100),
+  aggregation_level: z.enum(["row", "entity", "period"]),
+  additivity: z.enum(["additive", "semi_additive", "non_additive"]),
+  default_date_column_key: Sha256Schema.nullish(),
+  required_join_edge_keys: z.array(Sha256Schema).max(4).default([]),
+  common_dimension_compatibility: z
+    .array(SemanticDimensionCompatibilitySchema)
+    .max(500)
+    .default([]),
+  dimension_policy: SemanticDimensionPolicySchema,
+  preferred_for_grains: z
+    .array(z.string().min(1).max(100))
+    .max(100)
+    .default([]),
+  preferred_for_dimensions: z.array(Sha256Schema).max(100).default([]),
+  filters: z.array(SemanticFilterSchema).max(100).default([]),
+  format: SemanticMetricFormatSchema,
+  synonyms: z.array(z.string().min(1).max(255)).max(100).default([]),
+  confidence_score: z.number().min(0).max(1),
+  confidence_label: SemanticConfidenceLabelSchema,
+  compiler_eligibility: CompilerEligibilitySchema,
+  eligibility_reasons: z
+    .array(z.string().min(1).max(100))
+    .max(100)
+    .default([]),
+  reasoning_summary: z.string().min(1).max(1_000).nullish(),
+  validation_warnings: z
+    .array(z.string().min(1).max(100))
+    .max(100)
+    .default([]),
+  provenance: z.enum(["system", "ai", "human"]),
+  enabled: z.boolean()
+});
+export type SemanticMetric = z.infer<typeof SemanticMetricSchema>;
+
+export const SemanticValidationIssueSchema = z.strictObject({
+  code: z.string().regex(/^[A-Z][A-Z0-9_]{1,99}$/),
+  severity: z.enum(["blocking", "warning", "info"]),
+  target_type: z.enum([
+    "layer",
+    "table",
+    "column",
+    "relationship",
+    "business_concept",
+    "ambiguity",
+    "metric"
+  ]),
+  target_key: z.string().min(1).max(255),
+  message: z.string().min(1).max(500),
+  evidence: z
+    .record(
+      z.string().min(1).max(100),
+      z.union([z.string(), z.number().finite(), z.boolean()])
+    )
+    .default({})
+});
+export type SemanticValidationIssue = z.infer<
+  typeof SemanticValidationIssueSchema
+>;
+
+export const SemanticValidationReportSchema = z.strictObject({
+  status: z.enum([
+    "not_validated",
+    "valid",
+    "valid_with_warnings",
+    "blocked"
+  ]),
+  blocking_errors: z
+    .array(SemanticValidationIssueSchema)
+    .max(10_000)
+    .default([]),
+  warnings: z.array(SemanticValidationIssueSchema).max(10_000).default([]),
+  info: z.array(SemanticValidationIssueSchema).max(10_000).default([]),
+  validated_revision: z.number().int().positive().nullish(),
+  validated_at: z
+    .string()
+    .datetime({ offset: true })
+    .regex(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
+    )
+    .nullish(),
+  validator_version: z.string().min(1).max(100)
+});
+export type SemanticValidationReport = z.infer<
+  typeof SemanticValidationReportSchema
+>;
+
+export const SemanticLayerSchema = z.strictObject({
+  contract_version: z.literal("semantic_layer.v1"),
+  tenant_id: z.string().uuid(),
+  connection_id: z.string().uuid(),
+  semantic_version_id: z.string().uuid(),
+  queryability_graph_version_id: z.string().uuid(),
+  base_graph_hash: Sha256Schema,
+  version: z.number().int().positive(),
+  status: z.enum(["draft", "proposed", "active", "archived"]),
+  freshness: z.enum(["fresh", "stale"]),
+  builder_version: z.string().min(1).max(100),
+  ai_model_version: z.string().min(1).max(255).nullish(),
+  ai_prompt_version: z.string().min(1).max(100).nullish(),
+  validator_version: z.string().min(1).max(100),
+  policy_version: z.string().min(1).max(100),
+  revision: z.number().int().positive(),
+  semantic_hash: Sha256Schema,
+  tables: z.array(SemanticTableSchema).max(5_000),
+  columns: z.array(SemanticColumnSchema).max(250_000),
+  relationships: z.array(SemanticRelationshipSchema).max(250_000),
+  business_concepts: z.array(SemanticBusinessConceptSchema).max(10_000),
+  ambiguities: z.array(SemanticAmbiguitySchema).max(10_000),
+  metrics: z.array(SemanticMetricSchema).max(100_000),
+  validation_report: SemanticValidationReportSchema
+});
+export type SemanticLayer = z.infer<typeof SemanticLayerSchema>;
+
+export const SemanticSeedRequestSchema = z
+  .strictObject({
+    graph: QueryabilityGraphArtifactSchema,
+    semantic_version_id: z.string().uuid(),
+    queryability_graph_version_id: z.string().uuid(),
+    version: z.number().int().positive()
+  })
+  .superRefine((request, context) => {
+    if (request.graph.status === "blocked") {
+      context.addIssue({
+        code: "custom",
+        path: ["graph", "status"],
+        message: "blocked graphs cannot seed a semantic layer"
+      });
+    }
+  });
+export type SemanticSeedRequest = z.infer<typeof SemanticSeedRequestSchema>;
+
+export const SemanticRebaseRequestSchema = z
+  .strictObject({
+    source_layer: SemanticLayerSchema,
+    target_graph: QueryabilityGraphArtifactSchema,
+    semantic_version_id: z.string().uuid(),
+    queryability_graph_version_id: z.string().uuid(),
+    version: z.number().int().positive()
+  })
+  .superRefine((request, context) => {
+    if (
+      request.source_layer.tenant_id !== request.target_graph.tenant_id ||
+      request.source_layer.connection_id !== request.target_graph.connection_id
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["target_graph"],
+        message: "source layer and target graph must share tenant and connection"
+      });
+    }
+    if (
+      request.semantic_version_id === request.source_layer.semantic_version_id
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["semantic_version_id"],
+        message: "rebase must create a new semantic version"
+      });
+    }
+    if (request.version <= request.source_layer.version) {
+      context.addIssue({
+        code: "custom",
+        path: ["version"],
+        message: "rebase version must be newer than the source version"
+      });
+    }
+    if (
+      !["active", "archived"].includes(request.source_layer.status) ||
+      !["valid", "valid_with_warnings"].includes(
+        request.source_layer.validation_report.status
+      ) ||
+      request.source_layer.validation_report.blocking_errors.length > 0 ||
+      request.source_layer.validation_report.validated_revision !==
+        request.source_layer.revision
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["source_layer"],
+        message:
+          "rebase source must be an active or archived successfully validated version"
+      });
+    }
+    if (request.target_graph.status === "blocked") {
+      context.addIssue({
+        code: "custom",
+        path: ["target_graph", "status"],
+        message: "blocked graphs cannot receive a semantic rebase"
+      });
+    }
+  });
+export type SemanticRebaseRequest = z.infer<
+  typeof SemanticRebaseRequestSchema
+>;
+
+export const SemanticRebaseDropReasonCodeSchema = z.enum([
+  "TARGET_KEY_MISSING",
+  "TARGET_NOT_QUERYABLE",
+  "TARGET_EDGE_NOT_TRUSTED",
+  "DEPENDENCY_DROPPED",
+  "DEFINITION_CHANGED",
+  "INVALID_AFTER_REBASE"
+]);
+export type SemanticRebaseDropReasonCode = z.infer<
+  typeof SemanticRebaseDropReasonCodeSchema
+>;
+
+const SemanticRebaseDropReasonCodesSchema = z
+  .array(SemanticRebaseDropReasonCodeSchema)
+  .min(1)
+  .max(20);
+
+export const SemanticRebaseDroppedTableSchema = z.strictObject({
+  item_type: z.literal("table"),
+  item_key: Sha256Schema,
+  reason_codes: SemanticRebaseDropReasonCodesSchema
+});
+export type SemanticRebaseDroppedTable = z.infer<
+  typeof SemanticRebaseDroppedTableSchema
+>;
+
+export const SemanticRebaseDroppedColumnSchema = z.strictObject({
+  item_type: z.literal("column"),
+  item_key: Sha256Schema,
+  reason_codes: SemanticRebaseDropReasonCodesSchema
+});
+export type SemanticRebaseDroppedColumn = z.infer<
+  typeof SemanticRebaseDroppedColumnSchema
+>;
+
+export const SemanticRebaseDroppedBusinessConceptSchema = z.strictObject({
+  item_type: z.literal("business_concept"),
+  item_key: z.string().uuid(),
+  reason_codes: SemanticRebaseDropReasonCodesSchema
+});
+export type SemanticRebaseDroppedBusinessConcept = z.infer<
+  typeof SemanticRebaseDroppedBusinessConceptSchema
+>;
+
+export const SemanticRebaseDroppedMetricSchema = z.strictObject({
+  item_type: z.literal("metric"),
+  item_key: z.string().uuid(),
+  reason_codes: SemanticRebaseDropReasonCodesSchema
+});
+export type SemanticRebaseDroppedMetric = z.infer<
+  typeof SemanticRebaseDroppedMetricSchema
+>;
+
+export const SemanticRebaseDroppedItemSchema = z.discriminatedUnion(
+  "item_type",
+  [
+    SemanticRebaseDroppedTableSchema,
+    SemanticRebaseDroppedColumnSchema,
+    SemanticRebaseDroppedBusinessConceptSchema,
+    SemanticRebaseDroppedMetricSchema
+  ]
+);
+export type SemanticRebaseDroppedItem = z.infer<
+  typeof SemanticRebaseDroppedItemSchema
+>;
+
+export const SemanticRebaseReportSchema = z.strictObject({
+  carried_table_keys: z.array(Sha256Schema).max(5_000),
+  dropped_tables: z.array(SemanticRebaseDroppedTableSchema).max(5_000),
+  carried_column_keys: z.array(Sha256Schema).max(250_000),
+  dropped_columns: z.array(SemanticRebaseDroppedColumnSchema).max(250_000),
+  carried_business_concept_keys: z.array(z.string().uuid()).max(10_000),
+  dropped_business_concepts: z
+    .array(SemanticRebaseDroppedBusinessConceptSchema)
+    .max(10_000),
+  carried_metric_keys: z.array(z.string().uuid()).max(100_000),
+  dropped_metrics: z.array(SemanticRebaseDroppedMetricSchema).max(100_000)
+});
+export type SemanticRebaseReport = z.infer<
+  typeof SemanticRebaseReportSchema
+>;
+
+export const SemanticRebaseResultSchema = z.strictObject({
+  semantic_layer: SemanticLayerSchema,
+  rebase_report: SemanticRebaseReportSchema
+});
+export type SemanticRebaseResult = z.infer<
+  typeof SemanticRebaseResultSchema
+>;
+
+export const SemanticDiscoveryCandidateKeySchema = z.strictObject({
+  key_type: z.enum(["primary_key", "unique_constraint", "unique_index"]),
+  column_keys: z.array(Sha256Schema).min(1).max(100)
+});
+export type SemanticDiscoveryCandidateKey = z.infer<
+  typeof SemanticDiscoveryCandidateKeySchema
+>;
+
+export const SemanticDiscoveryTableInputSchema = z.strictObject({
+  node_key: Sha256Schema,
+  schema_name: z.string().min(1).max(255),
+  object_name: z.string().min(1).max(255),
+  object_type: z.enum(["table", "view"]),
+  queryability_status: QueryabilityStatusSchema,
+  bridge_candidate: z.boolean(),
+  candidate_keys: z.array(SemanticDiscoveryCandidateKeySchema).max(100),
+  view_lineage_status: z
+    .enum(["complete", "partial", "unavailable"])
+    .nullish()
+});
+export type SemanticDiscoveryTableInput = z.infer<
+  typeof SemanticDiscoveryTableInputSchema
+>;
+
+export const SemanticDiscoveryColumnInputSchema = z.strictObject({
+  column_key: Sha256Schema,
+  node_key: Sha256Schema,
+  physical_name: z.string().min(1).max(255),
+  native_type: z.string().min(1).max(255).nullish(),
+  normalized_type: z.string().min(1).max(255).nullish(),
+  technical_role: SchemaTechnicalRoleSchema,
+  nullable: z.boolean(),
+  queryability_status: QueryabilityStatusSchema,
+  sensitivity: QueryabilitySensitivitySchema
+});
+export type SemanticDiscoveryColumnInput = z.infer<
+  typeof SemanticDiscoveryColumnInputSchema
+>;
+
+export const SemanticDiscoveryColumnPairInputSchema = z.strictObject({
+  from_column_key: Sha256Schema,
+  from_column_name: z.string().min(1).max(255),
+  to_column_key: Sha256Schema,
+  to_column_name: z.string().min(1).max(255)
+});
+export type SemanticDiscoveryColumnPairInput = z.infer<
+  typeof SemanticDiscoveryColumnPairInputSchema
+>;
+
+export const SemanticDiscoveryRelationshipInputSchema = z.strictObject({
+  edge_key: Sha256Schema,
+  constraint_name: z.string().min(1).max(255),
+  from_node_key: Sha256Schema,
+  to_node_key: Sha256Schema,
+  column_pairs: z
+    .array(SemanticDiscoveryColumnPairInputSchema)
+    .min(1)
+    .max(100),
+  relationship_shape: z.enum(["one_to_one", "many_to_one"]),
+  child_to_parent: z.enum(["zero_or_one", "exactly_one"]),
+  parent_to_child: z.enum(["zero_or_one", "zero_or_many"]),
+  nullable_fk: z.boolean(),
+  self_reference: z.boolean()
+});
+export type SemanticDiscoveryRelationshipInput = z.infer<
+  typeof SemanticDiscoveryRelationshipInputSchema
+>;
+
+export const SemanticDiscoveryInputSchema = z.strictObject({
+  contract_version: z.literal("semantic_discovery_input.v1"),
+  engine: z.literal("sqlserver"),
+  base_graph_hash: Sha256Schema,
+  graph_status: z.enum(["complete", "partial"]),
+  tables: z.array(SemanticDiscoveryTableInputSchema).max(5_000),
+  columns: z.array(SemanticDiscoveryColumnInputSchema).max(250_000),
+  relationships: z
+    .array(SemanticDiscoveryRelationshipInputSchema)
+    .max(250_000)
+});
+export type SemanticDiscoveryInput = z.infer<
+  typeof SemanticDiscoveryInputSchema
+>;
+
+export const AISemanticTableProposalSchema = z.strictObject({
+  node_key: Sha256Schema,
+  display_name: z.string().min(1).max(255),
+  description: z.string().min(1).max(2_000),
+  business_domain: z.string().min(1).max(255),
+  synonyms: z.array(z.string().min(1).max(255)).max(100)
+});
+export type AISemanticTableProposal = z.infer<
+  typeof AISemanticTableProposalSchema
+>;
+
+export const AISemanticColumnProposalSchema = z.strictObject({
+  column_key: Sha256Schema,
+  display_name: z.string().min(1).max(255),
+  description: z.string().min(1).max(2_000),
+  synonyms: z.array(z.string().min(1).max(255)).max(100),
+  semantic_role: z.string().min(1).max(100),
+  format_hint: z.enum([
+    "text",
+    "integer",
+    "decimal",
+    "currency",
+    "percentage",
+    "date",
+    "datetime",
+    "boolean",
+    "identifier"
+  ])
+});
+export type AISemanticColumnProposal = z.infer<
+  typeof AISemanticColumnProposalSchema
+>;
+
+export const AISemanticBusinessConceptProposalSchema = z.strictObject({
+  concept_ref: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
+  display_name: z.string().min(1).max(255),
+  description: z.string().min(1).max(2_000),
+  synonyms: z.array(z.string().min(1).max(255)).max(100)
+});
+export type AISemanticBusinessConceptProposal = z.infer<
+  typeof AISemanticBusinessConceptProposalSchema
+>;
+
+export const AISemanticDimensionProposalSchema = z.strictObject({
+  dimension_column_key: Sha256Schema,
+  edge_path: z.array(Sha256Schema).max(4)
+});
+export type AISemanticDimensionProposal = z.infer<
+  typeof AISemanticDimensionProposalSchema
+>;
+
+export const AISemanticMetricProposalSchema = z.strictObject({
+  canonical_name: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
+  business_concept_ref: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
+  metric_variant: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
+  name: z.string().min(1).max(255),
+  description: z.string().min(1).max(2_000),
+  source_table_key: Sha256Schema,
+  aggregation: z.enum([
+    "count",
+    "count_distinct",
+    "sum",
+    "avg",
+    "min",
+    "max"
+  ]),
+  measure_column_key: Sha256Schema.nullable(),
+  grain_table_key: Sha256Schema,
+  grain_column_keys: z.array(Sha256Schema).min(1).max(100),
+  aggregation_level: z.enum(["row", "entity", "period"]),
+  additivity: z.enum(["additive", "semi_additive", "non_additive"]),
+  default_date_column_key: Sha256Schema.nullable(),
+  required_join_edge_keys: z.array(Sha256Schema).max(4),
+  common_dimensions: z.array(AISemanticDimensionProposalSchema).max(100),
+  preferred_for_grains: z.array(z.string().min(1).max(100)).max(100),
+  preferred_for_dimensions: z.array(Sha256Schema).max(100),
+  filters: z.array(SemanticFilterSchema).max(100),
+  format: SemanticMetricFormatSchema,
+  synonyms: z.array(z.string().min(1).max(255)).max(100),
+  reasoning_summary: z.string().min(1).max(1_000)
+});
+export type AISemanticMetricProposal = z.infer<
+  typeof AISemanticMetricProposalSchema
+>;
+
+export const AISemanticAmbiguitySchema = z.strictObject({
+  code: z.string().regex(/^[A-Z][A-Z0-9_]{1,99}$/),
+  target_type: z.enum([
+    "table",
+    "column",
+    "business_concept",
+    "metric"
+  ]),
+  target_ref: z.string().min(1).max(255),
+  summary: z.string().min(1).max(500),
+  clarification_question: z.string().min(1).max(500)
+});
+export type AISemanticAmbiguity = z.infer<
+  typeof AISemanticAmbiguitySchema
+>;
+
+export const AISemanticDraftProposalSchema = z.strictObject({
+  contract_version: z.literal("semantic_ai_draft.v1"),
+  tables: z.array(AISemanticTableProposalSchema).max(5_000),
+  columns: z.array(AISemanticColumnProposalSchema).max(250_000),
+  business_concepts: z
+    .array(AISemanticBusinessConceptProposalSchema)
+    .max(10_000),
+  metrics: z.array(AISemanticMetricProposalSchema).max(10_000),
+  ambiguities: z.array(AISemanticAmbiguitySchema).max(10_000)
+});
+export type AISemanticDraftProposal = z.infer<
+  typeof AISemanticDraftProposalSchema
+>;
+
+const Rfc3339DateTimeSchema = z
+  .string()
+  .datetime({ offset: true })
+  .regex(
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
+  );
+
+export const SemanticGenerationProvenanceSchema = z.strictObject({
+  provider: z.literal("openai"),
+  model_version: z.string().min(1).max(255),
+  prompt_version: z.string().min(1).max(100),
+  generated_at: Rfc3339DateTimeSchema,
+  input_hash: Sha256Schema,
+  proposal_hash: Sha256Schema,
+  response_id: z.string().min(1).max(255)
+});
+export type SemanticGenerationProvenance = z.infer<
+  typeof SemanticGenerationProvenanceSchema
+>;
+
+export const SemanticGenerationResultSchema = z.strictObject({
+  proposal: AISemanticDraftProposalSchema,
+  provenance: SemanticGenerationProvenanceSchema,
+  semantic_layer: SemanticLayerSchema
+});
+export type SemanticGenerationResult = z.infer<
+  typeof SemanticGenerationResultSchema
+>;
+
 export const CHART_TYPE_VALUES = [
   "table",
   "kpi_number",
@@ -712,90 +1440,59 @@ export const VerificationSummarySchema = z.strictObject({
 });
 export type VerificationSummary = z.infer<typeof VerificationSummarySchema>;
 
-export const RelationshipSchema = z.strictObject({
-  id: z.string().uuid(),
-  from_table: z.string().min(1),
-  from_columns: z.array(z.string().min(1)).min(1),
-  to_table: z.string().min(1),
-  to_columns: z.array(z.string().min(1)).min(1),
-  cardinality: z.enum(["one_to_one", "one_to_many", "many_to_one", "many_to_many"]),
-  semantic_status: z.enum(["confirmed", "suggested", "rejected"]),
-  source: z.enum(["database_fk", "user_validated", "ai_suggested"])
-});
-export type Relationship = z.infer<typeof RelationshipSchema>;
-
-export const SemanticColumnSchema = z.strictObject({
-  name: z.string().min(1),
-  data_type: z.string().min(1),
-  business_name: z.string().min(1).optional(),
-  role: z.enum(["dimension", "measure", "date", "identifier", "unknown"]),
-  format: ColumnFormatSchema.optional(),
-  pii: z.boolean().default(false)
-});
-export type SemanticColumn = z.infer<typeof SemanticColumnSchema>;
-
-export const SemanticTableSchema = z.strictObject({
-  name: z.string().min(1),
-  schema: z.string().min(1).default("dbo"),
-  business_name: z.string().min(1).optional(),
-  active: z.boolean(),
-  columns: z.array(SemanticColumnSchema)
-});
-export type SemanticTable = z.infer<typeof SemanticTableSchema>;
-
-export const SemanticMetricSchema = z.strictObject({
-  id: z.string().uuid(),
-  name: z.string().min(1),
-  expression: z.string().min(1),
-  grain: z.array(z.string().min(1)).default([]),
-  format: ColumnFormatSchema
-});
-export type SemanticMetric = z.infer<typeof SemanticMetricSchema>;
-
-export const BusinessAnchorSchema = z.strictObject({
-  id: z.string().uuid(),
-  name: z.string().min(1),
-  metric_id: z.string().uuid(),
-  expected_range: z.strictObject({
-    min: z.number().finite().optional(),
-    max: z.number().finite().optional()
-  }),
-  period: z.enum(["daily", "monthly", "quarterly", "yearly"])
-});
-export type BusinessAnchor = z.infer<typeof BusinessAnchorSchema>;
-
-export const SemanticLayerSchema = z.strictObject({
-  tenant_id: z.string().uuid(),
-  version_id: z.string().uuid(),
-  version: z.number().int().positive(),
-  status: z.enum(["draft", "active", "archived"]),
-  engine: EngineSchema,
-  tables: z.array(SemanticTableSchema),
-  relationships: z.array(RelationshipSchema),
-  metrics: z.array(SemanticMetricSchema),
-  business_anchors: z.array(BusinessAnchorSchema)
-});
-export type SemanticLayer = z.infer<typeof SemanticLayerSchema>;
-
 export const QueryPermissionSchema = z.strictObject({
   can_view_sql: z.boolean(),
   can_save_widget: z.boolean()
 });
 export type QueryPermission = z.infer<typeof QueryPermissionSchema>;
 
-export const QueryRequestSchema = z.strictObject({
-  tenant_id: z.string().uuid(),
-  connection_id: z.string().uuid(),
-  user_id: z.string().uuid(),
-  question: z.string().min(1).max(1000),
-  semantic_layer: SemanticLayerSchema,
-  permissions: QueryPermissionSchema,
-  execution: z.strictObject({
-    mode: z.enum(["plan_only", "run"]),
-    row_limit: z.number().int().min(1).max(5000),
-    timeout_ms: z.number().int().min(1000).max(120000)
+export const QueryRequestSchema = z
+  .strictObject({
+    tenant_id: z.string().uuid(),
+    connection_id: z.string().uuid(),
+    user_id: z.string().uuid(),
+    question: z.string().min(1).max(1000),
+    semantic_layer: SemanticLayerSchema,
+    permissions: QueryPermissionSchema,
+    execution: z.strictObject({
+      mode: z.enum(["plan_only", "run"]),
+      row_limit: z.number().int().min(1).max(5000),
+      timeout_ms: z.number().int().min(1000).max(120000)
+    })
   })
-});
+  .superRefine((request, context) => {
+    if (
+      request.semantic_layer.tenant_id !== request.tenant_id ||
+      request.semantic_layer.connection_id !== request.connection_id
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["semantic_layer"],
+        message:
+          "semantic_layer tenant and connection must match the request"
+      });
+    }
+    if (
+      request.semantic_layer.status !== "active" ||
+      request.semantic_layer.freshness !== "fresh" ||
+      !["valid", "valid_with_warnings"].includes(
+      request.semantic_layer.validation_report.status
+      ) ||
+      request.semantic_layer.validation_report.blocking_errors.length > 0 ||
+      request.semantic_layer.validation_report.validated_revision !==
+        request.semantic_layer.revision ||
+      request.semantic_layer.validation_report.validated_at == null ||
+      request.semantic_layer.validation_report.validator_version !==
+        request.semantic_layer.validator_version
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["semantic_layer"],
+        message:
+          "semantic_layer must be active, fresh, and successfully validated"
+      });
+    }
+  });
 export type QueryRequest = z.infer<typeof QueryRequestSchema>;
 
 export const ResultColumnSchema = z.strictObject({

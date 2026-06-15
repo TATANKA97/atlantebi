@@ -654,134 +654,192 @@ connection_id uuid fk
 queryability_graph_version_id uuid fk
 base_graph_hash text
 version integer
-status text -- draft | active | archived
+status text -- draft | proposed | active | archived
+freshness text -- fresh | stale
+builder_version text
+ai_model_version text nullable
+ai_prompt_version text nullable
+validator_version text
+policy_version text
+revision integer
+semantic_hash text
+artifact jsonb
+validation_report jsonb
 created_by uuid
 created_at timestamptz
 activated_at timestamptz nullable
+archived_at timestamptz nullable
+rebased_from_version_id uuid nullable
 ```
 
-La versione semantica e' `fresh` quando `base_graph_hash` coincide con il
-graph corrente, `stale` quando differisce e `indeterminate` quando l'ultimo
-build del graph e' blocked.
+La freshness effettiva deriva dal confronto tra `base_graph_hash` e il
+`graph_hash` della derivazione corrente. Il campo persistito e' una proiezione
+diagnostica, non una seconda fonte di verita'. Una versione active stale resta
+disponibile per audit ma non e' utilizzabile dal Query Compiler. L'artifact
+canonico usa esclusivamente stable key del Queryability Graph. Active e
+archived sono immutabili.
 
-### 13.8 semantic_tables
+Il dominio semantic legacy viene eliminato nella migration V1. Non esiste un
+compatibility layer tra le vecchie proiezioni tecniche `semantic_*` e il nuovo
+Semantic Layer. Le FK applicative gia' presenti vengono riallineate al nuovo
+registro senza tentare conversioni semantiche dei dati demo.
+
+### 13.8 semantic_layer_tables
 
 ```txt
 id uuid pk
 tenant_id uuid fk
 semantic_version_id uuid fk
+node_key text
 schema_name text
-table_name text
+object_name text
 object_type text -- table | view
 display_name text
 description text
 included boolean
 business_domain text nullable
-row_count_approx bigint nullable
-confidence text
+status text -- system_seeded | ai_proposed | human_verified | rejected | disabled | stale
 created_at timestamptz
 updated_at timestamptz
 ```
 
-### 13.9 semantic_columns
+### 13.9 semantic_layer_columns
 
 ```txt
 id uuid pk
 tenant_id uuid fk
 semantic_table_id uuid fk
-column_name text
+column_key text
+node_key text
+physical_name text
 display_name text
 description text
-data_type text
-semantic_type text -- money | quantity | id | date | customer | product | etc.
-is_nullable boolean
-is_primary_key boolean
-is_foreign_key boolean
+technical_role text
+semantic_role text nullable
 included boolean
-pii_kind text nullable
-format_hint text nullable -- currency | integer | decimal | percent | date | text
+queryability_status text
+inherited_sensitivity text
+sensitivity text
+format_hint text nullable
+status text
 created_at timestamptz
 updated_at timestamptz
 ```
 
-### 13.10 semantic_relationships
+Sensitivity e queryability sono ereditarie e monotone: l'arricchimento
+semantico puo' restringerle, mai indebolirle.
+
+### 13.10 semantic_layer_relationships
 
 ```txt
 id uuid pk
 tenant_id uuid fk
 semantic_version_id uuid fk
-from_table_id uuid
-from_column_id uuid
-to_table_id uuid
-to_column_id uuid
-relationship_type text -- one_to_many | many_to_one | one_to_one
-source text -- graph_edge | inferred | user_confirmed | ai_suggested
-graph_edge_id uuid nullable
-confidence numeric
-status text -- proposed | verified | rejected
-evidence jsonb
+edge_key text
+from_node_key text
+to_node_key text
+relationship_shape text -- one_to_one | many_to_one
+enabled boolean
+status text
 created_at timestamptz
 updated_at timestamptz
 ```
 
-### 13.11 semantic_metrics
+V1 ammette esclusivamente FK `enabled`, `trusted` e `verified_by_db` del
+graph. Il lineage view non e' join evidence.
+
+### 13.11 semantic_layer_business_concepts
 
 ```txt
 id uuid pk
 tenant_id uuid fk
 semantic_version_id uuid fk
-name text -- fatturato, margine, ordini, clienti_attivi
+business_concept_key uuid
+canonical_name text
+display_name text
 description text
-source_table_id uuid
-measure_column_id uuid nullable
-aggregation text -- sum | count | count_distinct | avg
-grain text -- order | order_line | invoice | customer | product
-default_date_column_id uuid nullable
-default_filters jsonb
 synonyms text[]
-status text -- proposed | verified | deprecated
+status text
+provenance text -- system | ai | human
 created_at timestamptz
 updated_at timestamptz
 ```
 
-### 13.12 semantic_memory
+I concept raggruppano varianti correlate, non intercambiabili. Per esempio
+`revenue` puo' includere `net_header`, `document_total` e `line_detail`.
+
+### 13.12 semantic_layer_metrics
 
 ```txt
 id uuid pk
 tenant_id uuid fk
-connection_id uuid fk
 semantic_version_id uuid fk
-memory_type text -- join_rule | metric_rule | query_fix | ambiguity_rule | warning
-title text
-content text
-evidence jsonb
-related_tables text[]
-related_columns text[]
-status text -- proposed | verified | user_confirmed | deprecated
-hit_count integer
-last_used_at timestamptz nullable
-schema_hash text
+metric_key uuid
+canonical_name text
+metric_definition_hash text
+business_concept_key uuid
+metric_variant text
+source_table_key text
+aggregation text -- count | count_distinct | sum | avg | min | max
+measure_column_key text nullable
+grain_table_key text
+grain_column_keys text[]
+default_date_column_key text nullable
+required_join_edge_keys text[]
+dimension_policy jsonb
+common_dimension_compatibility jsonb
+filters jsonb
+format jsonb
+confidence numeric
+compiler_eligibility text
+eligibility_reasons text[]
+status text
+provenance text
+enabled boolean
 created_at timestamptz
 updated_at timestamptz
 ```
 
-### 13.13 business_anchors
+`metric_key` e' un'identita' logica opaca e stabile.
+`metric_definition_hash` cambia quando cambiano formula, grain, data,
+filtri o join.
+
+Ogni metrica dichiara il grain. Una metrica header non puo' essere
+raggruppata per dimensioni detail in V1 senza allocation strategy, che e'
+fuori scope.
+
+Le dimensioni comuni, le ambiguita' e le esecuzioni AI sono proiettate in
+`semantic_layer_metric_common_dimensions`, `semantic_layer_ambiguities` e
+`semantic_generation_runs`. Queste tabelle non sostituiscono l'artifact
+JSONB canonico: servono per review, audit e interrogazioni operative.
+
+### 13.13 north_star_benchmarks
 
 Le “stelle polari”.
 
 ```txt
-id uuid pk
+benchmark_key uuid pk
 tenant_id uuid fk
-name text -- fatturato_2025, numero_clienti_attivi, ordini_anno
-metric_name text
+connection_id uuid fk
+dashboard_id uuid nullable
+semantic_version_id uuid nullable
+metric_key uuid nullable
+name text
+description text
+expected_value numeric
+value_type text
+currency text nullable
+period_type text
 period_start date nullable
 period_end date nullable
-value numeric
-unit text -- EUR | count | percent | etc.
-tolerance_percent numeric default 5
-source text -- manual | imported
-status text -- active | archived
+tolerance_mode text
+tolerance_percentage numeric nullable
+min_value numeric nullable
+max_value numeric nullable
+severity text
+enabled boolean
 created_by uuid
+updated_by uuid
 created_at timestamptz
 updated_at timestamptz
 ```
@@ -789,15 +847,16 @@ updated_at timestamptz
 Esempio:
 
 ```txt
-metric_name = fatturato
-period_start = 2025-01-01
-period_end = 2025-12-31
-value = 10000000
-unit = EUR
-tolerance_percent = 5
+metric_key = <opaque uuid>
+canonical_name = fatturato_netto
+expected_value = 10000000
+currency = EUR
+period_type = year
 ```
 
-Questi valori possono essere passati all’AI in forma sintetica e usati anche deterministicamente per controlli di plausibilità.
+La North Star non modifica metrica, `metric_definition_hash`,
+`semantic_hash` o queryability. Il Result Validator la usera' dopo
+l'esecuzione per controllare l'ordine di grandezza.
 
 ### 13.14 dashboards
 
@@ -988,18 +1047,91 @@ graph_input_hash + builder_version + policy_version
 L'import schema termina con `semantic_status = not_initialized`. La mancanza
 del Semantic Layer dopo un import riuscito non e' un errore.
 
-La creazione successiva:
+La pipeline semantic e' AI-first:
 
-1. seleziona una versione Queryability Graph;
-2. salva `base_graph_hash`;
-3. aggiunge naming, metriche e interpretazioni business;
-4. applica eventuale AI enrichment;
-5. richiede revisione admin;
-6. attiva esplicitamente la versione.
+```txt
+Queryability Graph
+-> deterministic semantic seed
+-> AI Semantic Draft
+-> Semantic Validator deterministico
+-> proposed semantic layer
+-> auto-activation o correzione umana
+-> active semantic layer
+```
 
-La freshness dipende da `base_graph_hash`, non da `schema_hash`.
+La manualita' e' governance e override, non il flusso principale. La
+freshness dipende da `base_graph_hash`, non da `schema_hash`.
 
-### 14.3 Profiling privacy-safe
+### 14.3 Deterministic semantic seed
+
+Il seed importa nodi, colonne e sole FK queryable, enabled e trusted. Eredita
+queryability, exclusion, sensitivity e technical role. Non crea significato
+business, metriche o join da lineage view.
+
+### 14.4 AI Semantic Draft
+
+L'AI propone naming, descrizioni, sinonimi, domain grouping, semantic role,
+format hint, business concept e metriche strutturate. Non genera SQL.
+
+L'input AI e' una proiezione allowlisted del Queryability Graph. Include
+stable key, nomi tecnici, tipi, technical role, candidate key espresse con
+`column_key`, FK trusted, queryability e sensitivity. Esclude snapshot completo,
+view definition,
+extended properties, dati raw, sample, credenziali e colonne escluse o
+`sensitive`.
+
+Nomi di database, schema, oggetti, colonne e constraint sono dati non fidati:
+non possono contenere istruzioni per il modello.
+
+L'output AI contiene solo annotazioni e proposte:
+
+* table e column annotation referenziate tramite stable key;
+* concept referenziati tramite `concept_ref` logica;
+* metriche con source, aggregation, measure, grain, default date, FK edge,
+  dimensioni comuni, format e reasoning breve;
+* ambiguita' esplicite.
+
+L'AI non assegna e non puo' modificare:
+
+* UUID, hash o versioni artifact;
+* queryability, exclusion o sensitivity;
+* cardinalita' e relationship tecniche;
+* status, provenance, confidence o compiler eligibility;
+* dimension safety e validation report.
+
+Il server assegna identity stabile, calcola dimension safety, definition
+hash, semantic hash, provenance, confidence ed eligibility, quindi esegue il
+Semantic Validator.
+
+Una metrica header non puo' essere spezzata su dimensioni detail in V1.
+`SUM(SalesOrderHeader.SubTotal)` per categoria prodotto e' vietata;
+`SUM(SalesOrderDetail.LineTotal)` per categoria prodotto e' compatibile.
+Allocation strategies sono fuori V1.
+
+### 14.5 Semantic Validator
+
+Il validator controlla stable key, queryability, sensitivity, FK trusted,
+tipi, grain, join multiplication, filtri e definition hash. Produce
+`blocking_errors`, `warnings` e `info`.
+
+Calcola inoltre confidence e `compiler_eligibility`:
+
+```txt
+eligible
+eligible_with_disclosure
+clarification_required
+not_eligible
+```
+
+Una proposta AI valida e high-confidence puo' essere usata senza onboarding
+manuale, mostrando l'interpretazione applicata.
+
+La confidence certifica la coerenza tecnica rispetto a graph e policy, non la
+verita' business. In assenza di profiling, filtri letterali proposti dall'AI
+richiedono chiarimento (`AI_FILTER_VALUE_UNVERIFIED`). Ambiguita' aperte su
+table o column si propagano alle metriche che usano quei riferimenti.
+
+### 14.6 Profiling privacy-safe
 
 Il sistema può calcolare internamente:
 
@@ -1021,7 +1153,7 @@ ai_send_sample_rows = false default
 
 Se attivata, inviare solo sample redatti e limitati.
 
-### 14.4 AI enrichment
+### 14.7 AI enrichment futuro
 
 L’AI può suggerire:
 
@@ -1035,7 +1167,10 @@ L’AI può suggerire:
 
 L’AI non decide in modo definitivo. Il semantic layer attivo deve essere revisionabile.
 
-### 14.5 Memorie semantiche
+View definitions redatte, sample rows autorizzati e profiling leggero sono
+evoluzioni future, non requisiti della foundation V1.
+
+### 14.8 Memorie semantiche
 
 Quando il sistema scopre qualcosa di utile, crea memoria.
 
@@ -2127,8 +2262,18 @@ Servizi:
 * **3B Queryability Graph V1**: graph tecnico immutabile, cardinalita',
   trust, nullability, self-reference, path fino a quattro hop, ambiguity e
   fanout warning;
-* **3C Semantic Layer**: derivazione da graph version, `base_graph_hash`,
-  AI enrichment, review admin e activation version.
+* **3C.1 Semantic Foundation**: contract `semantic_layer.v1`, deterministic
+  seed, business concept, metric identity/definition hash, grain safety,
+  compact dimension policy, compiler eligibility e validator puro;
+* **3C.2 AI Semantic Discovery**: structured output, prompt/model versioning,
+  input allowlisted, identity e safety server-side, eval offline
+  AdventureWorksLT e provenance;
+* **3C.3 Semantic Lifecycle**: schema canonico e purge legacy, persistenza
+  transazionale, optimistic concurrency, freshness effettiva, rebase per
+  stable key, activation atomica, immutabilita' active/archived, RLS/RPC e
+  audit. Non include API o UI;
+* **3C.4 Semantic API e Workspace**: API tenant-scoped e UI AI-first per
+  generazione, review, correzione, validation, activation e rebase.
 
 ### Milestone 4 — Query AI
 

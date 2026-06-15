@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,19 +10,15 @@ from app.models import (
     QueryabilityGraphVersion,
     QueryabilityPathResult,
 )
+from tests.shared_fixtures import contract_fixture_path
 
 
-FIXTURE_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "packages"
-    / "contracts"
-    / "src"
-    / "fixtures"
-    / "queryability-graph-v1.json"
-)
+FIXTURE_PATH = contract_fixture_path("queryability-graph-v1.json")
 
 
 def graph_fixture() -> dict:
+    if FIXTURE_PATH is None:
+        pytest.skip("Shared TypeScript contract fixtures are not in this image.")
     return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 
 

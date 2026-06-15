@@ -1,0 +1,62 @@
+{
+  "contract_version": "semantic_ai_draft.v1",
+  "tables": [
+    {
+      "node_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "display_name": "Ordini",
+      "description": "Documenti di vendita.",
+      "business_domain": "Vendite",
+      "synonyms": ["documenti vendita"]
+    }
+  ],
+  "columns": [
+    {
+      "column_key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "display_name": "Imponibile",
+      "description": "Importo netto del documento.",
+      "synonyms": ["fatturato netto"],
+      "semantic_role": "measure_candidate",
+      "format_hint": "currency"
+    }
+  ],
+  "business_concepts": [
+    {
+      "concept_ref": "revenue",
+      "display_name": "Fatturato",
+      "description": "Valori economici delle vendite.",
+      "synonyms": ["vendite"]
+    }
+  ],
+  "metrics": [
+    {
+      "canonical_name": "fatturato_netto",
+      "business_concept_ref": "revenue",
+      "metric_variant": "net_header",
+      "name": "Fatturato netto",
+      "description": "Somma dell'imponibile dei documenti.",
+      "source_table_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "aggregation": "sum",
+      "measure_column_key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "grain_table_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "grain_column_keys": [
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      ],
+      "aggregation_level": "entity",
+      "additivity": "additive",
+      "default_date_column_key": null,
+      "required_join_edge_keys": [],
+      "common_dimensions": [],
+      "preferred_for_grains": ["document"],
+      "preferred_for_dimensions": [],
+      "filters": [],
+      "format": {
+        "value_type": "currency",
+        "currency": "EUR",
+        "decimals": 2
+      },
+      "synonyms": ["fatturato"],
+      "reasoning_summary": "La colonna è monetaria e vive al grain documento."
+    }
+  ],
+  "ambiguities": []
+}
