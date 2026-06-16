@@ -51,7 +51,7 @@ create table public.north_star_benchmarks (
   foreign key (semantic_version_id, metric_key)
     references public.semantic_layer_metrics(semantic_version_id, metric_key)
     on delete restrict,
-  check (
+  constraint north_star_benchmark_currency_consistency check (
     (value_type = 'currency' and currency is not null)
     or (value_type <> 'currency' and currency is null)
   ),

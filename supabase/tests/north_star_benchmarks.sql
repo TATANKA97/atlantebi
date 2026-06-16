@@ -649,7 +649,7 @@ select throws_ok(
     )
   $test$,
   '23514',
-  'non-currency benchmark cannot carry currency'
+  'new row for relation "north_star_benchmarks" violates check constraint "north_star_benchmark_currency_consistency"'
 );
 
 select lives_ok(
