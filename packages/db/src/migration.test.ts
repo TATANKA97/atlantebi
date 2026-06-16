@@ -347,7 +347,19 @@ describe("Supabase metadata migration", () => {
       "alter table public.ai_provider_settings force row level security;"
     );
     expect(migration).toContain(
+      "grant select on table public.ai_provider_settings"
+    );
+    expect(migration).not.toContain(
       "grant select, insert, update, delete on table public.ai_provider_settings"
+    );
+    expect(migration).toContain(
+      "create or replace function app_private.create_ai_provider_setting"
+    );
+    expect(migration).toContain(
+      "create or replace function public.create_ai_provider_setting"
+    );
+    expect(migration).toContain(
+      "grant execute on function public.create_ai_provider_setting"
     );
     expect(migration).toContain("to service_role");
     expect(migration).not.toContain(
@@ -374,7 +386,13 @@ describe("Supabase metadata migration", () => {
     expect(migration).toContain("'claude-sonnet-4-6'");
     expect(migration).toContain("'claude-opus-4-8'");
     expect(migration).toContain("model_id = 'claude-sonnet-4-6'");
-    expect(migration).toContain("thinking->>'effort' = 'xhigh'");
+    expect(migration).toContain("thinking->>'effort' in ('xhigh', 'max')");
+    expect(migration).toContain(
+      "constraint ai_provider_settings_secret_ref_binding"
+    );
+    expect(migration).toContain(
+      "AI provider secret_ref is not bound to this setting"
+    );
     expect(migration).toContain("ai_provider_setting");
   });
 

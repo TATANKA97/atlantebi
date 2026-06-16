@@ -82,6 +82,7 @@ const MESSAGE_COPY: Record<string, string> = {
   semantic_proposal_invalid: "La proposta AI non rispetta i vincoli tecnici.",
   semantic_proposal_validated: "Proposta semantica validata.",
   semantic_rebase_failed: "Rebase Semantic Layer fallito.",
+  semantic_review_failed: "Correzione Semantic Layer non salvata.",
   semantic_review_invalid:
     "La correzione non rispetta i vincoli tecnici del Semantic Layer.",
   semantic_revision_conflict:

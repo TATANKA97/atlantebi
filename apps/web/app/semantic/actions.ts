@@ -346,6 +346,11 @@ export async function createAndGenerateSemanticDraftAction(formData: FormData) {
 }
 
 export async function createAIProviderSettingAction(formData: FormData) {
+  const connectionId = formData.get("connection_id");
+  const connectionRedirect =
+    typeof connectionId === "string" && connectionId
+      ? { connectionId }
+      : {};
   const parsed = AIProviderFormSchema.safeParse({
     tenant_id: formData.get("tenant_id"),
     provider: formData.get("provider"),
@@ -356,11 +361,17 @@ export async function createAIProviderSettingAction(formData: FormData) {
     adaptive_thinking: formData.get("adaptive_thinking")
   });
   if (!parsed.success) {
-    redirectAIProvider({ message: "invalid_ai_provider" });
+    redirectAIProvider({
+      ...connectionRedirect,
+      message: "invalid_ai_provider"
+    });
   }
   const providerInput = AIProviderSettingInputSchema.safeParse(parsed.data);
   if (!providerInput.success) {
-    redirectAIProvider({ message: "invalid_ai_provider" });
+    redirectAIProvider({
+      ...connectionRedirect,
+      message: "invalid_ai_provider"
+    });
   }
   const context = await getActiveTenantContext(parsed.data.tenant_id);
   try {
@@ -370,9 +381,15 @@ export async function createAIProviderSettingAction(formData: FormData) {
     });
   } catch (error) {
     const response = aiProviderSettingsResponse(error);
-    redirectAIProvider({ message: response.code });
+    redirectAIProvider({
+      ...connectionRedirect,
+      message: response.code
+    });
   }
-  redirectAIProvider({ message: "ai_provider_saved" });
+  redirectAIProvider({
+    ...connectionRedirect,
+    message: "ai_provider_saved"
+  });
 }
 
 export async function generateSemanticDraftAction(formData: FormData) {
@@ -820,10 +837,19 @@ function redirectNorthStarError(error: unknown, connectionId?: string): never {
   });
 }
 
-function redirectAIProvider({ message }: { message: string }): never {
+function redirectAIProvider({
+  connectionId,
+  message
+}: {
+  connectionId?: string;
+  message: string;
+}): never {
   const query = new URLSearchParams({
     message,
     tab: "ai-provider"
   });
+  if (connectionId) {
+    query.set("connection", connectionId);
+  }
   redirect(`/semantic?${query.toString()}`);
 }

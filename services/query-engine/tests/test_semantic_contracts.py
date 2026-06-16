@@ -3,7 +3,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from app.models import SemanticLayer, SemanticMetric
+from app.models import AnthropicProviderConfig, SemanticLayer, SemanticMetric
 from app.semantic import compute_metric_definition_hash, compute_semantic_hash
 from tests.shared_fixtures import contract_fixture_path
 
@@ -56,6 +56,31 @@ def test_semantic_metric_requires_grain_and_opaque_metric_key() -> None:
     payload.pop("grain_column_keys")
     with pytest.raises(ValidationError):
         SemanticMetric.model_validate(payload)
+
+
+def test_anthropic_sonnet_rejects_xhigh_and_max_effort() -> None:
+    base = {
+        "provider": "anthropic",
+        "setting_id": "00000000-0000-4000-8000-000000000001",
+        "model_id": "claude-sonnet-4-6",
+        "thinking": {
+            "type": "anthropic_adaptive",
+            "enabled": True,
+            "effort": "medium",
+        },
+        "secret_ref": "gcp-secret-manager://projects/demo/secrets/provider",
+    }
+    AnthropicProviderConfig.model_validate(base)
+    for effort in ["xhigh", "max"]:
+        payload = {
+            **base,
+            "thinking": {
+                **base["thinking"],
+                "effort": effort,
+            },
+        }
+        with pytest.raises(ValidationError):
+            AnthropicProviderConfig.model_validate(payload)
 
 
 def test_semantic_contract_nullable_fields_and_wire_formats_match_zod() -> None:

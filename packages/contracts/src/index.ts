@@ -1282,10 +1282,13 @@ export const AISemanticProviderConfigSchema = z.discriminatedUnion("provider", [
       secret_ref: z.string().min(1).max(2_000)
     })
     .superRefine((value, context) => {
-      if (value.model_id === "claude-sonnet-4-6" && value.thinking.effort === "xhigh") {
+      if (
+        value.model_id === "claude-sonnet-4-6" &&
+        ["xhigh", "max"].includes(value.thinking.effort)
+      ) {
         context.addIssue({
           code: "custom",
-          message: "Claude Sonnet 4.6 does not support xhigh effort."
+          message: "Claude Sonnet 4.6 supports low, medium, or high effort."
         });
       }
     })
