@@ -1086,6 +1086,58 @@ class SemanticDiscoveryInput(StrictModel):
     )
 
 
+OpenAISemanticModel = Literal["gpt-5.5"]
+AnthropicSemanticModel = Literal["claude-sonnet-4-6", "claude-opus-4-8"]
+AIProvider = Literal["openai", "anthropic"]
+OpenAIReasoningEffort = Literal["none", "low", "medium", "high", "xhigh"]
+AnthropicEffort = Literal["low", "medium", "high", "xhigh", "max"]
+
+
+class OpenAIThinkingConfig(StrictModel):
+    type: Literal["openai_reasoning"]
+    effort: OpenAIReasoningEffort
+
+
+class AnthropicThinkingConfig(StrictModel):
+    type: Literal["anthropic_adaptive"]
+    enabled: bool
+    effort: AnthropicEffort
+
+    @model_validator(mode="after")
+    def validate_disabled_effort(self) -> "AnthropicThinkingConfig":
+        if not self.enabled and self.effort != "medium":
+            raise ValueError("disabled adaptive thinking must use medium effort")
+        return self
+
+
+class OpenAIProviderConfig(StrictModel):
+    provider: Literal["openai"]
+    setting_id: JsonUUID
+    model_id: OpenAISemanticModel
+    thinking: OpenAIThinkingConfig
+    secret_ref: str = Field(min_length=1, max_length=2_000)
+
+
+class AnthropicProviderConfig(StrictModel):
+    provider: Literal["anthropic"]
+    setting_id: JsonUUID
+    model_id: AnthropicSemanticModel
+    thinking: AnthropicThinkingConfig
+    secret_ref: str = Field(min_length=1, max_length=2_000)
+
+    @model_validator(mode="after")
+    def validate_model_effort(self) -> "AnthropicProviderConfig":
+        if self.model_id == "claude-sonnet-4-6" and self.thinking.effort == "xhigh":
+            raise ValueError("Claude Sonnet 4.6 does not support xhigh effort")
+        return self
+
+
+AISemanticProviderConfig = Annotated[
+    OpenAIProviderConfig | AnthropicProviderConfig,
+    Field(discriminator="provider"),
+]
+
+
 class AISemanticTableProposal(StrictModel):
     node_key: Sha256
     display_name: str = Field(min_length=1, max_length=255)
@@ -1179,8 +1231,12 @@ class AISemanticDraftProposal(StrictModel):
 
 
 class SemanticGenerationProvenance(StrictModel):
-    provider: Literal["openai"]
+    provider: AIProvider
     model_version: str = Field(min_length=1, max_length=255)
+    thinking_config: OpenAIThinkingConfig | AnthropicThinkingConfig | None = Field(
+        default=None,
+        discriminator="type",
+    )
     prompt_version: str = Field(min_length=1, max_length=100)
     generated_at: str
     input_hash: Sha256
@@ -1215,6 +1271,7 @@ class SemanticGenerationResult(StrictModel):
 class SemanticGenerationRequest(StrictModel):
     graph: QueryabilityGraphArtifact
     seed: SemanticLayer
+    provider_config: AISemanticProviderConfig
 
     @model_validator(mode="after")
     def validate_generation_scope(self) -> "SemanticGenerationRequest":

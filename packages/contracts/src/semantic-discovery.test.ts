@@ -5,6 +5,7 @@ import semanticAiDraftFixture from "./fixtures/semantic-ai-draft-v1.json";
 import {
   AISemanticDraftProposalSchema,
   AISemanticMetricProposalSchema,
+  AISemanticProviderConfigSchema,
   SemanticDiscoveryInputSchema,
   SemanticGenerationResultSchema
 } from "./index";
@@ -194,6 +195,10 @@ describe("semantic discovery and AI draft contracts", () => {
         provenance: {
           provider: "openai",
           model_version: "gpt-test",
+          thinking_config: {
+            type: "openai_reasoning",
+            effort: "medium"
+          },
           prompt_version: "semantic-v1",
           generated_at: "2026-06-14T08:00:00+00:00",
           input_hash: HASH_A,
@@ -213,6 +218,10 @@ describe("semantic discovery and AI draft contracts", () => {
         provenance: {
           provider: "openai",
           model_version: "gpt-test",
+          thinking_config: {
+            type: "openai_reasoning",
+            effort: "medium"
+          },
           prompt_version: "semantic-v1",
           generated_at: "2026-06-14 08:00:00+00:00",
           input_hash: HASH_A,
@@ -234,6 +243,10 @@ describe("semantic discovery and AI draft contracts", () => {
         provenance: {
           provider: "openai",
           model_version: "gpt-test",
+          thinking_config: {
+            type: "openai_reasoning",
+            effort: "medium"
+          },
           prompt_version: "semantic-v1",
           generated_at: "2026-06-14T08:00:00+00:00",
           input_hash: HASH_A,
@@ -243,5 +256,65 @@ describe("semantic discovery and AI draft contracts", () => {
         semantic_layer: semanticLayerFixture
       })
     ).not.toThrow();
+  });
+
+  it("allowlists semantic discovery providers, models, and thinking settings", () => {
+    expect(
+      AISemanticProviderConfigSchema.parse({
+        provider: "openai",
+        setting_id: "00000000-0000-4000-8000-000000000001",
+        model_id: "gpt-5.5",
+        thinking: {
+          type: "openai_reasoning",
+          effort: "xhigh"
+        },
+        secret_ref:
+          "gcp-secret-manager://projects/demo/secrets/atlantebi-ai-key"
+      }).model_id
+    ).toBe("gpt-5.5");
+
+    expect(
+      AISemanticProviderConfigSchema.parse({
+        provider: "anthropic",
+        setting_id: "00000000-0000-4000-8000-000000000001",
+        model_id: "claude-opus-4-8",
+        thinking: {
+          type: "anthropic_adaptive",
+          enabled: true,
+          effort: "xhigh"
+        },
+        secret_ref:
+          "gcp-secret-manager://projects/demo/secrets/atlantebi-ai-key"
+      }).provider
+    ).toBe("anthropic");
+
+    expect(() =>
+      AISemanticProviderConfigSchema.parse({
+        provider: "anthropic",
+        setting_id: "00000000-0000-4000-8000-000000000001",
+        model_id: "claude-sonnet-4-6",
+        thinking: {
+          type: "anthropic_adaptive",
+          enabled: true,
+          effort: "xhigh"
+        },
+        secret_ref:
+          "gcp-secret-manager://projects/demo/secrets/atlantebi-ai-key"
+      })
+    ).toThrow();
+
+    expect(() =>
+      AISemanticProviderConfigSchema.parse({
+        provider: "openai",
+        setting_id: "00000000-0000-4000-8000-000000000001",
+        model_id: "gpt-5.4",
+        thinking: {
+          type: "openai_reasoning",
+          effort: "medium"
+        },
+        secret_ref:
+          "gcp-secret-manager://projects/demo/secrets/atlantebi-ai-key"
+      })
+    ).toThrow();
   });
 });

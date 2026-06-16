@@ -104,7 +104,19 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
-      - run: docker build -f apps/web/Dockerfile -t atlantebi-web .
+      - name: Build web image
+        shell: bash
+        run: |
+          retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              "$@" && return 0
+              sleep $((attempt * 20))
+            done
+            "$@"
+          }
+
+          retry docker build -f apps/web/Dockerfile -t atlantebi-web .
 
   query-engine:
     runs-on: ubuntu-latest
@@ -156,7 +168,18 @@ jobs:
         run: echo "Skipping real SQL Server fixture; no SQL Server integration files changed."
       - name: Build query-engine integration test image
         if: steps.sqlserver-integration-scope.outputs.run == 'true'
-        run: docker build --target test -t atlantebi-query-engine-test .
+        shell: bash
+        run: |
+          retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              "$@" && return 0
+              sleep $((attempt * 20))
+            done
+            "$@"
+          }
+
+          retry docker build --target test -t atlantebi-query-engine-test .
         working-directory: services/query-engine
       - name: Start SQL Server fixture
         if: steps.sqlserver-integration-scope.outputs.run == 'true'
@@ -194,7 +217,19 @@ jobs:
             -e QUERY_ENGINE_ALLOW_PRIVATE_NETWORKS=true \
             atlantebi-query-engine-test \
             python -m pytest tests/test_sqlserver_integration.py
-      - run: docker build -t atlantebi-query-engine .
+      - name: Build query-engine image
+        shell: bash
+        run: |
+          retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              "$@" && return 0
+              sleep $((attempt * 20))
+            done
+            "$@"
+          }
+
+          retry docker build -t atlantebi-query-engine .
         working-directory: services/query-engine
       - if: always()
         run: |

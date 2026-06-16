@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(4);
+select plan(7);
 
 insert into auth.users (
   instance_id,
@@ -139,6 +139,64 @@ select is(
   ),
   0,
   'semantic generation lease is released'
+);
+
+truncate table semantic_workspace_leases;
+
+insert into semantic_workspace_leases
+select public.acquire_security_operation_lease(
+  '10000000-0000-4000-8000-000000000041',
+  '20000000-0000-4000-8000-000000000041',
+  'ai_provider_setting',
+  'openai:gpt-5.5'
+);
+
+select is(
+  (select count(*)::integer from semantic_workspace_leases),
+  1,
+  'owner can acquire an AI provider setting lease'
+);
+
+select throws_ok(
+  $$
+    select public.acquire_security_operation_lease(
+      '10000000-0000-4000-8000-000000000042',
+      '20000000-0000-4000-8000-000000000041',
+      'ai_provider_setting',
+      'anthropic:claude-opus-4-8'
+    )
+  $$,
+  '42501',
+  'actor cannot run this security operation',
+  'editor cannot configure tenant AI provider settings'
+);
+
+select throws_ok(
+  $$
+    insert into public.ai_provider_settings (
+      tenant_id,
+      provider,
+      model_id,
+      display_name,
+      thinking,
+      secret_ref,
+      created_by,
+      updated_by
+    )
+    values (
+      '20000000-0000-4000-8000-000000000041',
+      'anthropic',
+      'claude-sonnet-4-6',
+      'Invalid Sonnet',
+      '{"type":"anthropic_adaptive","enabled":true,"effort":"xhigh"}'::jsonb,
+      'projects/demo/secrets/invalid',
+      '10000000-0000-4000-8000-000000000041',
+      '10000000-0000-4000-8000-000000000041'
+    )
+  $$,
+  '23514',
+  null,
+  'Sonnet 4.6 cannot use Anthropic xhigh effort'
 );
 
 select * from finish();

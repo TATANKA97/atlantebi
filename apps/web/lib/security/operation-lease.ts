@@ -3,6 +3,7 @@ import "server-only";
 import { createSupabaseAdminClient } from "../supabase/admin";
 
 export type SecurityOperation =
+  | "ai_provider_setting"
   | "connection_test"
   | "schema_introspection"
   | "semantic_generation";

@@ -46,9 +46,18 @@ jobs:
 
       - name: Build and push image
         run: |
+          retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              "$@" && return 0
+              sleep $((attempt * 20))
+            done
+            "$@"
+          }
+
           IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REPOSITORY}/${SERVICE_NAME}:${{ github.event.workflow_run.head_sha }}"
-          docker build -t "${IMAGE}" services/query-engine
-          docker push "${IMAGE}"
+          retry docker build -t "${IMAGE}" services/query-engine
+          retry docker push "${IMAGE}"
           echo "IMAGE=${IMAGE}" >> "${GITHUB_ENV}"
 
       - name: Deploy private Cloud Run service

@@ -12,6 +12,7 @@ import {
   introspectConnectionAction,
   rebuildQueryabilityGraphAction
 } from "./actions";
+import { AIProviderWorkspace } from "./ai-provider-workspace";
 import { PathInspector } from "./path-inspector";
 import {
   SemanticWorkspace,
@@ -117,6 +118,9 @@ export default async function QueryabilityPage({
   const params = await searchParams;
   if (params.tab === "north-stars") {
     return <NorthStarWorkspace searchParams={params} />;
+  }
+  if (params.tab === "ai-provider") {
+    return <AIProviderWorkspace searchParams={params} />;
   }
   if (params.tab !== "technical") {
     return <SemanticWorkspace searchParams={params} />;
