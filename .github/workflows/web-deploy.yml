@@ -48,9 +48,18 @@ jobs:
 
       - name: Build and push image
         run: |
+          retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              "$@" && return 0
+              sleep $((attempt * 20))
+            done
+            "$@"
+          }
+
           IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REPOSITORY}/${SERVICE_NAME}:${{ github.event.workflow_run.head_sha }}"
-          docker build -f apps/web/Dockerfile -t "${IMAGE}" .
-          docker push "${IMAGE}"
+          retry docker build -f apps/web/Dockerfile -t "${IMAGE}" .
+          retry docker push "${IMAGE}"
           echo "IMAGE=${IMAGE}" >> "${GITHUB_ENV}"
 
       - name: Deploy public Cloud Run web service
