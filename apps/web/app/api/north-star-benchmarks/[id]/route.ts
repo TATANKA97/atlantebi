@@ -1,4 +1,5 @@
 import { NorthStarBenchmarkInputSchema } from "@atlantebi/contracts";
+import { z } from "zod";
 
 import {
   deleteNorthStarBenchmark,
@@ -13,6 +14,10 @@ import {
 import { getActiveTenantContextForApi } from "../../../../lib/tenant";
 
 export const dynamic = "force-dynamic";
+
+const RouteParamsSchema = z.strictObject({
+  id: z.string().uuid()
+});
 
 export async function PATCH(
   request: Request,
@@ -41,9 +46,12 @@ export async function PATCH(
   }
 
   try {
-    const { id } = await params;
+    const parsedParams = RouteParamsSchema.safeParse(await params);
+    if (!parsedParams.success) {
+      return semanticSuccessResponse({ error: "north_star_invalid_id" }, 400);
+    }
     const benchmarkKey = await updateNorthStarBenchmark({
-      benchmarkKey: id,
+      benchmarkKey: parsedParams.data.id,
       context: tenantResult.context,
       input: parsed.data
     });
@@ -71,9 +79,12 @@ export async function DELETE(
   }
 
   try {
-    const { id } = await params;
+    const parsedParams = RouteParamsSchema.safeParse(await params);
+    if (!parsedParams.success) {
+      return semanticSuccessResponse({ error: "north_star_invalid_id" }, 400);
+    }
     const benchmarkKey = await deleteNorthStarBenchmark({
-      benchmarkKey: id,
+      benchmarkKey: parsedParams.data.id,
       context: tenantResult.context
     });
     return semanticSuccessResponse({ benchmark_key: benchmarkKey });

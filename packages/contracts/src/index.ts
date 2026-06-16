@@ -1421,6 +1421,13 @@ export const NorthStarBenchmarkSchema = z
         message: "currency benchmarks require an ISO currency code"
       });
     }
+    if (benchmark.value_type !== "currency" && benchmark.currency !== null) {
+      context.addIssue({
+        code: "custom",
+        path: ["currency"],
+        message: "non-currency benchmarks must not include currency"
+      });
+    }
     if (benchmark.period_type === "custom") {
       if (!benchmark.period_start || !benchmark.period_end) {
         context.addIssue({
@@ -1519,6 +1526,13 @@ export const NorthStarBenchmarkInputSchema = z
         code: "custom",
         path: ["currency"],
         message: "currency benchmarks require an ISO currency code"
+      });
+    }
+    if (input.value_type !== "currency" && input.currency != null) {
+      context.addIssue({
+        code: "custom",
+        path: ["currency"],
+        message: "non-currency benchmarks must not include currency"
       });
     }
     if (input.period_type === "custom") {

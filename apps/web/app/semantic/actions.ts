@@ -207,6 +207,7 @@ const NorthStarFormSchema = z
     if (
       input.tolerance_mode === "percentage" &&
       (input.tolerance_percentage === null ||
+        input.tolerance_percentage <= 0 ||
         input.min_value !== null ||
         input.max_value !== null)
     ) {
@@ -516,7 +517,8 @@ export async function upsertNorthStarBenchmarkAction(formData: FormData) {
       description: parsed.data.description,
       expected_value: parsed.data.expected_value,
       value_type: parsed.data.value_type,
-      currency: parsed.data.currency,
+      currency:
+        parsed.data.value_type === "currency" ? parsed.data.currency : null,
       period_type: parsed.data.period_type,
       period_start: parsed.data.period_start,
       period_end: parsed.data.period_end,

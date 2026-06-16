@@ -251,15 +251,20 @@ function BenchmarkForm({
   benchmark?: NorthStarBenchmark;
   connectionId: string;
   metrics: SemanticMetric[];
-  semanticLayer: SemanticLayer;
-  semanticVersionId: string;
+  semanticLayer?: SemanticLayer;
+  semanticVersionId?: string;
   tenantId: string;
 }) {
-  const indexes = buildSemanticIndexes(semanticLayer);
-  const selectedMetricKey = benchmark?.metric_key ?? metrics[0]?.metric_key;
+  const indexes = semanticLayer ? buildSemanticIndexes(semanticLayer) : null;
+  const isConnectionBenchmark = benchmark?.metric_key === null;
+  const selectedMetricKey = isConnectionBenchmark
+    ? undefined
+    : benchmark?.metric_key &&
+        metrics.some((metric) => metric.metric_key === benchmark.metric_key)
+      ? benchmark.metric_key
+      : metrics[0]?.metric_key;
   const selectedMetric = selectedMetricKey
-    ? metrics.find((metric) => metric.metric_key === selectedMetricKey) ??
-      metrics[0]
+    ? metrics.find((metric) => metric.metric_key === selectedMetricKey)
     : undefined;
   return (
     <form
@@ -268,7 +273,14 @@ function BenchmarkForm({
     >
       <input name="tenant_id" type="hidden" value={tenantId} />
       <input name="connection_id" type="hidden" value={connectionId} />
-      <input name="semantic_version_id" type="hidden" value={semanticVersionId} />
+      <input
+        name="semantic_version_id"
+        type="hidden"
+        value={isConnectionBenchmark ? "" : (semanticVersionId ?? "")}
+      />
+      {isConnectionBenchmark ? (
+        <input name="metric_key" type="hidden" value="" />
+      ) : null}
       {benchmark ? (
         <input
           name="benchmark_key"
@@ -277,21 +289,23 @@ function BenchmarkForm({
         />
       ) : null}
 
-      <label className="flex flex-col gap-1 md:col-span-2">
-        <span className="text-xs text-[color:var(--muted)]">Metrica</span>
-        <select
-          className="border border-[color:var(--border)] bg-transparent px-3 py-2"
-          defaultValue={selectedMetricKey}
-          name="metric_key"
-          required
-        >
-          {metrics.map((metric) => (
-            <option key={metric.metric_key} value={metric.metric_key}>
-              {metric.name} - {metricFormulaLabel(metric, indexes)}
-            </option>
-          ))}
-        </select>
-      </label>
+      {!isConnectionBenchmark && indexes ? (
+        <label className="flex flex-col gap-1 md:col-span-2">
+          <span className="text-xs text-[color:var(--muted)]">Metrica</span>
+          <select
+            className="border border-[color:var(--border)] bg-transparent px-3 py-2"
+            defaultValue={selectedMetricKey}
+            name="metric_key"
+            required
+          >
+            {metrics.map((metric) => (
+              <option key={metric.metric_key} value={metric.metric_key}>
+                {metric.name} - {metricFormulaLabel(metric, indexes)}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
 
       <label className="flex flex-col gap-1 md:col-span-2">
         <span className="text-xs text-[color:var(--muted)]">Nome</span>
@@ -469,7 +483,7 @@ function BenchmarkForm({
         </button>
       </div>
 
-      {selectedMetric ? (
+      {selectedMetric && indexes ? (
         <p className="md:col-span-4 text-xs text-[color:var(--muted)]">
           Grain metrica: {metricGrainLabel(selectedMetric, indexes)}
         </p>
@@ -532,6 +546,9 @@ function BenchmarkTable({
                 const metric = benchmark.metric_key
                   ? metricMap.get(benchmark.metric_key)
                   : undefined;
+                const canEditBenchmark =
+                  benchmark.metric_key === null ||
+                  Boolean(currentSemantic && semanticVersionId && metric);
                 return (
                   <tr key={benchmark.benchmark_key}>
                     <th className="border-b border-[color:var(--border)] py-3 pr-4 text-left align-top font-normal">
@@ -582,7 +599,7 @@ function BenchmarkTable({
                     <td className="border-b border-[color:var(--border)] py-3 align-top">
                       {canManage ? (
                         <div className="flex flex-col gap-3">
-                          {currentSemantic && semanticVersionId ? (
+                          {canEditBenchmark ? (
                             <details>
                               <summary className="cursor-pointer text-[color:var(--accent)]">
                                 Modifica
@@ -592,13 +609,22 @@ function BenchmarkTable({
                                   benchmark={benchmark}
                                   connectionId={connectionId}
                                   metrics={metrics}
-                                  semanticLayer={currentSemantic}
-                                  semanticVersionId={semanticVersionId}
+                                  {...(currentSemantic
+                                    ? { semanticLayer: currentSemantic }
+                                    : {})}
+                                  {...(semanticVersionId
+                                    ? { semanticVersionId }
+                                    : {})}
                                   tenantId={tenantId}
                                 />
                               </div>
                             </details>
-                          ) : null}
+                          ) : (
+                            <span className="text-[color:var(--muted)]">
+                              Modifica non disponibile: metrica non eligible
+                              nella versione active/fresh corrente.
+                            </span>
+                          )}
                           <form action={deleteNorthStarBenchmarkAction}>
                             <input name="tenant_id" type="hidden" value={tenantId} />
                             <input

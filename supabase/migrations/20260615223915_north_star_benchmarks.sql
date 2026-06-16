@@ -44,16 +44,16 @@ create table public.north_star_benchmarks (
     on delete cascade,
   foreign key (tenant_id, dashboard_id)
     references public.dashboards(tenant_id, id)
-    on delete set null,
+    on delete set null (dashboard_id),
   foreign key (tenant_id, semantic_version_id)
     references public.semantic_layer_versions(tenant_id, id)
     on delete restrict,
   foreign key (semantic_version_id, metric_key)
     references public.semantic_layer_metrics(semantic_version_id, metric_key)
     on delete restrict,
-  check (
+  constraint north_star_benchmark_currency_consistency check (
     (value_type = 'currency' and currency is not null)
-    or (value_type <> 'currency')
+    or (value_type <> 'currency' and currency is null)
   ),
   check (
     (period_type = 'custom' and period_start is not null and period_end is not null)
@@ -226,6 +226,34 @@ begin
       using errcode = '22023';
   end if;
 
+  if exists (
+    select 1
+    from jsonb_object_keys(benchmark_payload) as payload_key(key)
+    where payload_key.key not in (
+      'connection_id',
+      'dashboard_id',
+      'semantic_version_id',
+      'metric_key',
+      'name',
+      'description',
+      'expected_value',
+      'value_type',
+      'currency',
+      'period_type',
+      'period_start',
+      'period_end',
+      'tolerance_mode',
+      'tolerance_percentage',
+      'min_value',
+      'max_value',
+      'severity',
+      'enabled'
+    )
+  ) then
+    raise exception 'north star payload contains unsupported fields'
+      using errcode = '22023';
+  end if;
+
   if require_connection_id
     and coalesce(benchmark_payload->>'connection_id', '') !~
       '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
@@ -261,7 +289,8 @@ begin
       using errcode = '22023';
   end if;
 
-  if length(trim(coalesce(benchmark_payload->>'name', ''))) = 0
+  if jsonb_typeof(benchmark_payload->'name') is distinct from 'string'
+    or length(trim(coalesce(benchmark_payload->>'name', ''))) = 0
     or length(trim(benchmark_payload->>'name')) > 255
   then
     raise exception 'north star name is invalid'
@@ -270,13 +299,23 @@ begin
 
   if benchmark_payload ? 'description'
     and benchmark_payload->>'description' is not null
-    and length(benchmark_payload->>'description') > 2000
+    and (
+      jsonb_typeof(benchmark_payload->'description') <> 'string'
+      or length(benchmark_payload->>'description') > 2000
+    )
   then
     raise exception 'north star description is invalid'
       using errcode = '22023';
   end if;
 
-  if benchmark_payload->>'value_type' not in (
+  if jsonb_typeof(benchmark_payload->'expected_value') is distinct from 'number'
+  then
+    raise exception 'north star expected_value is invalid'
+      using errcode = '22023';
+  end if;
+
+  if jsonb_typeof(benchmark_payload->'value_type') is distinct from 'string'
+    or benchmark_payload->>'value_type' not in (
     'currency',
     'number',
     'percentage',
@@ -286,7 +325,19 @@ begin
       using errcode = '22023';
   end if;
 
-  if benchmark_payload->>'period_type' not in (
+  if benchmark_payload ? 'currency'
+    and benchmark_payload->>'currency' is not null
+    and (
+      jsonb_typeof(benchmark_payload->'currency') <> 'string'
+      or benchmark_payload->>'currency' !~ '^[A-Z]{3}$'
+    )
+  then
+    raise exception 'north star currency is invalid'
+      using errcode = '22023';
+  end if;
+
+  if jsonb_typeof(benchmark_payload->'period_type') is distinct from 'string'
+    or benchmark_payload->>'period_type' not in (
     'day',
     'week',
     'month',
@@ -299,7 +350,30 @@ begin
       using errcode = '22023';
   end if;
 
-  if benchmark_payload->>'tolerance_mode' not in (
+  if benchmark_payload ? 'period_start'
+    and benchmark_payload->>'period_start' is not null
+    and (
+      jsonb_typeof(benchmark_payload->'period_start') <> 'string'
+      or benchmark_payload->>'period_start' !~ '^\d{4}-\d{2}-\d{2}$'
+    )
+  then
+    raise exception 'north star period_start is invalid'
+      using errcode = '22023';
+  end if;
+
+  if benchmark_payload ? 'period_end'
+    and benchmark_payload->>'period_end' is not null
+    and (
+      jsonb_typeof(benchmark_payload->'period_end') <> 'string'
+      or benchmark_payload->>'period_end' !~ '^\d{4}-\d{2}-\d{2}$'
+    )
+  then
+    raise exception 'north star period_end is invalid'
+      using errcode = '22023';
+  end if;
+
+  if jsonb_typeof(benchmark_payload->'tolerance_mode') is distinct from 'string'
+    or benchmark_payload->>'tolerance_mode' not in (
     'percentage',
     'absolute',
     'range'
@@ -308,13 +382,45 @@ begin
       using errcode = '22023';
   end if;
 
-  if benchmark_payload->>'severity' not in (
+  if benchmark_payload ? 'tolerance_percentage'
+    and benchmark_payload->>'tolerance_percentage' is not null
+    and jsonb_typeof(benchmark_payload->'tolerance_percentage') <> 'number'
+  then
+    raise exception 'north star tolerance_percentage is invalid'
+      using errcode = '22023';
+  end if;
+
+  if benchmark_payload ? 'min_value'
+    and benchmark_payload->>'min_value' is not null
+    and jsonb_typeof(benchmark_payload->'min_value') <> 'number'
+  then
+    raise exception 'north star min_value is invalid'
+      using errcode = '22023';
+  end if;
+
+  if benchmark_payload ? 'max_value'
+    and benchmark_payload->>'max_value' is not null
+    and jsonb_typeof(benchmark_payload->'max_value') <> 'number'
+  then
+    raise exception 'north star max_value is invalid'
+      using errcode = '22023';
+  end if;
+
+  if jsonb_typeof(benchmark_payload->'severity') is distinct from 'string'
+    or benchmark_payload->>'severity' not in (
     'low',
     'medium',
     'high',
     'critical'
   ) then
     raise exception 'north star severity is invalid'
+      using errcode = '22023';
+  end if;
+
+  if benchmark_payload ? 'enabled'
+    and jsonb_typeof(benchmark_payload->'enabled') <> 'boolean'
+  then
+    raise exception 'north star enabled is invalid'
       using errcode = '22023';
   end if;
 end;

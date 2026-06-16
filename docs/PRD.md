@@ -970,7 +970,7 @@ chart_spec jsonb
 status text -- success | blocked | failed | needs_clarification
 result_row_count integer
 execution_ms integer
-confidence_label text -- verified | plausible | to_verify | blocked
+confidence_label text -- high | medium | low | blocked
 confidence_score numeric nullable -- internal, not shown by default
 created_at timestamptz
 ```
@@ -983,7 +983,6 @@ tenant_id uuid fk
 query_run_id uuid fk
 check_type text
 status text -- pass | warn | fail | skip | engine_error
-severity text -- info | warning | error
 message text
 control_sql text nullable
 expected_value numeric nullable
@@ -1443,7 +1442,6 @@ Se un controllo non è applicabile:
 
 ```txt
 status = skip
-severity = info
 ```
 
 Non deve penalizzare la confidence.

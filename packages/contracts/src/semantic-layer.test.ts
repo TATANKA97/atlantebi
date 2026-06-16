@@ -202,6 +202,14 @@ describe("semantic layer contracts", () => {
     expect(() =>
       NorthStarBenchmarkInputSchema.parse({
         ...input,
+        value_type: "count",
+        currency: "EUR"
+      })
+    ).toThrow();
+
+    expect(() =>
+      NorthStarBenchmarkInputSchema.parse({
+        ...input,
         metric_key: null
       })
     ).toThrow();
