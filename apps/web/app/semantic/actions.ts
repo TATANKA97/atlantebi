@@ -4,6 +4,11 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 
 import {
+  AIProviderSettingInputSchema,
+  aiProviderSettingsResponse,
+  createAIProviderSetting
+} from "../../lib/ai-provider-settings/service";
+import {
   introspectConnection,
   rebuildQueryabilityGraph
 } from "../../lib/schema-introspection/service";
@@ -238,6 +243,76 @@ const NorthStarDeleteFormSchema = z.strictObject({
   benchmark_key: z.string().uuid()
 });
 
+const AIProviderFormSchema = z
+  .strictObject({
+    tenant_id: z.string().uuid(),
+    provider: z.enum(["openai", "anthropic"]),
+    model_id: z.enum([
+      "gpt-5.5",
+      "claude-sonnet-4-6",
+      "claude-opus-4-8"
+    ]),
+    display_name: z.string().trim().min(1).max(160),
+    api_key: z.string().trim().min(1).max(10_000),
+    thinking_effort: z.enum(["none", "low", "medium", "high", "xhigh", "max"]),
+    adaptive_thinking: z.preprocess((value) => value === "on", z.boolean())
+  })
+  .superRefine((input, context) => {
+    if (input.provider === "openai" && input.model_id !== "gpt-5.5") {
+      context.addIssue({
+        code: "custom",
+        path: ["model_id"],
+        message: "OpenAI semantic discovery supports only gpt-5.5."
+      });
+    }
+    if (
+      input.provider === "anthropic" &&
+      !["claude-sonnet-4-6", "claude-opus-4-8"].includes(input.model_id)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["model_id"],
+        message: "Anthropic semantic discovery requires a Claude model."
+      });
+    }
+  })
+  .transform((input) => {
+    if (input.provider === "openai") {
+      return {
+        tenant_id: input.tenant_id,
+        provider: "openai" as const,
+        model_id: "gpt-5.5" as const,
+        display_name: input.display_name,
+        api_key: input.api_key,
+        is_default: true,
+        thinking: {
+          type: "openai_reasoning" as const,
+          effort: input.thinking_effort as
+            | "none"
+            | "low"
+            | "medium"
+            | "high"
+            | "xhigh"
+        }
+      };
+    }
+    return {
+      tenant_id: input.tenant_id,
+      provider: "anthropic" as const,
+      model_id: input.model_id as "claude-sonnet-4-6" | "claude-opus-4-8",
+      display_name: input.display_name,
+      api_key: input.api_key,
+      is_default: true,
+      thinking: {
+        type: "anthropic_adaptive" as const,
+        enabled: input.adaptive_thinking,
+        effort: input.adaptive_thinking
+          ? (input.thinking_effort as "low" | "medium" | "high" | "xhigh" | "max")
+          : "medium"
+      }
+    };
+  });
+
 export async function createAndGenerateSemanticDraftAction(formData: FormData) {
   const parsed = SemanticConnectionFormSchema.safeParse({
     tenant_id: formData.get("tenant_id"),
@@ -268,6 +343,36 @@ export async function createAndGenerateSemanticDraftAction(formData: FormData) {
     message: "semantic_proposal_generated",
     semanticVersionId
   });
+}
+
+export async function createAIProviderSettingAction(formData: FormData) {
+  const parsed = AIProviderFormSchema.safeParse({
+    tenant_id: formData.get("tenant_id"),
+    provider: formData.get("provider"),
+    model_id: formData.get("model_id"),
+    display_name: formData.get("display_name"),
+    api_key: formData.get("api_key"),
+    thinking_effort: formData.get("thinking_effort"),
+    adaptive_thinking: formData.get("adaptive_thinking")
+  });
+  if (!parsed.success) {
+    redirectAIProvider({ message: "invalid_ai_provider" });
+  }
+  const providerInput = AIProviderSettingInputSchema.safeParse(parsed.data);
+  if (!providerInput.success) {
+    redirectAIProvider({ message: "invalid_ai_provider" });
+  }
+  const context = await getActiveTenantContext(parsed.data.tenant_id);
+  try {
+    await createAIProviderSetting({
+      context,
+      input: providerInput.data
+    });
+  } catch (error) {
+    const response = aiProviderSettingsResponse(error);
+    redirectAIProvider({ message: response.code });
+  }
+  redirectAIProvider({ message: "ai_provider_saved" });
 }
 
 export async function generateSemanticDraftAction(formData: FormData) {
@@ -713,4 +818,12 @@ function redirectNorthStarError(error: unknown, connectionId?: string): never {
     message: response.code,
     ...(connectionId ? { connectionId } : {})
   });
+}
+
+function redirectAIProvider({ message }: { message: string }): never {
+  const query = new URLSearchParams({
+    message,
+    tab: "ai-provider"
+  });
+  redirect(`/semantic?${query.toString()}`);
 }

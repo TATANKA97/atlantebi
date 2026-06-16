@@ -12,6 +12,8 @@ from app.models import (
     AISemanticDraftProposal,
     AISemanticMetricProposal,
     AISemanticTableProposal,
+    AnthropicProviderConfig,
+    OpenAIProviderConfig,
     QueryabilityForeignKeyEdge,
     QueryabilityGraphArtifact,
     SemanticBusinessConcept,
@@ -93,7 +95,9 @@ class SemanticModelResponse(Protocol):
 
 
 class SemanticDiscoveryGateway(Protocol):
+    provider: str
     model_version: str
+    thinking_config: object
 
     async def generate(
         self,
@@ -112,10 +116,17 @@ class OpenAISemanticDiscoveryGateway:
         self,
         *,
         client: AsyncOpenAI,
+        config: OpenAIProviderConfig | None = None,
         model_version: str = DEFAULT_SEMANTIC_DISCOVERY_MODEL,
     ) -> None:
         self._client = client
-        self.model_version = model_version
+        self.provider = "openai"
+        self.model_version = config.model_id if config else model_version
+        self.thinking_config = (
+            config.thinking
+            if config
+            else {"type": "openai_reasoning", "effort": "medium"}
+        )
 
     async def generate(
         self,
@@ -135,7 +146,7 @@ class OpenAISemanticDiscoveryGateway:
             ],
             text_format=AISemanticDraftProposal,
             max_output_tokens=MAX_SEMANTIC_DISCOVERY_OUTPUT_TOKENS,
-            reasoning={"effort": "medium"},
+            reasoning={"effort": _thinking_effort(self.thinking_config)},
             store=False,
             timeout=120,
             verbosity="low",
@@ -151,6 +162,61 @@ class OpenAISemanticDiscoveryGateway:
             )
         return _GatewayResponse(
             response_id=response.id,
+            proposal=proposal,
+        )
+
+
+class AnthropicSemanticDiscoveryGateway:
+    def __init__(
+        self,
+        *,
+        client: object,
+        config: AnthropicProviderConfig,
+    ) -> None:
+        self._client = client
+        self.provider = "anthropic"
+        self.model_version = config.model_id
+        self.thinking_config = config.thinking
+
+    async def generate(
+        self,
+        discovery_input: SemanticDiscoveryInput,
+    ) -> SemanticModelResponse:
+        request = {
+            "model": self.model_version,
+            "max_tokens": MAX_SEMANTIC_DISCOVERY_OUTPUT_TOKENS,
+            "system": SEMANTIC_DISCOVERY_SYSTEM_PROMPT,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": _canonical_json(discovery_input),
+                }
+            ],
+            "output_format": AISemanticDraftProposal,
+            "output_config": {"effort": _thinking_effort(self.thinking_config)},
+            "timeout": 120,
+        }
+        if getattr(self.thinking_config, "enabled", False):
+            request["thinking"] = {"type": "adaptive"}
+
+        try:
+            response = await self._client.messages.parse(**request)
+        except Exception as exc:
+            raise SemanticDiscoveryError(
+                "The semantic discovery provider request failed."
+            ) from exc
+        proposal = (
+            getattr(response, "parsed_output", None)
+            or getattr(response, "output_parsed", None)
+        )
+        if proposal is None:
+            raise SemanticDiscoveryError(
+                "The semantic discovery model did not return a structured proposal."
+            )
+        if not isinstance(proposal, AISemanticDraftProposal):
+            proposal = AISemanticDraftProposal.model_validate(proposal)
+        return _GatewayResponse(
+            response_id=getattr(response, "id", "anthropic_response"),
             proposal=proposal,
         )
 
@@ -316,8 +382,9 @@ async def generate_semantic_layer(
         validated_at=timestamp,
     )
     provenance = SemanticGenerationProvenance(
-        provider="openai",
+        provider=gateway.provider,
         model_version=gateway.model_version,
+        thinking_config=gateway.thinking_config,
         prompt_version=SEMANTIC_DISCOVERY_PROMPT_VERSION,
         generated_at=timestamp.isoformat().replace("+00:00", "Z"),
         input_hash=_hash_model(discovery_input),
@@ -708,3 +775,11 @@ def _canonical_json(model) -> str:
 
 def _hash_model(model) -> str:
     return hashlib.sha256(_canonical_json(model).encode("utf-8")).hexdigest()
+
+
+def _thinking_effort(thinking_config: object) -> str:
+    if isinstance(thinking_config, dict):
+        effort = thinking_config.get("effort")
+    else:
+        effort = getattr(thinking_config, "effort", None)
+    return str(effort or "medium")

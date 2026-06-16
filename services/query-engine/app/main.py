@@ -44,7 +44,7 @@ from app.semantic import (
     validate_semantic_layer,
 )
 from app.semantic_discovery import (
-    DEFAULT_SEMANTIC_DISCOVERY_MODEL,
+    AnthropicSemanticDiscoveryGateway,
     OpenAISemanticDiscoveryGateway,
     SemanticDiscoveryError,
     SemanticDiscoveryInputTooLarge,
@@ -52,7 +52,11 @@ from app.semantic_discovery import (
     SemanticProposalInvalid,
     generate_semantic_layer,
 )
-from app.secrets import GcpSecretResolver, SecretResolutionError
+from app.secrets import (
+    AIProviderSecretBinding,
+    GcpSecretResolver,
+    SecretResolutionError,
+)
 
 app = FastAPI(title="Atlante BI Query Engine", version="0.1.0")
 app.state.secret_resolver = GcpSecretResolver()
@@ -321,7 +325,7 @@ async def semantic_generate(
     _: None = Depends(require_internal_auth),
 ) -> SemanticGenerationResult:
     try:
-        gateway = _get_semantic_discovery_gateway()
+        gateway = await _get_semantic_discovery_gateway(request)
         return await generate_semantic_layer(
             graph=request.graph,
             seed=request.seed,
@@ -336,6 +340,11 @@ async def semantic_generate(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(exc),
+        ) from exc
+    except SecretResolutionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Semantic discovery provider credentials are not available.",
         ) from exc
     except (SemanticDiscoveryError, OpenAIError) as exc:
         raise HTTPException(
@@ -407,27 +416,47 @@ async def semantic_rebase(
         ) from exc
 
 
-def _get_semantic_discovery_gateway() -> OpenAISemanticDiscoveryGateway:
+async def _get_semantic_discovery_gateway(
+    request: SemanticGenerationRequest,
+) -> OpenAISemanticDiscoveryGateway | AnthropicSemanticDiscoveryGateway:
     gateway = app.state.semantic_discovery_gateway
     if gateway is not None:
         return gateway
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Semantic discovery provider is not configured.",
+    provider_config = request.provider_config
+    api_key = await app.state.secret_resolver.resolve_ai_provider_api_key(
+        binding=AIProviderSecretBinding(
+            tenant_id=str(request.seed.tenant_id),
+            setting_id=str(provider_config.setting_id),
+            provider=provider_config.provider,
+        ),
+        secret_ref=provider_config.secret_ref,
+        timeout_ms=30_000,
+    )
+
+    if provider_config.provider == "openai":
+        return OpenAISemanticDiscoveryGateway(
+            client=AsyncOpenAI(api_key=api_key),
+            config=provider_config,
         )
 
-    gateway = OpenAISemanticDiscoveryGateway(
-        client=AsyncOpenAI(api_key=api_key),
-        model_version=(
-            os.getenv("SEMANTIC_DISCOVERY_MODEL")
-            or DEFAULT_SEMANTIC_DISCOVERY_MODEL
-        ),
+    if provider_config.provider == "anthropic":
+        try:
+            from anthropic import AsyncAnthropic
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Anthropic semantic discovery provider is not installed.",
+            ) from exc
+        return AnthropicSemanticDiscoveryGateway(
+            client=AsyncAnthropic(api_key=api_key),
+            config=provider_config,
+        )
+
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail="Unsupported semantic discovery provider.",
     )
-    app.state.semantic_discovery_gateway = gateway
-    return gateway
 
 
 def _connection_test_error(

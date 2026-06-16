@@ -149,6 +149,7 @@ const tenantScopedTables = [
   "semantic_layer_metrics",
   "semantic_layer_metric_common_dimensions",
   "semantic_generation_runs",
+  "ai_provider_settings",
   "north_star_benchmarks",
   "dashboards",
   "widgets",
@@ -334,6 +335,47 @@ describe("Supabase metadata migration", () => {
     expect(migration).toContain(
       "grant execute on function public.acquire_security_operation_lease"
     );
+  });
+
+  it("stores tenant BYOK AI provider settings without exposing API keys", () => {
+    expect(migration).toContain("create type public.ai_provider as enum");
+    expect(migration).toContain("create table public.ai_provider_settings");
+    expect(migration).toContain(
+      "alter table public.ai_provider_settings enable row level security;"
+    );
+    expect(migration).toContain(
+      "alter table public.ai_provider_settings force row level security;"
+    );
+    expect(migration).toContain(
+      "grant select, insert, update, delete on table public.ai_provider_settings"
+    );
+    expect(migration).toContain("to service_role");
+    expect(migration).not.toContain(
+      "grant select on table public.ai_provider_settings to authenticated"
+    );
+    expect(migration).toContain(
+      "create or replace view public.ai_provider_setting_summaries"
+    );
+    expect(migration).toContain(
+      "grant select on table public.ai_provider_setting_summaries"
+    );
+    expect(migration).not.toContain(
+      "grant select on table public.ai_provider_setting_summaries to authenticated"
+    );
+    const summaryViews =
+      migration.match(
+        /create(?: or replace)? view public\.ai_provider_setting_summaries[\s\S]*?from public\.ai_provider_settings;/gi
+      ) ?? [];
+    expect(summaryViews.length).toBeGreaterThan(0);
+    for (const summaryView of summaryViews) {
+      expect(summaryView).not.toContain("secret_ref");
+    }
+    expect(migration).toContain("'gpt-5.5'");
+    expect(migration).toContain("'claude-sonnet-4-6'");
+    expect(migration).toContain("'claude-opus-4-8'");
+    expect(migration).toContain("model_id = 'claude-sonnet-4-6'");
+    expect(migration).toContain("thinking->>'effort' = 'xhigh'");
+    expect(migration).toContain("ai_provider_setting");
   });
 
   it("stores technical FK metadata for SQL Server snapshots without raw data", () => {

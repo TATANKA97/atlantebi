@@ -33,8 +33,26 @@ def semantic_seed():
     )
 
 
+def provider_config():
+    return {
+        "provider": "openai",
+        "setting_id": "00000000-0000-4000-8000-000000000001",
+        "model_id": "gpt-5.5",
+        "thinking": {
+            "type": "openai_reasoning",
+            "effort": "medium",
+        },
+        "secret_ref": (
+            "gcp-secret-manager://projects/demo/secrets/"
+            "atlantebi-tenant-setting-openai-ai-key"
+        ),
+    }
+
+
 class FakeGateway:
+    provider = "openai"
     model_version = "fixture-model-v2"
+    thinking_config = {"type": "openai_reasoning", "effort": "medium"}
 
     async def generate(self, discovery_input):
         return SimpleNamespace(
@@ -44,7 +62,9 @@ class FakeGateway:
 
 
 class FailingGateway:
+    provider = "openai"
     model_version = "fixture-model-v2"
+    thinking_config = {"type": "openai_reasoning", "effort": "medium"}
 
     async def generate(self, discovery_input):
         raise SemanticDiscoveryError("provider detail must not leak")
@@ -55,6 +75,7 @@ def test_semantic_generation_and_validation_requests_are_strict() -> None:
     seed = semantic_seed()
     generation_payload = {
         "graph": graph.model_dump(mode="json"),
+        "provider_config": provider_config(),
         "seed": seed.model_dump(mode="json"),
     }
 
@@ -72,9 +93,14 @@ def test_semantic_generation_and_validation_requests_are_strict() -> None:
         )
 
     with pytest.raises(ValidationError, match="based on the supplied graph"):
-        SemanticGenerationRequest(
-            graph=graph,
-            seed=seed.model_copy(update={"base_graph_hash": "f" * 64}),
+        SemanticGenerationRequest.model_validate(
+            {
+                "graph": graph.model_dump(mode="json"),
+                "provider_config": provider_config(),
+                "seed": seed.model_copy(
+                    update={"base_graph_hash": "f" * 64}
+                ).model_dump(mode="json"),
+            }
         )
 
 
@@ -86,6 +112,7 @@ def test_semantic_generate_endpoint_is_authenticated_and_uses_gateway(
     monkeypatch.setattr(app.state, "semantic_discovery_gateway", FakeGateway())
     payload = {
         "graph": adventureworks_graph().model_dump(mode="json"),
+        "provider_config": provider_config(),
         "seed": semantic_seed().model_dump(mode="json"),
     }
 
@@ -112,7 +139,6 @@ def test_semantic_generate_requires_provider_configuration(
 ) -> None:
     client = TestClient(app)
     monkeypatch.setenv("QUERY_ENGINE_API_TOKEN", "semantic-token")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(app.state, "semantic_discovery_gateway", None)
 
     response = client.post(
@@ -124,10 +150,7 @@ def test_semantic_generate_requires_provider_configuration(
         },
     )
 
-    assert response.status_code == 503
-    assert response.json()["detail"] == (
-        "Semantic discovery provider is not configured."
-    )
+    assert response.status_code == 422
 
 
 def test_semantic_generate_sanitizes_provider_failures(
@@ -142,6 +165,7 @@ def test_semantic_generate_sanitizes_provider_failures(
         headers=AUTH_HEADERS,
         json={
             "graph": adventureworks_graph().model_dump(mode="json"),
+            "provider_config": provider_config(),
             "seed": semantic_seed().model_dump(mode="json"),
         },
     )

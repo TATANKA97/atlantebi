@@ -83,4 +83,32 @@ describe("security operation leases", () => {
       }
     );
   });
+
+  it("passes AI provider setting leases to the database unchanged", async () => {
+    rpc
+      .mockResolvedValueOnce({
+        data: "30000000-0000-4000-8000-000000000010",
+        error: null
+      })
+      .mockResolvedValueOnce({ data: null, error: null });
+
+    await lease.withSecurityOperationLease({
+      actorUserId: "10000000-0000-4000-8000-000000000001",
+      operation: "ai_provider_setting",
+      resourceKey: "openai:gpt-5.5",
+      run: async () => "saved",
+      tenantId: "20000000-0000-4000-8000-000000000001"
+    });
+
+    expect(rpc).toHaveBeenNthCalledWith(
+      1,
+      "acquire_security_operation_lease",
+      {
+        target_actor_user_id: "10000000-0000-4000-8000-000000000001",
+        target_operation: "ai_provider_setting",
+        target_resource_key: "openai:gpt-5.5",
+        target_tenant_id: "20000000-0000-4000-8000-000000000001"
+      }
+    );
+  });
 });

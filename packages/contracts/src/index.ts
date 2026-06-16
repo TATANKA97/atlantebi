@@ -1200,6 +1200,161 @@ export type SemanticDiscoveryInput = z.infer<
   typeof SemanticDiscoveryInputSchema
 >;
 
+const Rfc3339DateTimeSchema = z
+  .string()
+  .datetime({ offset: true })
+  .regex(
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
+  );
+
+export const AIProviderSchema = z.enum(["openai", "anthropic"]);
+export type AIProvider = z.infer<typeof AIProviderSchema>;
+
+export const OpenAISemanticModelSchema = z.enum(["gpt-5.5"]);
+export type OpenAISemanticModel = z.infer<typeof OpenAISemanticModelSchema>;
+
+export const AnthropicSemanticModelSchema = z.enum([
+  "claude-sonnet-4-6",
+  "claude-opus-4-8"
+]);
+export type AnthropicSemanticModel = z.infer<
+  typeof AnthropicSemanticModelSchema
+>;
+
+export const OpenAIReasoningEffortSchema = z.enum([
+  "none",
+  "low",
+  "medium",
+  "high",
+  "xhigh"
+]);
+export type OpenAIReasoningEffort = z.infer<
+  typeof OpenAIReasoningEffortSchema
+>;
+
+export const AnthropicEffortSchema = z.enum([
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max"
+]);
+export type AnthropicEffort = z.infer<typeof AnthropicEffortSchema>;
+
+export const OpenAIThinkingConfigSchema = z.strictObject({
+  type: z.literal("openai_reasoning"),
+  effort: OpenAIReasoningEffortSchema
+});
+export type OpenAIThinkingConfig = z.infer<typeof OpenAIThinkingConfigSchema>;
+
+export const AnthropicThinkingConfigSchema = z
+  .strictObject({
+    type: z.literal("anthropic_adaptive"),
+    enabled: z.boolean(),
+    effort: AnthropicEffortSchema
+  })
+  .superRefine((value, context) => {
+    if (!value.enabled && value.effort !== "medium") {
+      context.addIssue({
+        code: "custom",
+        message: "Disabled adaptive thinking must use medium effort."
+      });
+    }
+  });
+export type AnthropicThinkingConfig = z.infer<
+  typeof AnthropicThinkingConfigSchema
+>;
+
+export const AISemanticProviderConfigSchema = z.discriminatedUnion("provider", [
+  z.strictObject({
+    provider: z.literal("openai"),
+    setting_id: z.string().uuid(),
+    model_id: OpenAISemanticModelSchema,
+    thinking: OpenAIThinkingConfigSchema,
+    secret_ref: z.string().min(1).max(2_000)
+  }),
+  z
+    .strictObject({
+      provider: z.literal("anthropic"),
+      setting_id: z.string().uuid(),
+      model_id: AnthropicSemanticModelSchema,
+      thinking: AnthropicThinkingConfigSchema,
+      secret_ref: z.string().min(1).max(2_000)
+    })
+    .superRefine((value, context) => {
+      if (value.model_id === "claude-sonnet-4-6" && value.thinking.effort === "xhigh") {
+        context.addIssue({
+          code: "custom",
+          message: "Claude Sonnet 4.6 does not support xhigh effort."
+        });
+      }
+    })
+]);
+export type AISemanticProviderConfig = z.infer<
+  typeof AISemanticProviderConfigSchema
+>;
+
+export const SemanticGenerationRequestSchema = z
+  .strictObject({
+    graph: QueryabilityGraphArtifactSchema,
+    seed: SemanticLayerSchema,
+    provider_config: AISemanticProviderConfigSchema
+  })
+  .superRefine((request, context) => {
+    if (request.graph.status === "blocked") {
+      context.addIssue({
+        code: "custom",
+        path: ["graph", "status"],
+        message: "blocked graphs cannot enter semantic generation"
+      });
+    }
+    if (
+      request.seed.tenant_id !== request.graph.tenant_id ||
+      request.seed.connection_id !== request.graph.connection_id
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["seed"],
+        message: "seed tenant and connection must match graph"
+      });
+    }
+    if (request.seed.base_graph_hash !== request.graph.graph_hash) {
+      context.addIssue({
+        code: "custom",
+        path: ["seed", "base_graph_hash"],
+        message: "seed must be based on the supplied graph"
+      });
+    }
+    if (request.seed.status !== "draft" || request.seed.freshness !== "fresh") {
+      context.addIssue({
+        code: "custom",
+        path: ["seed"],
+        message: "seed must be a fresh draft"
+      });
+    }
+  });
+export type SemanticGenerationRequest = z.infer<
+  typeof SemanticGenerationRequestSchema
+>;
+
+export const AIProviderSettingSummarySchema = z.strictObject({
+  id: z.string().uuid(),
+  tenant_id: z.string().uuid(),
+  provider: AIProviderSchema,
+  model_id: z.union([OpenAISemanticModelSchema, AnthropicSemanticModelSchema]),
+  display_name: z.string().min(1).max(160),
+  thinking: z.union([OpenAIThinkingConfigSchema, AnthropicThinkingConfigSchema]),
+  status: z.enum(["ready", "disabled", "failed"]),
+  is_default: z.boolean(),
+  last_test_status: z.enum(["ok", "failed"]).nullable(),
+  last_tested_at: Rfc3339DateTimeSchema.nullable(),
+  created_at: Rfc3339DateTimeSchema,
+  updated_at: Rfc3339DateTimeSchema
+});
+export type AIProviderSettingSummary = z.infer<
+  typeof AIProviderSettingSummarySchema
+>;
+
 export const AISemanticTableProposalSchema = z.strictObject({
   node_key: Sha256Schema,
   display_name: z.string().min(1).max(255),
@@ -1315,16 +1470,12 @@ export type AISemanticDraftProposal = z.infer<
   typeof AISemanticDraftProposalSchema
 >;
 
-const Rfc3339DateTimeSchema = z
-  .string()
-  .datetime({ offset: true })
-  .regex(
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
-  );
-
 export const SemanticGenerationProvenanceSchema = z.strictObject({
-  provider: z.literal("openai"),
+  provider: AIProviderSchema,
   model_version: z.string().min(1).max(255),
+  thinking_config: z
+    .union([OpenAIThinkingConfigSchema, AnthropicThinkingConfigSchema])
+    .nullable(),
   prompt_version: z.string().min(1).max(100),
   generated_at: Rfc3339DateTimeSchema,
   input_hash: Sha256Schema,

@@ -12,6 +12,7 @@ from app.models import (
     AISemanticDimensionProposal,
     AISemanticDraftProposal,
     AISemanticMetricProposal,
+    AnthropicProviderConfig,
     SemanticDimensionCompatibility,
     SemanticFilter,
     SemanticMetricFormat,
@@ -23,6 +24,7 @@ from app.semantic import (
     validate_semantic_layer,
 )
 from app.semantic_discovery import (
+    AnthropicSemanticDiscoveryGateway,
     OpenAISemanticDiscoveryGateway,
     SemanticDiscoveryError,
     SemanticDiscoveryInputTooLarge,
@@ -252,7 +254,9 @@ def semantic_seed():
 
 
 class FakeGateway:
+    provider = "openai"
     model_version = "fixture-model-v2"
+    thinking_config = {"type": "openai_reasoning", "effort": "medium"}
 
     def __init__(self, proposal: AISemanticDraftProposal) -> None:
         self.proposal = proposal
@@ -797,6 +801,54 @@ def test_openai_gateway_uses_structured_output_without_storing_payload() -> None
     assert responses.kwargs["reasoning"] == {"effort": "medium"}
     assert responses.kwargs["verbosity"] == "low"
     assert "Never write SQL" in responses.kwargs["input"][0]["content"]
+
+
+def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
+    proposal = proposal_from_fixture()
+
+    class FakeMessages:
+        def __init__(self) -> None:
+            self.kwargs = None
+
+        async def parse(self, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(
+                id="msg_anthropic_fixture",
+                parsed_output=proposal,
+            )
+
+    messages = FakeMessages()
+    client = SimpleNamespace(messages=messages)
+    gateway = AnthropicSemanticDiscoveryGateway(
+        client=client,
+        config=AnthropicProviderConfig.model_validate(
+            {
+                "provider": "anthropic",
+                "setting_id": "00000000-0000-4000-8000-000000000001",
+                "model_id": "claude-opus-4-8",
+                "thinking": {
+                    "type": "anthropic_adaptive",
+                    "enabled": True,
+                    "effort": "xhigh",
+                },
+                "secret_ref": (
+                    "gcp-secret-manager://projects/demo/secrets/"
+                    "atlantebi-tenant-setting-anthropic-ai-key"
+                ),
+            }
+        ),
+    )
+    response = asyncio.run(
+        gateway.generate(build_semantic_discovery_input(adventureworks_graph()))
+    )
+
+    assert response.response_id == "msg_anthropic_fixture"
+    assert messages.kwargs["model"] == "claude-opus-4-8"
+    assert messages.kwargs["output_format"] is AISemanticDraftProposal
+    assert messages.kwargs["output_config"] == {"effort": "xhigh"}
+    assert messages.kwargs["thinking"] == {"type": "adaptive"}
+    assert messages.kwargs["timeout"] == 120
+    assert "Never write SQL" in messages.kwargs["system"]
 
 
 def test_openai_gateway_distinguishes_refusal_from_missing_structured_output() -> None:

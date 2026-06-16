@@ -66,6 +66,8 @@ const MESSAGE_COPY: Record<string, string> = {
   semantic_activation_failed: "Attivazione Semantic Layer fallita.",
   semantic_ai_not_configured:
     "La generazione AI non e configurata nel query-engine.",
+  semantic_ai_provider_not_configured:
+    "Configura un provider AI prima di generare una proposta.",
   semantic_archive_failed: "Archiviazione Semantic Layer fallita.",
   semantic_forbidden:
     "Solo owner e admin possono modificare il Semantic Layer.",
@@ -220,7 +222,7 @@ export function WorkspaceTabs({
   active,
   connectionId
 }: {
-  active: "semantic" | "technical" | "north-stars";
+  active: "semantic" | "technical" | "north-stars" | "ai-provider";
   connectionId?: string;
 }) {
   const semanticHref = connectionId
@@ -232,6 +234,9 @@ export function WorkspaceTabs({
   const northStarsHref = connectionId
     ? `/semantic?tab=north-stars&connection=${connectionId}`
     : "/semantic?tab=north-stars";
+  const aiProviderHref = connectionId
+    ? `/semantic?tab=ai-provider&connection=${connectionId}`
+    : "/semantic?tab=ai-provider";
   return (
     <nav
       aria-label="Workspace schema"
@@ -269,6 +274,17 @@ export function WorkspaceTabs({
         href={northStarsHref}
       >
         North Star Benchmarks
+      </Link>
+      <Link
+        className={`pb-3 ${
+          active === "ai-provider"
+            ? "border-b-2 border-[color:var(--accent)] font-medium"
+            : "text-[color:var(--muted)]"
+        }`}
+        aria-current={active === "ai-provider" ? "page" : undefined}
+        href={aiProviderHref}
+      >
+        AI Provider
       </Link>
     </nav>
   );

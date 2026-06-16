@@ -16,6 +16,7 @@ import {
 import { z } from "zod";
 
 import { postQueryEngine, QueryEngineRequestError } from "../query-engine/client";
+import { readDefaultAIProviderConfig } from "../ai-provider-settings/service";
 import {
   isSecurityOperationLimitError,
   withSecurityOperationLease
@@ -392,6 +393,14 @@ export async function generateSemanticDraft({
     true
   );
   assertVersionTargetsCurrentGraph(row, graphRow);
+  const providerConfig = await readDefaultAIProviderConfig({ context });
+  if (!providerConfig) {
+    throw new SemanticLayerServiceError(
+      "semantic_ai_provider_not_configured",
+      "Configura un provider AI prima di generare una proposta.",
+      409
+    );
+  }
 
   let generated: SemanticGenerationResult;
   try {
@@ -405,6 +414,7 @@ export async function generateSemanticDraft({
           "/semantic/generate",
           {
             graph: graphRow.graph,
+            provider_config: providerConfig,
             seed: SemanticLayerSchema.parse(row.artifact)
           },
           SemanticGenerationResultSchema,
