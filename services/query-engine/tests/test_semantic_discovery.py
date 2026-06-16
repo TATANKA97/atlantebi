@@ -851,6 +851,74 @@ def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
     assert "Never write SQL" in messages.kwargs["system"]
 
 
+def test_anthropic_gateway_distinguishes_refusal_from_missing_structured_output() -> None:
+    class FakeMessages:
+        def __init__(self, response) -> None:
+            self.response = response
+
+        async def parse(self, **kwargs):
+            return self.response
+
+    config = AnthropicProviderConfig.model_validate(
+        {
+            "provider": "anthropic",
+            "setting_id": "00000000-0000-4000-8000-000000000001",
+            "model_id": "claude-opus-4-8",
+            "thinking": {
+                "type": "anthropic_adaptive",
+                "enabled": True,
+                "effort": "xhigh",
+            },
+            "secret_ref": (
+                "gcp-secret-manager://projects/demo/secrets/"
+                "atlantebi-tenant-setting-anthropic-ai-key"
+            ),
+        }
+    )
+    refusal_gateway = AnthropicSemanticDiscoveryGateway(
+        client=SimpleNamespace(
+            messages=FakeMessages(
+                SimpleNamespace(
+                    id="msg_refusal",
+                    parsed_output=None,
+                    stop_reason="refusal",
+                    content=[],
+                )
+            )
+        ),
+        config=config,
+    )
+    with pytest.raises(SemanticDiscoveryRefused):
+        asyncio.run(
+            refusal_gateway.generate(
+                build_semantic_discovery_input(adventureworks_graph())
+            )
+        )
+
+    empty_gateway = AnthropicSemanticDiscoveryGateway(
+        client=SimpleNamespace(
+            messages=FakeMessages(
+                SimpleNamespace(
+                    id="msg_empty",
+                    parsed_output=None,
+                    stop_reason="end_turn",
+                    content=[],
+                )
+            )
+        ),
+        config=config,
+    )
+    with pytest.raises(
+        SemanticDiscoveryError,
+        match="did not return a structured proposal",
+    ):
+        asyncio.run(
+            empty_gateway.generate(
+                build_semantic_discovery_input(adventureworks_graph())
+            )
+        )
+
+
 def test_openai_gateway_distinguishes_refusal_from_missing_structured_output() -> None:
     class FakeResponses:
         def __init__(self, response) -> None:

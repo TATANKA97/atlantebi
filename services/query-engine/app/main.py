@@ -421,7 +421,11 @@ async def _get_semantic_discovery_gateway(
 ) -> OpenAISemanticDiscoveryGateway | AnthropicSemanticDiscoveryGateway:
     gateway = app.state.semantic_discovery_gateway
     if gateway is not None:
-        return gateway
+        if os.getenv("PYTEST_CURRENT_TEST") or (
+            os.getenv("ATLANTE_ALLOW_SEMANTIC_GATEWAY_OVERRIDE") == "true"
+        ):
+            return gateway
+        app.state.semantic_discovery_gateway = None
 
     provider_config = request.provider_config
     api_key = await app.state.secret_resolver.resolve_ai_provider_api_key(

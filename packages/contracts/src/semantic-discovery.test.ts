@@ -305,6 +305,21 @@ describe("semantic discovery and AI draft contracts", () => {
 
     expect(() =>
       AISemanticProviderConfigSchema.parse({
+        provider: "anthropic",
+        setting_id: "00000000-0000-4000-8000-000000000001",
+        model_id: "claude-sonnet-4-6",
+        thinking: {
+          type: "anthropic_adaptive",
+          enabled: true,
+          effort: "max"
+        },
+        secret_ref:
+          "gcp-secret-manager://projects/demo/secrets/atlantebi-ai-key"
+      })
+    ).toThrow();
+
+    expect(() =>
+      AISemanticProviderConfigSchema.parse({
         provider: "openai",
         setting_id: "00000000-0000-4000-8000-000000000001",
         model_id: "gpt-5.4",

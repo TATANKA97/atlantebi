@@ -130,7 +130,12 @@ export async function AIProviderWorkspace({
         </section>
 
         {canManage ? (
-          <AIProviderForm tenantId={context.tenantId} />
+          <AIProviderForms
+            {...(searchParams.connection
+              ? { connectionId: searchParams.connection }
+              : {})}
+            tenantId={context.tenantId}
+          />
         ) : (
           <p className="border border-[color:var(--border)] px-4 py-3 text-sm text-[color:var(--muted)]">
             Il tuo ruolo non consente di configurare provider AI.
@@ -141,72 +146,105 @@ export async function AIProviderWorkspace({
   );
 }
 
-function AIProviderForm({ tenantId }: { tenantId: string }) {
+function AIProviderForms({
+  connectionId,
+  tenantId
+}: {
+  connectionId?: string;
+  tenantId: string;
+}) {
   return (
     <section className="border-t border-[color:var(--border)] pt-6">
       <h2 className="text-base font-semibold">Nuova configurazione default</h2>
+      <div className="mt-4 grid gap-5 lg:grid-cols-3">
+        <AIProviderForm
+          {...(connectionId ? { connectionId } : {})}
+          effortOptions={["none", "low", "medium", "high", "xhigh"]}
+          modelId="gpt-5.5"
+          modelLabel="GPT-5.5 / ChatGPT 5.5"
+          provider="openai"
+          tenantId={tenantId}
+        />
+        <AIProviderForm
+          {...(connectionId ? { connectionId } : {})}
+          effortOptions={["low", "medium", "high"]}
+          modelId="claude-sonnet-4-6"
+          modelLabel="Claude Sonnet 4.6"
+          provider="anthropic"
+          tenantId={tenantId}
+        />
+        <AIProviderForm
+          {...(connectionId ? { connectionId } : {})}
+          effortOptions={["low", "medium", "high", "xhigh", "max"]}
+          modelId="claude-opus-4-8"
+          modelLabel="Claude Opus 4.8"
+          provider="anthropic"
+          tenantId={tenantId}
+        />
+      </div>
+    </section>
+  );
+}
+
+function AIProviderForm({
+  connectionId,
+  effortOptions,
+  modelId,
+  modelLabel,
+  provider,
+  tenantId
+}: {
+  connectionId?: string;
+  effortOptions: string[];
+  modelId: string;
+  modelLabel: string;
+  provider: "openai" | "anthropic";
+  tenantId: string;
+}) {
+  return (
+    <div className="border border-[color:var(--border)] p-4">
+      <h3 className="text-sm font-semibold">{modelLabel}</h3>
       <form
         action={createAIProviderSettingAction}
-        className="mt-4 grid max-w-3xl gap-4 text-sm"
+        className="mt-4 grid gap-4 text-sm"
       >
+        {connectionId ? (
+          <input name="connection_id" type="hidden" value={connectionId} />
+        ) : null}
+        <input name="provider" type="hidden" value={provider} />
+        <input name="model_id" type="hidden" value={modelId} />
         <input name="tenant_id" type="hidden" value={tenantId} />
         <label className="grid gap-1">
           Nome
           <input
             className="border border-[color:var(--border)] bg-transparent px-3 py-2"
-            defaultValue="Semantic discovery"
+            defaultValue={modelLabel}
             maxLength={160}
             name="display_name"
             required
           />
         </label>
-        <div className="grid gap-4 md:grid-cols-2">
-          <label className="grid gap-1">
-            Provider
-            <select
-              className="border border-[color:var(--border)] bg-transparent px-3 py-2"
-              name="provider"
-              required
-            >
-              <option value="openai">OpenAI</option>
-              <option value="anthropic">Anthropic</option>
-            </select>
-          </label>
-          <label className="grid gap-1">
-            Modello
-            <select
-              className="border border-[color:var(--border)] bg-transparent px-3 py-2"
-              name="model_id"
-              required
-            >
-              <option value="gpt-5.5">GPT-5.5 / ChatGPT 5.5</option>
-              <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
-              <option value="claude-opus-4-8">Claude Opus 4.8</option>
-            </select>
-          </label>
-        </div>
-        <div className="grid gap-4 md:grid-cols-2">
-          <label className="grid gap-1">
-            Effort / reasoning
-            <select
-              className="border border-[color:var(--border)] bg-transparent px-3 py-2"
-              defaultValue="medium"
-              name="thinking_effort"
-              required
-            >
-              <option value="none">none</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-              <option value="xhigh">xhigh</option>
-              <option value="max">max</option>
-            </select>
-          </label>
-          <label className="flex items-end gap-2 pb-2">
+        <label className="grid gap-1">
+          Effort / reasoning
+          <select
+            className="border border-[color:var(--border)] bg-transparent px-3 py-2"
+            defaultValue="medium"
+            name="thinking_effort"
+            required
+          >
+            {effortOptions.map((effort) => (
+              <option key={effort} value={effort}>
+                {effort}
+              </option>
+            ))}
+          </select>
+        </label>
+        {provider === "anthropic" ? (
+          <label className="flex items-center gap-2">
             <input defaultChecked name="adaptive_thinking" type="checkbox" />
             Adaptive/dynamic thinking Anthropic
           </label>
-        </div>
+        ) : null}
         <label className="grid gap-1">
           API key
           <input
@@ -227,7 +265,7 @@ function AIProviderForm({ tenantId }: { tenantId: string }) {
           pendingLabel="Salvataggio..."
         />
       </form>
-    </section>
+    </div>
   );
 }
 

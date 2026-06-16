@@ -1127,8 +1127,11 @@ class AnthropicProviderConfig(StrictModel):
 
     @model_validator(mode="after")
     def validate_model_effort(self) -> "AnthropicProviderConfig":
-        if self.model_id == "claude-sonnet-4-6" and self.thinking.effort == "xhigh":
-            raise ValueError("Claude Sonnet 4.6 does not support xhigh effort")
+        if self.model_id == "claude-sonnet-4-6" and self.thinking.effort in (
+            "xhigh",
+            "max",
+        ):
+            raise ValueError("Claude Sonnet 4.6 supports low, medium, or high effort")
         return self
 
 

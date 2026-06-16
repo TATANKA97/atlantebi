@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(7);
+select plan(11);
 
 insert into auth.users (
   instance_id,
@@ -197,6 +197,69 @@ select throws_ok(
   '23514',
   null,
   'Sonnet 4.6 cannot use Anthropic xhigh effort'
+);
+
+select is(
+  public.create_ai_provider_setting(
+    '10000000-0000-4000-8000-000000000041',
+    '20000000-0000-4000-8000-000000000041',
+    '30000000-0000-4000-8000-000000000051',
+    'openai',
+    'gpt-5.5',
+    'OpenAI default',
+    '{"type":"openai_reasoning","effort":"high"}'::jsonb,
+    'gcp-secret-manager://projects/demo/secrets/atlantebi-20000000-0000-4000-8000-000000000041-30000000-0000-4000-8000-000000000051-openai-ai-key',
+    true
+  ),
+  '30000000-0000-4000-8000-000000000051'::uuid,
+  'service RPC creates a default AI provider setting'
+);
+
+select is(
+  public.create_ai_provider_setting(
+    '10000000-0000-4000-8000-000000000041',
+    '20000000-0000-4000-8000-000000000041',
+    '30000000-0000-4000-8000-000000000052',
+    'anthropic',
+    'claude-opus-4-8',
+    'Anthropic default',
+    '{"type":"anthropic_adaptive","enabled":true,"effort":"xhigh"}'::jsonb,
+    'gcp-secret-manager://projects/demo/secrets/atlantebi-20000000-0000-4000-8000-000000000041-30000000-0000-4000-8000-000000000052-anthropic-ai-key',
+    true
+  ),
+  '30000000-0000-4000-8000-000000000052'::uuid,
+  'service RPC atomically replaces the default AI provider setting'
+);
+
+select throws_ok(
+  $$
+    select public.create_ai_provider_setting(
+      '10000000-0000-4000-8000-000000000041',
+      '20000000-0000-4000-8000-000000000041',
+      '30000000-0000-4000-8000-000000000053',
+      'openai',
+      'gpt-5.5',
+      'Unbound OpenAI',
+      '{"type":"openai_reasoning","effort":"medium"}'::jsonb,
+      'gcp-secret-manager://projects/demo/secrets/unbound-secret',
+      true
+    )
+  $$,
+  '22023',
+  'AI provider secret_ref is not bound to this setting',
+  'service RPC rejects unbound AI provider secret references'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from public.ai_provider_settings
+    where tenant_id = '20000000-0000-4000-8000-000000000041'
+      and is_default
+      and id = '30000000-0000-4000-8000-000000000052'
+  ),
+  1,
+  'only the newest default AI provider remains active'
 );
 
 select * from finish();

@@ -46,11 +46,11 @@ export const AIProviderSettingInputSchema = z.discriminatedUnion("provider", [
     .superRefine((value, context) => {
       if (
         value.model_id === "claude-sonnet-4-6" &&
-        value.thinking.effort === "xhigh"
+        ["xhigh", "max"].includes(value.thinking.effort)
       ) {
         context.addIssue({
           code: "custom",
-          message: "Claude Sonnet 4.6 does not support xhigh effort."
+          message: "Claude Sonnet 4.6 supports low, medium, or high effort."
         });
       }
     })
@@ -196,42 +196,22 @@ async function createAIProviderSettingWithLease({
       tenantId: context.tenantId
     });
 
-    const admin = createSupabaseAdminClient();
-    const { error } = await admin.from("ai_provider_settings").insert({
-      id: settingId,
-      tenant_id: context.tenantId,
-      provider: input.provider,
-      model_id: input.model_id,
-      display_name: input.display_name,
-      thinking: input.thinking,
-      secret_ref: secretRef,
-      status: "ready",
-      is_default: false,
-      last_test_status: null,
-      last_tested_at: null,
-      created_by: context.userId,
-      updated_by: context.userId
-    });
+    const { error } = await createSupabaseAdminClient().rpc(
+      "create_ai_provider_setting",
+      {
+        actor_user_id: context.userId,
+        target_display_name: input.display_name,
+        target_is_default: input.is_default,
+        target_model_id: input.model_id,
+        target_provider: input.provider,
+        target_secret_ref: secretRef,
+        target_setting_id: settingId,
+        target_tenant_id: context.tenantId,
+        target_thinking: input.thinking
+      }
+    );
     if (error) {
       throw error;
-    }
-    if (input.is_default) {
-      const { error: defaultError } = await admin
-        .from("ai_provider_settings")
-        .update({ is_default: false, updated_by: context.userId })
-        .eq("tenant_id", context.tenantId)
-        .eq("is_default", true);
-      if (defaultError) {
-        throw defaultError;
-      }
-      const { error: promoteError } = await admin
-        .from("ai_provider_settings")
-        .update({ is_default: true, updated_by: context.userId })
-        .eq("tenant_id", context.tenantId)
-        .eq("id", settingId);
-      if (promoteError) {
-        throw promoteError;
-      }
     }
     return settingId;
   } catch (error) {

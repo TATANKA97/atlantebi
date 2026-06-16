@@ -210,6 +210,10 @@ class AnthropicSemanticDiscoveryGateway:
             or getattr(response, "output_parsed", None)
         )
         if proposal is None:
+            if _anthropic_response_contains_refusal(response):
+                raise SemanticDiscoveryRefused(
+                    "The semantic discovery model refused the request."
+                )
             raise SemanticDiscoveryError(
                 "The semantic discovery model did not return a structured proposal."
             )
@@ -761,6 +765,20 @@ def _response_contains_refusal(response: object) -> bool:
         for item in getattr(output, "content", []) or []:
             if getattr(item, "type", None) == "refusal":
                 return True
+    return False
+
+
+def _anthropic_response_contains_refusal(response: object) -> bool:
+    if getattr(response, "stop_reason", None) == "refusal":
+        return True
+    stop_details = getattr(response, "stop_details", None)
+    if isinstance(stop_details, dict) and stop_details.get("type") == "refusal":
+        return True
+    if getattr(stop_details, "type", None) == "refusal":
+        return True
+    for item in getattr(response, "content", []) or []:
+        if getattr(item, "type", None) == "refusal":
+            return True
     return False
 
 
