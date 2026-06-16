@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(12);
+select plan(15);
 
 select ok(
   to_regclass('public.north_star_benchmarks') is not null,
@@ -569,6 +569,87 @@ select throws_ok(
   '22023',
   'eligible active metric not found for north star benchmark',
   'missing metric is rejected'
+);
+
+select throws_ok(
+  $test$
+    select public.create_north_star_benchmark(
+      '10000000-0000-4000-8000-000000000061',
+      '20000000-0000-4000-8000-000000000061',
+      '30000000-0000-4000-8000-000000000061',
+      jsonb_build_object(
+        'connection_id', '30000000-0000-4000-8000-000000000061',
+        'semantic_version_id', '60000000-0000-4000-8000-000000000061',
+        'metric_key', '70000000-0000-4000-8000-000000000061',
+        'name', 'Campo extra',
+        'expected_value', 10000000,
+        'value_type', 'currency',
+        'currency', 'EUR',
+        'period_type', 'year',
+        'tolerance_mode', 'percentage',
+        'tolerance_percentage', 10,
+        'severity', 'high',
+        'enabled', true,
+        'unexpected', true
+      )
+    )
+  $test$,
+  '22023',
+  'north star payload contains unsupported fields',
+  'north star RPC rejects unsupported payload fields'
+);
+
+select throws_ok(
+  $test$
+    select public.create_north_star_benchmark(
+      '10000000-0000-4000-8000-000000000061',
+      '20000000-0000-4000-8000-000000000061',
+      '30000000-0000-4000-8000-000000000061',
+      jsonb_build_object(
+        'connection_id', '30000000-0000-4000-8000-000000000061',
+        'semantic_version_id', '60000000-0000-4000-8000-000000000061',
+        'metric_key', '70000000-0000-4000-8000-000000000061',
+        'name', 'Numero stringificato',
+        'expected_value', '10000000',
+        'value_type', 'currency',
+        'currency', 'EUR',
+        'period_type', 'year',
+        'tolerance_mode', 'percentage',
+        'tolerance_percentage', 10,
+        'severity', 'high',
+        'enabled', true
+      )
+    )
+  $test$,
+  '22023',
+  'north star expected_value is invalid',
+  'north star RPC rejects stringified numeric fields'
+);
+
+select throws_ok(
+  $test$
+    select public.create_north_star_benchmark(
+      '10000000-0000-4000-8000-000000000061',
+      '20000000-0000-4000-8000-000000000061',
+      '30000000-0000-4000-8000-000000000061',
+      jsonb_build_object(
+        'connection_id', '30000000-0000-4000-8000-000000000061',
+        'semantic_version_id', '60000000-0000-4000-8000-000000000061',
+        'metric_key', '70000000-0000-4000-8000-000000000061',
+        'name', 'Conteggio con currency non valido',
+        'expected_value', 100,
+        'value_type', 'count',
+        'currency', 'EUR',
+        'period_type', 'month',
+        'tolerance_mode', 'percentage',
+        'tolerance_percentage', 10,
+        'severity', 'medium',
+        'enabled', true
+      )
+    )
+  $test$,
+  '23514',
+  'non-currency benchmark cannot carry currency'
 );
 
 select lives_ok(
