@@ -11,7 +11,11 @@ from app.models import (
     SemanticValidationRequest,
 )
 from app.semantic import build_semantic_seed, compute_semantic_hash
-from app.semantic_discovery import SemanticDiscoveryError
+from app.semantic_discovery import (
+    SemanticDiscoveryError,
+    SemanticDiscoveryProviderModelUnavailable,
+    SemanticDiscoveryProviderRateLimited,
+)
 from tests.test_semantic_builder import (
     GRAPH_VERSION_ID,
     SEMANTIC_VERSION_ID,
@@ -68,6 +72,34 @@ class FailingGateway:
 
     async def generate(self, discovery_input):
         raise SemanticDiscoveryError("provider detail must not leak")
+
+
+class ModelUnavailableGateway:
+    provider = "anthropic"
+    model_version = "claude-sonnet-4-6"
+    thinking_config = {
+        "type": "anthropic_adaptive",
+        "enabled": True,
+        "effort": "medium",
+    }
+
+    async def generate(self, discovery_input):
+        raise SemanticDiscoveryProviderModelUnavailable(
+            "provider detail must not leak"
+        )
+
+
+class RateLimitedGateway:
+    provider = "anthropic"
+    model_version = "claude-sonnet-4-6"
+    thinking_config = {
+        "type": "anthropic_adaptive",
+        "enabled": True,
+        "effort": "medium",
+    }
+
+    async def generate(self, discovery_input):
+        raise SemanticDiscoveryProviderRateLimited("provider detail must not leak")
 
 
 def test_semantic_generation_and_validation_requests_are_strict() -> None:
@@ -174,6 +206,45 @@ def test_semantic_generate_sanitizes_provider_failures(
     assert response.json()["detail"] == (
         "Semantic discovery provider request failed."
     )
+
+
+@pytest.mark.parametrize(
+    ("gateway", "status_code", "detail"),
+    [
+        (
+            ModelUnavailableGateway(),
+            424,
+            "Semantic discovery provider model is unavailable.",
+        ),
+        (
+            RateLimitedGateway(),
+            429,
+            "Semantic discovery provider rate limit reached.",
+        ),
+    ],
+)
+def test_semantic_generate_returns_sanitized_provider_error_categories(
+    monkeypatch: pytest.MonkeyPatch,
+    gateway,
+    status_code: int,
+    detail: str,
+) -> None:
+    client = TestClient(app)
+    monkeypatch.setenv("QUERY_ENGINE_API_TOKEN", "semantic-token")
+    monkeypatch.setattr(app.state, "semantic_discovery_gateway", gateway)
+
+    response = client.post(
+        "/semantic/generate",
+        headers=AUTH_HEADERS,
+        json={
+            "graph": adventureworks_graph().model_dump(mode="json"),
+            "provider_config": provider_config(),
+            "seed": semantic_seed().model_dump(mode="json"),
+        },
+    )
+
+    assert response.status_code == status_code
+    assert response.json()["detail"] == detail
 
 
 def test_semantic_validate_endpoint_returns_updated_validation(
