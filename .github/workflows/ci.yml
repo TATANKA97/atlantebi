@@ -24,7 +24,21 @@ jobs:
         with:
           node-version: "24"
           package-manager-cache: false
-      - run: npx -y supabase@2.104.0 start
+      - name: Start database-only Supabase
+        shell: bash
+        run: |
+          excluded_services="edge-runtime,gotrue,imgproxy,kong,logflare,mailpit,postgres-meta,postgrest,realtime,storage-api,studio,supavisor,vector"
+
+          for attempt in 1 2 3; do
+            if npx -y supabase@2.104.0 start --exclude "$excluded_services"; then
+              exit 0
+            fi
+
+            npx -y supabase@2.104.0 stop --no-backup || true
+            sleep $((attempt * 20))
+          done
+
+          exit 1
       - name: Verify legacy demo snapshot upgrade
         shell: bash
         run: |
