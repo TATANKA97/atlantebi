@@ -48,6 +48,10 @@ from app.semantic_discovery import (
     OpenAISemanticDiscoveryGateway,
     SemanticDiscoveryError,
     SemanticDiscoveryInputTooLarge,
+    SemanticDiscoveryProviderConfigurationError,
+    SemanticDiscoveryProviderCredentialsRejected,
+    SemanticDiscoveryProviderModelUnavailable,
+    SemanticDiscoveryProviderRateLimited,
     SemanticDiscoveryRefused,
     SemanticProposalInvalid,
     generate_semantic_layer,
@@ -345,6 +349,26 @@ async def semantic_generate(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Semantic discovery provider credentials are not available.",
+        ) from exc
+    except SemanticDiscoveryProviderCredentialsRejected as exc:
+        raise HTTPException(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            detail="Semantic discovery provider credentials were rejected.",
+        ) from exc
+    except SemanticDiscoveryProviderModelUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            detail="Semantic discovery provider model is unavailable.",
+        ) from exc
+    except SemanticDiscoveryProviderConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            detail="Semantic discovery provider request configuration is invalid.",
+        ) from exc
+    except SemanticDiscoveryProviderRateLimited as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Semantic discovery provider rate limit reached.",
         ) from exc
     except (SemanticDiscoveryError, OpenAIError) as exc:
         raise HTTPException(

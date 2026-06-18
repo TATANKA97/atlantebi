@@ -77,6 +77,22 @@ class SemanticDiscoveryError(RuntimeError):
     pass
 
 
+class SemanticDiscoveryProviderConfigurationError(SemanticDiscoveryError):
+    pass
+
+
+class SemanticDiscoveryProviderCredentialsRejected(SemanticDiscoveryError):
+    pass
+
+
+class SemanticDiscoveryProviderModelUnavailable(SemanticDiscoveryError):
+    pass
+
+
+class SemanticDiscoveryProviderRateLimited(SemanticDiscoveryError):
+    pass
+
+
 class SemanticDiscoveryRefused(SemanticDiscoveryError):
     pass
 
@@ -202,9 +218,7 @@ class AnthropicSemanticDiscoveryGateway:
         try:
             response = await self._client.messages.parse(**request)
         except Exception as exc:
-            raise SemanticDiscoveryError(
-                "The semantic discovery provider request failed."
-            ) from exc
+            _raise_anthropic_provider_error(exc)
         proposal = (
             getattr(response, "parsed_output", None)
             or getattr(response, "output_parsed", None)
@@ -801,3 +815,26 @@ def _thinking_effort(thinking_config: object) -> str:
     else:
         effort = getattr(thinking_config, "effort", None)
     return str(effort or "medium")
+
+
+def _raise_anthropic_provider_error(exc: Exception) -> None:
+    status_code = getattr(exc, "status_code", None)
+    if status_code in (401, 403):
+        raise SemanticDiscoveryProviderCredentialsRejected(
+            "The semantic discovery provider rejected the configured credentials."
+        ) from exc
+    if status_code == 404:
+        raise SemanticDiscoveryProviderModelUnavailable(
+            "The configured semantic discovery provider model is unavailable."
+        ) from exc
+    if status_code == 429:
+        raise SemanticDiscoveryProviderRateLimited(
+            "The semantic discovery provider rate limit was reached."
+        ) from exc
+    if status_code == 400:
+        raise SemanticDiscoveryProviderConfigurationError(
+            "The semantic discovery provider rejected the request configuration."
+        ) from exc
+    raise SemanticDiscoveryError(
+        "The semantic discovery provider request failed."
+    ) from exc

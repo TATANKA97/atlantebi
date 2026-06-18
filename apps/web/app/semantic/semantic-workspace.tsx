@@ -66,8 +66,16 @@ const MESSAGE_COPY: Record<string, string> = {
   semantic_activation_failed: "Attivazione Semantic Layer fallita.",
   semantic_ai_not_configured:
     "La generazione AI non e configurata nel query-engine.",
+  semantic_ai_credentials_rejected:
+    "Il provider AI ha rifiutato la API key configurata.",
+  semantic_ai_model_unavailable:
+    "Il modello AI configurato non e disponibile per questa API key.",
   semantic_ai_provider_not_configured:
     "Configura un provider AI prima di generare una proposta.",
+  semantic_ai_provider_request_invalid:
+    "La configurazione della richiesta AI non e accettata dal provider.",
+  semantic_ai_secret_unavailable:
+    "Le credenziali del provider AI non sono leggibili dal query-engine.",
   semantic_archive_failed: "Archiviazione Semantic Layer fallita.",
   semantic_forbidden:
     "Solo owner e admin possono modificare il Semantic Layer.",

@@ -1043,12 +1043,48 @@ function mapDatabaseError(
 function mapQueryEngineError(error: unknown, fallbackCode: string) {
   if (error instanceof QueryEngineRequestError) {
     if (
+      error.status === 424 &&
+      fallbackCode === "semantic_generation_failed"
+    ) {
+      if (error.message.includes("credentials were rejected")) {
+        return new SemanticLayerServiceError(
+          "semantic_ai_credentials_rejected",
+          "Il provider AI ha rifiutato la API key configurata.",
+          424
+        );
+      }
+      if (error.message.includes("model is unavailable")) {
+        return new SemanticLayerServiceError(
+          "semantic_ai_model_unavailable",
+          "Il modello AI configurato non e disponibile per questa API key.",
+          424
+        );
+      }
+      if (error.message.includes("configuration is invalid")) {
+        return new SemanticLayerServiceError(
+          "semantic_ai_provider_request_invalid",
+          "La configurazione della richiesta AI non e accettata dal provider.",
+          424
+        );
+      }
+    }
+    if (
+      error.status === 429 &&
+      fallbackCode === "semantic_generation_failed"
+    ) {
+      return new SemanticLayerServiceError(
+        "semantic_generation_rate_limited",
+        "Il provider AI ha applicato un limite temporaneo alla richiesta.",
+        429
+      );
+    }
+    if (
       error.status === 503 &&
       fallbackCode === "semantic_generation_failed"
     ) {
       return new SemanticLayerServiceError(
-        "semantic_ai_not_configured",
-        "Semantic discovery AI non configurata.",
+        "semantic_ai_secret_unavailable",
+        "Le credenziali del provider AI non sono leggibili dal query-engine.",
         503
       );
     }
