@@ -1243,23 +1243,28 @@ class AnthropicSemanticAnnotationsOutput(StrictModel):
     )
 
 
-class AnthropicSemanticMetricProposal(AISemanticMetricProposal):
+class AnthropicSemanticMetricProposal(StrictModel):
+    canonical_name: str = Field(pattern=r"^[a-z][a-z0-9_]{1,99}$")
+    business_concept_ref: str = Field(pattern=r"^[a-z][a-z0-9_]{1,99}$")
+    metric_variant: str = Field(pattern=r"^[a-z][a-z0-9_]{1,99}$")
+    name: str = Field(min_length=1, max_length=255)
     description: str = Field(min_length=1, max_length=800)
-    common_dimensions: list[AISemanticDimensionProposal] = Field(max_length=8)
-    preferred_for_grains: list[
-        Annotated[str, Field(min_length=1, max_length=100)]
-    ] = Field(max_length=8)
-    preferred_for_dimensions: list[Sha256] = Field(max_length=8)
-    filters: list[SemanticFilter] = Field(max_length=6)
+    source_table_key: Sha256
+    aggregation: Literal["count", "count_distinct", "sum", "avg", "min", "max"]
+    measure_column_key: Sha256 | None
+    grain_table_key: Sha256
+    grain_column_keys: list[Sha256] = Field(min_length=1, max_length=4)
+    default_date_column_key: Sha256 | None
+    format: SemanticMetricFormat
     synonyms: list[Annotated[str, Field(min_length=1, max_length=255)]] = Field(
-        max_length=8
+        max_length=6
     )
     reasoning_summary: str = Field(min_length=1, max_length=400)
     ambiguities: list[AnthropicSemanticScopedAmbiguity] = Field(max_length=3)
 
 
 class AnthropicSemanticMetricsOutput(StrictModel):
-    metrics: list[AnthropicSemanticMetricProposal] = Field(max_length=10)
+    metrics: list[AnthropicSemanticMetricProposal] = Field(max_length=8)
 
 
 class AISemanticDraftProposal(StrictModel):
