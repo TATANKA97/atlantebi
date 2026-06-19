@@ -1222,6 +1222,34 @@ class AISemanticAmbiguity(StrictModel):
     clarification_question: str = Field(min_length=1, max_length=500)
 
 
+class AnthropicSemanticAnnotationsOutput(StrictModel):
+    contract_version: Literal["semantic_ai_draft.v1"]
+    tables: list[AISemanticTableProposal] = Field(max_length=25)
+    columns: list[AISemanticColumnProposal] = Field(max_length=60)
+    business_concepts: list[AISemanticBusinessConceptProposal] = Field(
+        max_length=16
+    )
+
+
+class AnthropicSemanticMetricProposal(AISemanticMetricProposal):
+    description: str = Field(min_length=1, max_length=800)
+    common_dimensions: list[AISemanticDimensionProposal] = Field(max_length=8)
+    preferred_for_grains: list[
+        Annotated[str, Field(min_length=1, max_length=100)]
+    ] = Field(max_length=8)
+    preferred_for_dimensions: list[Sha256] = Field(max_length=8)
+    filters: list[SemanticFilter] = Field(max_length=6)
+    synonyms: list[Annotated[str, Field(min_length=1, max_length=255)]] = Field(
+        max_length=8
+    )
+    reasoning_summary: str = Field(min_length=1, max_length=400)
+
+
+class AnthropicSemanticMetricsOutput(StrictModel):
+    metrics: list[AnthropicSemanticMetricProposal] = Field(max_length=10)
+    ambiguities: list[AISemanticAmbiguity] = Field(max_length=12)
+
+
 class AISemanticDraftProposal(StrictModel):
     contract_version: Literal["semantic_ai_draft.v1"]
     tables: list[AISemanticTableProposal] = Field(max_length=5_000)

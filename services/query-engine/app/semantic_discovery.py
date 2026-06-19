@@ -1,5 +1,7 @@
 import hashlib
 import json
+import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Callable, Protocol, TypeVar
@@ -8,10 +10,14 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from openai import AsyncOpenAI
 
 from app.models import (
+    AISemanticAmbiguity,
+    AISemanticBusinessConceptProposal,
     AISemanticColumnProposal,
     AISemanticDraftProposal,
     AISemanticMetricProposal,
     AISemanticTableProposal,
+    AnthropicSemanticAnnotationsOutput,
+    AnthropicSemanticMetricsOutput,
     AnthropicProviderConfig,
     OpenAIProviderConfig,
     QueryabilityForeignKeyEdge,
@@ -46,6 +52,8 @@ SEMANTIC_DISCOVERY_PROMPT_VERSION = "semantic-discovery.v1"
 DEFAULT_SEMANTIC_DISCOVERY_MODEL = "gpt-5.5"
 MAX_SEMANTIC_DISCOVERY_INPUT_BYTES = 2_000_000
 MAX_SEMANTIC_DISCOVERY_OUTPUT_TOKENS = 20_000
+
+logger = logging.getLogger(__name__)
 
 SEMANTIC_DISCOVERY_SYSTEM_PROMPT = """
 You propose business semantics for a deterministic BI semantic layer.
@@ -198,45 +206,154 @@ class AnthropicSemanticDiscoveryGateway:
         self,
         discovery_input: SemanticDiscoveryInput,
     ) -> SemanticModelResponse:
+        annotations_response, annotations = await self._generate_part(
+            input_content=_canonical_json(discovery_input),
+            output_format=AnthropicSemanticAnnotationsOutput,
+            phase_instruction=(
+                "Propose table and column annotations plus business concepts. "
+                "Keep the proposal sparse and business-relevant: at most 25 "
+                "tables, 60 columns, and 16 business concepts. Omit low-value "
+                "technical identifiers unless a metric needs them. Do not "
+                "propose metrics or ambiguities in this phase."
+            ),
+        )
+        metrics_input = json.dumps(
+            {
+                "discovery_input": discovery_input.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                ),
+                "proposed_business_concepts": [
+                    concept.model_dump(mode="json", exclude_none=True)
+                    for concept in annotations.business_concepts
+                ],
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        metrics_response, metrics = await self._generate_part(
+            input_content=metrics_input,
+            output_format=AnthropicSemanticMetricsOutput,
+            phase_instruction=(
+                "Propose metrics and ambiguities using only the supplied graph "
+                "stable keys and proposed business concept refs. Prefer 6-8 "
+                "decision-useful metrics and never exceed 10. Keep every list "
+                "sparse, descriptions concise, and ambiguities actionable; do "
+                "not enumerate every possible dimension or synonym."
+            ),
+        )
+        proposal = AISemanticDraftProposal(
+            contract_version=annotations.contract_version,
+            tables=annotations.tables,
+            columns=annotations.columns,
+            business_concepts=annotations.business_concepts,
+            metrics=metrics.metrics,
+            ambiguities=_filter_anthropic_ambiguities(
+                ambiguities=metrics.ambiguities,
+                discovery_input=discovery_input,
+                business_concepts=annotations.business_concepts,
+                metrics=metrics.metrics,
+            ),
+        )
+        response_ids = [
+            getattr(annotations_response, "id", "anthropic_annotations_response"),
+            getattr(metrics_response, "id", "anthropic_metrics_response"),
+        ]
+        return _GatewayResponse(
+            response_id=",".join(response_ids),
+            proposal=proposal,
+        )
+
+    async def _generate_part(
+        self,
+        *,
+        input_content: str,
+        output_format: type[
+            AnthropicSemanticAnnotationsOutput | AnthropicSemanticMetricsOutput
+        ],
+        phase_instruction: str,
+    ) -> tuple[
+        object,
+        AnthropicSemanticAnnotationsOutput | AnthropicSemanticMetricsOutput,
+    ]:
         request = {
             "model": self.model_version,
             "max_tokens": MAX_SEMANTIC_DISCOVERY_OUTPUT_TOKENS,
-            "system": SEMANTIC_DISCOVERY_SYSTEM_PROMPT,
+            "system": f"{SEMANTIC_DISCOVERY_SYSTEM_PROMPT}\n\n{phase_instruction}",
             "messages": [
                 {
                     "role": "user",
-                    "content": _canonical_json(discovery_input),
+                    "content": input_content,
                 }
             ],
-            "output_format": AISemanticDraftProposal,
+            "output_format": output_format,
             "output_config": {"effort": _thinking_effort(self.thinking_config)},
-            "timeout": 120,
+            "timeout": 140,
         }
         if getattr(self.thinking_config, "enabled", False):
             request["thinking"] = {"type": "adaptive"}
 
         try:
-            response = await self._client.messages.parse(**request)
+            async with self._client.messages.stream(**request) as stream:
+                response = await stream.get_final_message()
         except Exception as exc:
             _raise_anthropic_provider_error(exc)
-        proposal = (
+        parsed_output = (
             getattr(response, "parsed_output", None)
             or getattr(response, "output_parsed", None)
         )
-        if proposal is None:
+        if parsed_output is None:
             if _anthropic_response_contains_refusal(response):
                 raise SemanticDiscoveryRefused(
                     "The semantic discovery model refused the request."
                 )
+            stop_reason = getattr(response, "stop_reason", "unknown")
+            logger.warning(
+                "Anthropic semantic discovery returned no parsed output: "
+                "response_id=%s stop_reason=%s",
+                getattr(response, "id", "unavailable"),
+                stop_reason,
+            )
+            if stop_reason == "max_tokens":
+                raise SemanticDiscoveryError(
+                    "The semantic discovery model exceeded the output token limit."
+                )
             raise SemanticDiscoveryError(
                 "The semantic discovery model did not return a structured proposal."
             )
-        if not isinstance(proposal, AISemanticDraftProposal):
-            proposal = AISemanticDraftProposal.model_validate(proposal)
-        return _GatewayResponse(
-            response_id=getattr(response, "id", "anthropic_response"),
-            proposal=proposal,
+        if not isinstance(parsed_output, output_format):
+            parsed_output = output_format.model_validate(parsed_output)
+        return response, parsed_output
+
+
+def _filter_anthropic_ambiguities(
+    *,
+    ambiguities: list[AISemanticAmbiguity],
+    discovery_input: SemanticDiscoveryInput,
+    business_concepts: list[AISemanticBusinessConceptProposal],
+    metrics: list[AISemanticMetricProposal],
+) -> list[AISemanticAmbiguity]:
+    allowed_targets = {
+        "table": {table.node_key for table in discovery_input.tables},
+        "column": {column.column_key for column in discovery_input.columns},
+        "business_concept": {
+            concept.concept_ref for concept in business_concepts
+        },
+        "metric": {metric.canonical_name for metric in metrics},
+    }
+    filtered = [
+        ambiguity
+        for ambiguity in ambiguities
+        if ambiguity.target_ref in allowed_targets[ambiguity.target_type]
+    ]
+    dropped_count = len(ambiguities) - len(filtered)
+    if dropped_count:
+        logger.warning(
+            "Dropped Anthropic ambiguities with unknown targets: count=%s",
+            dropped_count,
         )
+    return filtered
 
 
 def build_semantic_discovery_input(
@@ -832,9 +949,37 @@ def _raise_anthropic_provider_error(exc: Exception) -> None:
             "The semantic discovery provider rate limit was reached."
         ) from exc
     if status_code == 400:
+        diagnostic = _anthropic_error_diagnostic(exc)
+        logger.warning(
+            "Anthropic rejected semantic discovery request: "
+            "request_id=%s error_type=%s message=%s",
+            diagnostic["request_id"],
+            diagnostic["error_type"],
+            diagnostic["message"],
+        )
         raise SemanticDiscoveryProviderConfigurationError(
             "The semantic discovery provider rejected the request configuration."
         ) from exc
     raise SemanticDiscoveryError(
         "The semantic discovery provider request failed."
     ) from exc
+
+
+def _anthropic_error_diagnostic(exc: Exception) -> dict[str, str]:
+    body = getattr(exc, "body", None)
+    error = body.get("error", body) if isinstance(body, dict) else {}
+    if not isinstance(error, dict):
+        error = {}
+
+    request_id = getattr(exc, "request_id", None)
+    if not request_id and isinstance(body, dict):
+        request_id = body.get("request_id")
+
+    message = str(error.get("message") or "unavailable")
+    message = re.sub(r"sk-ant-[A-Za-z0-9_-]+", "[redacted]", message)
+    message = " ".join(message.split())[:500]
+    return {
+        "request_id": str(request_id or "unavailable"),
+        "error_type": str(error.get("type") or "unknown"),
+        "message": message,
+    }
