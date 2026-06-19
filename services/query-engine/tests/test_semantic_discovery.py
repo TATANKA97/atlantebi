@@ -14,6 +14,7 @@ from app.models import (
     AISemanticMetricProposal,
     AnthropicProviderConfig,
     AnthropicSemanticAnnotationsOutput,
+    AnthropicSemanticBusinessConceptProposal,
     AnthropicSemanticMetricsOutput,
     SemanticDimensionCompatibility,
     SemanticFilter,
@@ -26,7 +27,8 @@ from app.semantic import (
     validate_semantic_layer,
 )
 from app.semantic_discovery import (
-    ANTHROPIC_MAX_OUTPUT_TOKENS,
+    ANTHROPIC_SEMANTIC_PHASE_OUTPUT_TOKENS,
+    ANTHROPIC_SEMANTIC_PHASE_TIMEOUT_SECONDS,
     AnthropicSemanticDiscoveryGateway,
     OpenAISemanticDiscoveryGateway,
     SemanticDiscoveryError,
@@ -34,7 +36,8 @@ from app.semantic_discovery import (
     SemanticDiscoveryProviderConfigurationError,
     SemanticDiscoveryRefused,
     SemanticProposalInvalid,
-    _validate_anthropic_ambiguities,
+    _compile_anthropic_concepts,
+    _compile_anthropic_metrics,
     _raise_anthropic_provider_error,
     build_semantic_discovery_input,
     compile_semantic_proposal,
@@ -775,11 +778,9 @@ def test_openai_sdk_can_generate_strict_schema_for_ai_contract() -> None:
     }
 
 
-def test_anthropic_models_use_provider_max_output_tokens() -> None:
-    assert ANTHROPIC_MAX_OUTPUT_TOKENS == {
-        "claude-sonnet-4-6": 64_000,
-        "claude-opus-4-8": 128_000,
-    }
+def test_anthropic_phases_have_bounded_budget_and_deadline() -> None:
+    assert ANTHROPIC_SEMANTIC_PHASE_OUTPUT_TOKENS == 20_000
+    assert ANTHROPIC_SEMANTIC_PHASE_TIMEOUT_SECONDS == 180
 
 
 def test_anthropic_sdk_generates_bounded_schemas_for_split_outputs() -> None:
@@ -857,27 +858,49 @@ def test_anthropic_bad_request_logs_sanitized_provider_detail(caplog) -> None:
     assert "sk-ant-api03-secret" not in caplog.text
 
 
-def test_anthropic_unknown_ambiguity_targets_reject_proposal(caplog) -> None:
+def test_anthropic_scoped_ambiguities_compile_to_existing_targets() -> None:
     proposal = proposal_from_fixture()
-    invalid = proposal.ambiguities[0].model_copy(
-        update={"target_type": "metric", "target_ref": "invented_metric"}
+    concept_ambiguity = proposal.ambiguities[0]
+    concept = AnthropicSemanticBusinessConceptProposal(
+        **proposal.business_concepts[-1].model_dump(mode="json"),
+        ambiguities=[
+            {
+                "code": concept_ambiguity.code,
+                "summary": concept_ambiguity.summary,
+                "clarification_question": (
+                    concept_ambiguity.clarification_question
+                ),
+            }
+        ],
+    )
+    metric = AnthropicSemanticMetricsOutput.model_validate(
+        {
+            "metrics": [
+                {
+                    **proposal.metrics[0].model_dump(mode="json"),
+                    "ambiguities": [
+                        {
+                            "code": "REVENUE_VARIANT_AMBIGUOUS",
+                            "summary": "Net and document totals differ.",
+                            "clarification_question": (
+                                "Should revenue mean net or document total?"
+                            ),
+                        }
+                    ],
+                }
+            ]
+        }
     )
 
-    with caplog.at_level("WARNING"):
-        with pytest.raises(
-            SemanticProposalInvalid,
-            match="ambiguities with unknown targets",
-        ):
-            _validate_anthropic_ambiguities(
-                ambiguities=[*proposal.ambiguities, invalid],
-                discovery_input=build_semantic_discovery_input(
-                    adventureworks_graph()
-                ),
-                business_concepts=proposal.business_concepts,
-                metrics=proposal.metrics,
-            )
+    concepts, concept_ambiguities = _compile_anthropic_concepts([concept])
+    metrics, metric_ambiguities = _compile_anthropic_metrics(metric)
 
-    assert "unknown ambiguity targets: count=1" in caplog.text
+    assert concepts == [proposal.business_concepts[-1]]
+    assert metrics == [proposal.metrics[0]]
+    assert concept_ambiguities[0].target_type == "business_concept"
+    assert concept_ambiguities[0].target_ref == concept.concept_ref
+    assert metric_ambiguities[0].target_type == "metric"
+    assert metric_ambiguities[0].target_ref == metrics[0].canonical_name
 
 def test_openai_gateway_uses_structured_output_without_storing_payload() -> None:
     proposal = proposal_from_fixture()
@@ -927,7 +950,24 @@ def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
                     contract_version=proposal.contract_version,
                     tables=proposal.tables,
                     columns=proposal.columns,
-                    business_concepts=proposal.business_concepts,
+                    business_concepts=[
+                        {
+                            **concept.model_dump(mode="json"),
+                            "ambiguities": [
+                                {
+                                    "code": ambiguity.code,
+                                    "summary": ambiguity.summary,
+                                    "clarification_question": (
+                                        ambiguity.clarification_question
+                                    ),
+                                }
+                                for ambiguity in proposal.ambiguities
+                                if ambiguity.target_type == "business_concept"
+                                and ambiguity.target_ref == concept.concept_ref
+                            ],
+                        }
+                        for concept in proposal.business_concepts
+                    ],
                 )
                 response_id = "msg_anthropic_annotations"
             else:
@@ -939,12 +979,21 @@ def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
                             "default_date_column_key": (
                                 metric.default_date_column_key
                             ),
+                            "ambiguities": [
+                                {
+                                    "code": ambiguity.code,
+                                    "summary": ambiguity.summary,
+                                    "clarification_question": (
+                                        ambiguity.clarification_question
+                                    ),
+                                }
+                                for ambiguity in proposal.ambiguities
+                                if ambiguity.target_type == "metric"
+                                and ambiguity.target_ref
+                                == metric.canonical_name
+                            ],
                         }
                         for metric in proposal.metrics
-                    ],
-                    ambiguities=[
-                        ambiguity.model_dump(mode="json")
-                        for ambiguity in proposal.ambiguities
                     ],
                 )
                 response_id = "msg_anthropic_metrics"
@@ -1009,18 +1058,66 @@ def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
     assert metrics_call["output_format"] is AnthropicSemanticMetricsOutput
     assert annotations_call["output_config"] == {"effort": "xhigh"}
     assert metrics_call["output_config"] == {"effort": "xhigh"}
-    assert annotations_call["max_tokens"] == 128_000
-    assert metrics_call["max_tokens"] == 128_000
+    assert annotations_call["max_tokens"] == 20_000
+    assert metrics_call["max_tokens"] == 20_000
     assert annotations_call["thinking"] == {"type": "adaptive"}
     assert metrics_call["thinking"] == {"type": "adaptive"}
-    assert annotations_call["timeout"] == 140
-    assert metrics_call["timeout"] == 140
+    assert annotations_call["timeout"] == 180
+    assert metrics_call["timeout"] == 180
     assert "Never write SQL" in annotations_call["system"]
     metrics_input = json.loads(metrics_call["messages"][0]["content"])
     assert metrics_input["proposed_business_concepts"] == [
         concept.model_dump(mode="json", exclude_none=True)
         for concept in proposal.business_concepts
     ]
+
+
+def test_anthropic_gateway_enforces_total_phase_deadline(monkeypatch) -> None:
+    class SlowStream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback) -> None:
+            return None
+
+        async def get_final_message(self):
+            await asyncio.sleep(1)
+
+    config = AnthropicProviderConfig.model_validate(
+        {
+            "provider": "anthropic",
+            "setting_id": "00000000-0000-4000-8000-000000000001",
+            "model_id": "claude-sonnet-4-6",
+            "thinking": {
+                "type": "anthropic_adaptive",
+                "enabled": True,
+                "effort": "medium",
+            },
+            "secret_ref": (
+                "gcp-secret-manager://projects/demo/secrets/"
+                "atlantebi-tenant-setting-anthropic-ai-key"
+            ),
+        }
+    )
+    gateway = AnthropicSemanticDiscoveryGateway(
+        client=SimpleNamespace(
+            messages=SimpleNamespace(stream=lambda **kwargs: SlowStream())
+        ),
+        config=config,
+    )
+    monkeypatch.setattr(
+        "app.semantic_discovery.ANTHROPIC_SEMANTIC_PHASE_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    with pytest.raises(SemanticDiscoveryError, match="phase deadline"):
+        asyncio.run(
+            gateway._generate_part(
+                input_content="{}",
+                output_format=AnthropicSemanticAnnotationsOutput,
+                phase_instruction="fixture",
+            )
+        )
 
 
 def test_anthropic_gateway_distinguishes_refusal_from_missing_structured_output() -> None:
