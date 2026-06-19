@@ -26,6 +26,7 @@ from app.semantic import (
     validate_semantic_layer,
 )
 from app.semantic_discovery import (
+    ANTHROPIC_MAX_OUTPUT_TOKENS,
     AnthropicSemanticDiscoveryGateway,
     OpenAISemanticDiscoveryGateway,
     SemanticDiscoveryError,
@@ -771,6 +772,13 @@ def test_openai_sdk_can_generate_strict_schema_for_ai_contract() -> None:
         "business_concepts",
         "metrics",
         "ambiguities",
+    }
+
+
+def test_anthropic_models_use_provider_max_output_tokens() -> None:
+    assert ANTHROPIC_MAX_OUTPUT_TOKENS == {
+        "claude-sonnet-4-6": 64_000,
+        "claude-opus-4-8": 128_000,
     }
 
 
