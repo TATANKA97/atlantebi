@@ -264,6 +264,30 @@ def semantic_seed():
     )
 
 
+def anthropic_metric_payload(
+    metric: AISemanticMetricProposal,
+    *,
+    ambiguities: list[dict[str, str]] | None = None,
+) -> dict[str, object]:
+    return {
+        "canonical_name": metric.canonical_name,
+        "business_concept_ref": metric.business_concept_ref,
+        "metric_variant": metric.metric_variant,
+        "name": metric.name,
+        "description": metric.description,
+        "source_table_key": metric.source_table_key,
+        "aggregation": metric.aggregation,
+        "measure_column_key": metric.measure_column_key,
+        "grain_table_key": metric.grain_table_key,
+        "grain_column_keys": metric.grain_column_keys,
+        "default_date_column_key": metric.default_date_column_key,
+        "format": metric.format.model_dump(mode="json"),
+        "synonyms": metric.synonyms,
+        "reasoning_summary": metric.reasoning_summary,
+        "ambiguities": ambiguities or [],
+    }
+
+
 class FakeGateway:
     provider = "openai"
     model_version = "fixture-model-v2"
@@ -782,7 +806,7 @@ def test_openai_sdk_can_generate_strict_schema_for_ai_contract() -> None:
 
 def test_anthropic_phases_have_bounded_budget_and_deadline() -> None:
     assert ANTHROPIC_ANNOTATION_OUTPUT_TOKENS == 8_000
-    assert ANTHROPIC_METRIC_OUTPUT_TOKENS == 16_000
+    assert ANTHROPIC_METRIC_OUTPUT_TOKENS == 12_000
     assert ANTHROPIC_SEMANTIC_PHASE_TIMEOUT_SECONDS == 240
     assert ANTHROPIC_SEMANTIC_TOTAL_TIMEOUT_SECONDS == 450
 
@@ -880,9 +904,9 @@ def test_anthropic_scoped_ambiguities_compile_to_existing_targets() -> None:
     metric = AnthropicSemanticMetricsOutput.model_validate(
         {
             "metrics": [
-                {
-                    **proposal.metrics[0].model_dump(mode="json"),
-                    "ambiguities": [
+                anthropic_metric_payload(
+                    proposal.metrics[0],
+                    ambiguities=[
                         {
                             "code": "REVENUE_VARIANT_AMBIGUOUS",
                             "summary": "Net and document totals differ.",
@@ -891,7 +915,7 @@ def test_anthropic_scoped_ambiguities_compile_to_existing_targets() -> None:
                             ),
                         }
                     ],
-                }
+                )
             ]
         }
     )
@@ -900,7 +924,10 @@ def test_anthropic_scoped_ambiguities_compile_to_existing_targets() -> None:
     metrics, metric_ambiguities = _compile_anthropic_metrics(metric)
 
     assert concepts == [proposal.business_concepts[-1]]
-    assert metrics == [proposal.metrics[0]]
+    assert metrics[0].canonical_name == proposal.metrics[0].canonical_name
+    assert metrics[0].source_table_key == proposal.metrics[0].source_table_key
+    assert metrics[0].common_dimensions == []
+    assert metrics[0].required_join_edge_keys == []
     assert concept_ambiguities[0].target_type == "business_concept"
     assert concept_ambiguities[0].target_ref == concept.concept_ref
     assert metric_ambiguities[0].target_type == "metric"
@@ -977,13 +1004,9 @@ def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
             else:
                 parsed_output = AnthropicSemanticMetricsOutput(
                     metrics=[
-                        {
-                            **metric.model_dump(mode="json"),
-                            "measure_column_key": metric.measure_column_key,
-                            "default_date_column_key": (
-                                metric.default_date_column_key
-                            ),
-                            "ambiguities": [
+                        anthropic_metric_payload(
+                            metric,
+                            ambiguities=[
                                 {
                                     "code": ambiguity.code,
                                     "summary": ambiguity.summary,
@@ -996,7 +1019,7 @@ def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
                                 and ambiguity.target_ref
                                 == metric.canonical_name
                             ],
-                        }
+                        )
                         for metric in proposal.metrics
                     ],
                 )
@@ -1049,8 +1072,27 @@ def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
     assert response.response_id == (
         "msg_anthropic_annotations,msg_anthropic_metrics"
     )
-    assert response.proposal.model_dump(mode="json") == proposal.model_dump(
-        mode="json"
+    expected_metrics = [
+        metric.model_copy(
+            update={
+                "aggregation_level": "entity",
+                "additivity": (
+                    "additive"
+                    if metric.aggregation in {"sum", "count"}
+                    else "non_additive"
+                ),
+                "required_join_edge_keys": [],
+                "common_dimensions": [],
+                "preferred_for_grains": [],
+                "preferred_for_dimensions": [],
+                "filters": [],
+            }
+        )
+        for metric in proposal.metrics
+    ]
+    expected_proposal = proposal.model_copy(update={"metrics": expected_metrics})
+    assert response.proposal.model_dump(mode="json") == (
+        expected_proposal.model_dump(mode="json")
     )
     assert len(messages.calls) == 2
     annotations_call, metrics_call = messages.calls
@@ -1063,7 +1105,7 @@ def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
     assert annotations_call["output_config"] == {"effort": "low"}
     assert metrics_call["output_config"] == {"effort": "xhigh"}
     assert annotations_call["max_tokens"] == 8_000
-    assert metrics_call["max_tokens"] == 16_000
+    assert metrics_call["max_tokens"] == 12_000
     assert annotations_call["thinking"] == {"type": "adaptive"}
     assert metrics_call["thinking"] == {"type": "adaptive"}
     assert annotations_call["timeout"] == 240

@@ -5,6 +5,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from time import perf_counter
 from typing import Callable, Protocol, TypeVar
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -55,7 +56,7 @@ DEFAULT_SEMANTIC_DISCOVERY_MODEL = "gpt-5.5"
 MAX_SEMANTIC_DISCOVERY_INPUT_BYTES = 2_000_000
 MAX_SEMANTIC_DISCOVERY_OUTPUT_TOKENS = 20_000
 ANTHROPIC_ANNOTATION_OUTPUT_TOKENS = 8_000
-ANTHROPIC_METRIC_OUTPUT_TOKENS = 16_000
+ANTHROPIC_METRIC_OUTPUT_TOKENS = 12_000
 ANTHROPIC_SEMANTIC_PHASE_TIMEOUT_SECONDS = 240
 ANTHROPIC_SEMANTIC_TOTAL_TIMEOUT_SECONDS = 450
 
@@ -268,10 +269,11 @@ class AnthropicSemanticDiscoveryGateway:
             phase_instruction=(
                 "Propose metrics using only the supplied graph stable keys and "
                 "proposed business concept refs. Report uncertainty inside the "
-                "ambiguities list of the metric it affects. Prefer 6-8 "
-                "decision-useful metrics and never exceed 10. Keep every list "
-                "sparse, descriptions concise, and ambiguities actionable; do "
-                "not enumerate every possible dimension or synonym."
+                "ambiguities list of the metric it affects. Prefer 5-6 "
+                "decision-useful metrics and never exceed 8. Return only the "
+                "requested metric identity, source, aggregation, grain, date, "
+                "format, synonyms, reasoning, and ambiguity fields. The server "
+                "derives join and dimension safety deterministically."
             ),
         )
         metric_proposals, metric_ambiguities = _compile_anthropic_metrics(
@@ -309,6 +311,12 @@ class AnthropicSemanticDiscoveryGateway:
         object,
         AnthropicSemanticAnnotationsOutput | AnthropicSemanticMetricsOutput,
     ]:
+        started = perf_counter()
+        logger.info(
+            "Anthropic semantic discovery phase started: phase=%s max_tokens=%s",
+            phase_name,
+            max_tokens,
+        )
         request = {
             "model": self.model_version,
             "max_tokens": max_tokens,
@@ -369,6 +377,15 @@ class AnthropicSemanticDiscoveryGateway:
             )
         if not isinstance(parsed_output, output_format):
             parsed_output = output_format.model_validate(parsed_output)
+        usage = getattr(response, "usage", None)
+        logger.info(
+            "Anthropic semantic discovery phase completed: "
+            "phase=%s duration_ms=%s input_tokens=%s output_tokens=%s",
+            phase_name,
+            round((perf_counter() - started) * 1000),
+            getattr(usage, "input_tokens", "unavailable"),
+            getattr(usage, "output_tokens", "unavailable"),
+        )
         return response, parsed_output
 
 
@@ -411,6 +428,13 @@ def _compile_anthropic_metrics(
         metric_payload.update(
             measure_column_key=item.measure_column_key,
             default_date_column_key=item.default_date_column_key,
+            aggregation_level="entity",
+            additivity=_anthropic_metric_additivity(item.aggregation),
+            required_join_edge_keys=[],
+            common_dimensions=[],
+            preferred_for_grains=[],
+            preferred_for_dimensions=[],
+            filters=[],
         )
         metric = AISemanticMetricProposal.model_validate(metric_payload)
         metrics.append(metric)
@@ -425,6 +449,12 @@ def _compile_anthropic_metrics(
             for ambiguity in item.ambiguities
         )
     return metrics, ambiguities
+
+
+def _anthropic_metric_additivity(aggregation: str) -> str:
+    if aggregation in {"sum", "count"}:
+        return "additive"
+    return "non_additive"
 
 
 def build_semantic_discovery_input(

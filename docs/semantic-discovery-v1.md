@@ -123,7 +123,7 @@ retry SDK automatici e applica un timeout esplicito per fase, evitando latenze
 nascoste oltre il timeout end-to-end.
 
 La fase annotazioni usa effort basso e un budget di 8k token; la fase metriche
-mantiene l'effort scelto dal tenant con un budget di 16k. Ogni fase ha una
+mantiene l'effort scelto dal tenant con un budget di 12k. Ogni fase ha una
 deadline reale di 240 secondi e l'intera generazione una deadline di 450
 secondi, inferiore al timeout Cloud Run. I massimi sincroni del provider non
 sono usati come budget applicativo: su un endpoint interattivo consentirebbero
@@ -137,6 +137,12 @@ Nel transport Anthropic le ambiguita' sono annidate nel business concept o
 nella metrica a cui appartengono. Il server assegna il `target_ref` durante la
 conversione al contratto canonico: il modello non puo' inventare un target e
 l'incertezza non viene eliminata silenziosamente.
+
+Il transport metriche Anthropic e' intenzionalmente piu' piccolo del contratto
+canonico. Il modello propone identita', sorgente, aggregazione, grain, data,
+formato e motivazione. Join richiesti, compatibilita' dimensionali, filtri
+tecnici e additivita' vengono inizializzati o derivati deterministicamente dal
+server e restano soggetti al Semantic Validator.
 
 La logica applicativa dipende da un gateway iniettato. Test e CI usano un
 gateway fake e non richiedono rete o API key.
