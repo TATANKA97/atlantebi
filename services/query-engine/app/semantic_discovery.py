@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -17,6 +18,7 @@ from app.models import (
     AISemanticMetricProposal,
     AISemanticTableProposal,
     AnthropicSemanticAnnotationsOutput,
+    AnthropicSemanticBusinessConceptProposal,
     AnthropicSemanticMetricsOutput,
     AnthropicProviderConfig,
     OpenAIProviderConfig,
@@ -52,10 +54,8 @@ SEMANTIC_DISCOVERY_PROMPT_VERSION = "semantic-discovery.v1"
 DEFAULT_SEMANTIC_DISCOVERY_MODEL = "gpt-5.5"
 MAX_SEMANTIC_DISCOVERY_INPUT_BYTES = 2_000_000
 MAX_SEMANTIC_DISCOVERY_OUTPUT_TOKENS = 20_000
-ANTHROPIC_MAX_OUTPUT_TOKENS = {
-    "claude-sonnet-4-6": 64_000,
-    "claude-opus-4-8": 128_000,
-}
+ANTHROPIC_SEMANTIC_PHASE_OUTPUT_TOKENS = 20_000
+ANTHROPIC_SEMANTIC_PHASE_TIMEOUT_SECONDS = 180
 
 logger = logging.getLogger(__name__)
 
@@ -217,9 +217,13 @@ class AnthropicSemanticDiscoveryGateway:
                 "Propose table and column annotations plus business concepts. "
                 "Keep the proposal sparse and business-relevant: at most 25 "
                 "tables, 60 columns, and 16 business concepts. Omit low-value "
-                "technical identifiers unless a metric needs them. Do not "
-                "propose metrics or ambiguities in this phase."
+                "technical identifiers unless a metric needs them. Report "
+                "business concept uncertainty inside the ambiguities list of "
+                "the concept it affects. Do not propose metrics in this phase."
             ),
+        )
+        concept_proposals, concept_ambiguities = _compile_anthropic_concepts(
+            annotations.business_concepts
         )
         metrics_input = json.dumps(
             {
@@ -229,7 +233,7 @@ class AnthropicSemanticDiscoveryGateway:
                 ),
                 "proposed_business_concepts": [
                     concept.model_dump(mode="json", exclude_none=True)
-                    for concept in annotations.business_concepts
+                    for concept in concept_proposals
                 ],
             },
             ensure_ascii=True,
@@ -240,25 +244,24 @@ class AnthropicSemanticDiscoveryGateway:
             input_content=metrics_input,
             output_format=AnthropicSemanticMetricsOutput,
             phase_instruction=(
-                "Propose metrics and ambiguities using only the supplied graph "
-                "stable keys and proposed business concept refs. Prefer 6-8 "
+                "Propose metrics using only the supplied graph stable keys and "
+                "proposed business concept refs. Report uncertainty inside the "
+                "ambiguities list of the metric it affects. Prefer 6-8 "
                 "decision-useful metrics and never exceed 10. Keep every list "
                 "sparse, descriptions concise, and ambiguities actionable; do "
                 "not enumerate every possible dimension or synonym."
             ),
         )
+        metric_proposals, metric_ambiguities = _compile_anthropic_metrics(
+            metrics
+        )
         proposal = AISemanticDraftProposal(
             contract_version=annotations.contract_version,
             tables=annotations.tables,
             columns=annotations.columns,
-            business_concepts=annotations.business_concepts,
-            metrics=metrics.metrics,
-            ambiguities=_validate_anthropic_ambiguities(
-                ambiguities=metrics.ambiguities,
-                discovery_input=discovery_input,
-                business_concepts=annotations.business_concepts,
-                metrics=metrics.metrics,
-            ),
+            business_concepts=concept_proposals,
+            metrics=metric_proposals,
+            ambiguities=[*concept_ambiguities, *metric_ambiguities],
         )
         response_ids = [
             getattr(annotations_response, "id", "anthropic_annotations_response"),
@@ -283,7 +286,7 @@ class AnthropicSemanticDiscoveryGateway:
     ]:
         request = {
             "model": self.model_version,
-            "max_tokens": ANTHROPIC_MAX_OUTPUT_TOKENS[self.model_version],
+            "max_tokens": ANTHROPIC_SEMANTIC_PHASE_OUTPUT_TOKENS,
             "system": f"{SEMANTIC_DISCOVERY_SYSTEM_PROMPT}\n\n{phase_instruction}",
             "messages": [
                 {
@@ -293,14 +296,21 @@ class AnthropicSemanticDiscoveryGateway:
             ],
             "output_format": output_format,
             "output_config": {"effort": _thinking_effort(self.thinking_config)},
-            "timeout": 140,
+            "timeout": ANTHROPIC_SEMANTIC_PHASE_TIMEOUT_SECONDS,
         }
         if getattr(self.thinking_config, "enabled", False):
             request["thinking"] = {"type": "adaptive"}
 
         try:
-            async with self._client.messages.stream(**request) as stream:
-                response = await stream.get_final_message()
+            async with asyncio.timeout(
+                ANTHROPIC_SEMANTIC_PHASE_TIMEOUT_SECONDS
+            ):
+                async with self._client.messages.stream(**request) as stream:
+                    response = await stream.get_final_message()
+        except TimeoutError as exc:
+            raise SemanticDiscoveryError(
+                "The semantic discovery provider exceeded the phase deadline."
+            ) from exc
         except Exception as exc:
             _raise_anthropic_provider_error(exc)
         parsed_output = (
@@ -331,34 +341,59 @@ class AnthropicSemanticDiscoveryGateway:
         return response, parsed_output
 
 
-def _validate_anthropic_ambiguities(
-    *,
-    ambiguities: list[AISemanticAmbiguity],
-    discovery_input: SemanticDiscoveryInput,
-    business_concepts: list[AISemanticBusinessConceptProposal],
-    metrics: list[AISemanticMetricProposal],
-) -> list[AISemanticAmbiguity]:
-    allowed_targets = {
-        "table": {table.node_key for table in discovery_input.tables},
-        "column": {column.column_key for column in discovery_input.columns},
-        "business_concept": {
-            concept.concept_ref for concept in business_concepts
-        },
-        "metric": {metric.canonical_name for metric in metrics},
-    }
-    unknown_count = sum(
-        ambiguity.target_ref not in allowed_targets[ambiguity.target_type]
-        for ambiguity in ambiguities
-    )
-    if unknown_count:
-        logger.warning(
-            "Rejected Anthropic proposal with unknown ambiguity targets: count=%s",
-            unknown_count,
+def _compile_anthropic_concepts(
+    items: list[AnthropicSemanticBusinessConceptProposal],
+) -> tuple[
+    list[AISemanticBusinessConceptProposal],
+    list[AISemanticAmbiguity],
+]:
+    concepts: list[AISemanticBusinessConceptProposal] = []
+    ambiguities: list[AISemanticAmbiguity] = []
+    for item in items:
+        concept = AISemanticBusinessConceptProposal.model_validate(
+            item.model_dump(mode="json", exclude={"ambiguities"})
         )
-        raise SemanticProposalInvalid(
-            "Anthropic proposal contains ambiguities with unknown targets."
+        concepts.append(concept)
+        ambiguities.extend(
+            AISemanticAmbiguity(
+                code=ambiguity.code,
+                target_type="business_concept",
+                target_ref=concept.concept_ref,
+                summary=ambiguity.summary,
+                clarification_question=ambiguity.clarification_question,
+            )
+            for ambiguity in item.ambiguities
         )
-    return ambiguities
+    return concepts, ambiguities
+
+
+def _compile_anthropic_metrics(
+    output: AnthropicSemanticMetricsOutput,
+) -> tuple[list[AISemanticMetricProposal], list[AISemanticAmbiguity]]:
+    metrics: list[AISemanticMetricProposal] = []
+    ambiguities: list[AISemanticAmbiguity] = []
+    for item in output.metrics:
+        metric_payload = item.model_dump(
+            mode="json",
+            exclude={"ambiguities"},
+        )
+        metric_payload.update(
+            measure_column_key=item.measure_column_key,
+            default_date_column_key=item.default_date_column_key,
+        )
+        metric = AISemanticMetricProposal.model_validate(metric_payload)
+        metrics.append(metric)
+        ambiguities.extend(
+            AISemanticAmbiguity(
+                code=ambiguity.code,
+                target_type="metric",
+                target_ref=metric.canonical_name,
+                summary=ambiguity.summary,
+                clarification_question=ambiguity.clarification_question,
+            )
+            for ambiguity in item.ambiguities
+        )
+    return metrics, ambiguities
 
 
 def build_semantic_discovery_input(
