@@ -33,7 +33,7 @@ from app.semantic_discovery import (
     SemanticDiscoveryProviderConfigurationError,
     SemanticDiscoveryRefused,
     SemanticProposalInvalid,
-    _filter_anthropic_ambiguities,
+    _validate_anthropic_ambiguities,
     _raise_anthropic_provider_error,
     build_semantic_discovery_input,
     compile_semantic_proposal,
@@ -784,8 +784,11 @@ def test_anthropic_sdk_generates_bounded_schemas_for_split_outputs() -> None:
         schema = transform_schema(output_model.model_json_schema())
         patterns: list[str] = []
         unsupported_constraints: list[str] = []
+        optional_parameters = 0
+        union_parameters = 0
 
         def collect_constraints(value: object) -> None:
+            nonlocal optional_parameters, union_parameters
             if isinstance(value, dict):
                 pattern = value.get("pattern")
                 if isinstance(pattern, str):
@@ -800,6 +803,16 @@ def test_anthropic_sdk_generates_bounded_schemas_for_split_outputs() -> None:
                     )
                     if key in value
                 )
+                properties = value.get("properties")
+                if isinstance(properties, dict):
+                    required = set(value.get("required", []))
+                    optional_parameters += len(set(properties) - required)
+                    union_parameters += sum(
+                        "anyOf" in property_schema
+                        or isinstance(property_schema.get("type"), list)
+                        for property_schema in properties.values()
+                        if isinstance(property_schema, dict)
+                    )
                 for child in value.values():
                     collect_constraints(child)
             elif isinstance(value, list):
@@ -810,8 +823,9 @@ def test_anthropic_sdk_generates_bounded_schemas_for_split_outputs() -> None:
 
         assert patterns == []
         assert unsupported_constraints == []
+        assert optional_parameters <= 24
+        assert union_parameters <= 16
         assert len(json.dumps(schema, separators=(",", ":"))) < 7_000
-
 
 def test_anthropic_bad_request_logs_sanitized_provider_detail(caplog) -> None:
     class FakeBadRequest(Exception):
@@ -835,25 +849,27 @@ def test_anthropic_bad_request_logs_sanitized_provider_detail(caplog) -> None:
     assert "sk-ant-api03-secret" not in caplog.text
 
 
-def test_anthropic_unknown_ambiguity_targets_are_dropped(caplog) -> None:
+def test_anthropic_unknown_ambiguity_targets_reject_proposal(caplog) -> None:
     proposal = proposal_from_fixture()
     invalid = proposal.ambiguities[0].model_copy(
         update={"target_type": "metric", "target_ref": "invented_metric"}
     )
 
     with caplog.at_level("WARNING"):
-        filtered = _filter_anthropic_ambiguities(
-            ambiguities=[*proposal.ambiguities, invalid],
-            discovery_input=build_semantic_discovery_input(
-                adventureworks_graph()
-            ),
-            business_concepts=proposal.business_concepts,
-            metrics=proposal.metrics,
-        )
+        with pytest.raises(
+            SemanticProposalInvalid,
+            match="ambiguities with unknown targets",
+        ):
+            _validate_anthropic_ambiguities(
+                ambiguities=[*proposal.ambiguities, invalid],
+                discovery_input=build_semantic_discovery_input(
+                    adventureworks_graph()
+                ),
+                business_concepts=proposal.business_concepts,
+                metrics=proposal.metrics,
+            )
 
-    assert filtered == proposal.ambiguities
-    assert "unknown targets: count=1" in caplog.text
-
+    assert "unknown ambiguity targets: count=1" in caplog.text
 
 def test_openai_gateway_uses_structured_output_without_storing_payload() -> None:
     proposal = proposal_from_fixture()
@@ -985,6 +1001,8 @@ def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
     assert metrics_call["output_format"] is AnthropicSemanticMetricsOutput
     assert annotations_call["output_config"] == {"effort": "xhigh"}
     assert metrics_call["output_config"] == {"effort": "xhigh"}
+    assert annotations_call["max_tokens"] == 128_000
+    assert metrics_call["max_tokens"] == 128_000
     assert annotations_call["thinking"] == {"type": "adaptive"}
     assert metrics_call["thinking"] == {"type": "adaptive"}
     assert annotations_call["timeout"] == 140
