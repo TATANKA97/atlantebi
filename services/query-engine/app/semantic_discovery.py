@@ -54,8 +54,10 @@ SEMANTIC_DISCOVERY_PROMPT_VERSION = "semantic-discovery.v1"
 DEFAULT_SEMANTIC_DISCOVERY_MODEL = "gpt-5.5"
 MAX_SEMANTIC_DISCOVERY_INPUT_BYTES = 2_000_000
 MAX_SEMANTIC_DISCOVERY_OUTPUT_TOKENS = 20_000
-ANTHROPIC_SEMANTIC_PHASE_OUTPUT_TOKENS = 20_000
-ANTHROPIC_SEMANTIC_PHASE_TIMEOUT_SECONDS = 180
+ANTHROPIC_ANNOTATION_OUTPUT_TOKENS = 8_000
+ANTHROPIC_METRIC_OUTPUT_TOKENS = 16_000
+ANTHROPIC_SEMANTIC_PHASE_TIMEOUT_SECONDS = 240
+ANTHROPIC_SEMANTIC_TOTAL_TIMEOUT_SECONDS = 450
 
 logger = logging.getLogger(__name__)
 
@@ -210,13 +212,30 @@ class AnthropicSemanticDiscoveryGateway:
         self,
         discovery_input: SemanticDiscoveryInput,
     ) -> SemanticModelResponse:
+        try:
+            async with asyncio.timeout(
+                ANTHROPIC_SEMANTIC_TOTAL_TIMEOUT_SECONDS
+            ):
+                return await self._generate(discovery_input)
+        except TimeoutError as exc:
+            raise SemanticDiscoveryError(
+                "The semantic discovery provider exceeded the total deadline."
+            ) from exc
+
+    async def _generate(
+        self,
+        discovery_input: SemanticDiscoveryInput,
+    ) -> SemanticModelResponse:
         annotations_response, annotations = await self._generate_part(
             input_content=_canonical_json(discovery_input),
             output_format=AnthropicSemanticAnnotationsOutput,
+            phase_name="annotations",
+            max_tokens=ANTHROPIC_ANNOTATION_OUTPUT_TOKENS,
+            effort="low",
             phase_instruction=(
                 "Propose table and column annotations plus business concepts. "
-                "Keep the proposal sparse and business-relevant: at most 25 "
-                "tables, 60 columns, and 16 business concepts. Omit low-value "
+                "Keep the proposal sparse and business-relevant: at most 20 "
+                "tables, 32 columns, and 12 business concepts. Omit low-value "
                 "technical identifiers unless a metric needs them. Report "
                 "business concept uncertainty inside the ambiguities list of "
                 "the concept it affects. Do not propose metrics in this phase."
@@ -243,6 +262,9 @@ class AnthropicSemanticDiscoveryGateway:
         metrics_response, metrics = await self._generate_part(
             input_content=metrics_input,
             output_format=AnthropicSemanticMetricsOutput,
+            phase_name="metrics",
+            max_tokens=ANTHROPIC_METRIC_OUTPUT_TOKENS,
+            effort=_thinking_effort(self.thinking_config),
             phase_instruction=(
                 "Propose metrics using only the supplied graph stable keys and "
                 "proposed business concept refs. Report uncertainty inside the "
@@ -279,6 +301,9 @@ class AnthropicSemanticDiscoveryGateway:
         output_format: type[
             AnthropicSemanticAnnotationsOutput | AnthropicSemanticMetricsOutput
         ],
+        phase_name: str,
+        max_tokens: int,
+        effort: str,
         phase_instruction: str,
     ) -> tuple[
         object,
@@ -286,7 +311,7 @@ class AnthropicSemanticDiscoveryGateway:
     ]:
         request = {
             "model": self.model_version,
-            "max_tokens": ANTHROPIC_SEMANTIC_PHASE_OUTPUT_TOKENS,
+            "max_tokens": max_tokens,
             "system": f"{SEMANTIC_DISCOVERY_SYSTEM_PROMPT}\n\n{phase_instruction}",
             "messages": [
                 {
@@ -295,7 +320,7 @@ class AnthropicSemanticDiscoveryGateway:
                 }
             ],
             "output_format": output_format,
-            "output_config": {"effort": _thinking_effort(self.thinking_config)},
+            "output_config": {"effort": effort},
             "timeout": ANTHROPIC_SEMANTIC_PHASE_TIMEOUT_SECONDS,
         }
         if getattr(self.thinking_config, "enabled", False):
@@ -308,6 +333,12 @@ class AnthropicSemanticDiscoveryGateway:
                 async with self._client.messages.stream(**request) as stream:
                     response = await stream.get_final_message()
         except TimeoutError as exc:
+            logger.warning(
+                "Anthropic semantic discovery phase exceeded deadline: "
+                "phase=%s deadline_seconds=%s",
+                phase_name,
+                ANTHROPIC_SEMANTIC_PHASE_TIMEOUT_SECONDS,
+            )
             raise SemanticDiscoveryError(
                 "The semantic discovery provider exceeded the phase deadline."
             ) from exc
