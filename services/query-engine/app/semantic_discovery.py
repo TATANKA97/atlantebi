@@ -52,6 +52,10 @@ SEMANTIC_DISCOVERY_PROMPT_VERSION = "semantic-discovery.v1"
 DEFAULT_SEMANTIC_DISCOVERY_MODEL = "gpt-5.5"
 MAX_SEMANTIC_DISCOVERY_INPUT_BYTES = 2_000_000
 MAX_SEMANTIC_DISCOVERY_OUTPUT_TOKENS = 20_000
+ANTHROPIC_MAX_OUTPUT_TOKENS = {
+    "claude-sonnet-4-6": 64_000,
+    "claude-opus-4-8": 128_000,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +253,7 @@ class AnthropicSemanticDiscoveryGateway:
             columns=annotations.columns,
             business_concepts=annotations.business_concepts,
             metrics=metrics.metrics,
-            ambiguities=_filter_anthropic_ambiguities(
+            ambiguities=_validate_anthropic_ambiguities(
                 ambiguities=metrics.ambiguities,
                 discovery_input=discovery_input,
                 business_concepts=annotations.business_concepts,
@@ -279,7 +283,7 @@ class AnthropicSemanticDiscoveryGateway:
     ]:
         request = {
             "model": self.model_version,
-            "max_tokens": MAX_SEMANTIC_DISCOVERY_OUTPUT_TOKENS,
+            "max_tokens": ANTHROPIC_MAX_OUTPUT_TOKENS[self.model_version],
             "system": f"{SEMANTIC_DISCOVERY_SYSTEM_PROMPT}\n\n{phase_instruction}",
             "messages": [
                 {
@@ -327,7 +331,7 @@ class AnthropicSemanticDiscoveryGateway:
         return response, parsed_output
 
 
-def _filter_anthropic_ambiguities(
+def _validate_anthropic_ambiguities(
     *,
     ambiguities: list[AISemanticAmbiguity],
     discovery_input: SemanticDiscoveryInput,
@@ -342,18 +346,19 @@ def _filter_anthropic_ambiguities(
         },
         "metric": {metric.canonical_name for metric in metrics},
     }
-    filtered = [
-        ambiguity
+    unknown_count = sum(
+        ambiguity.target_ref not in allowed_targets[ambiguity.target_type]
         for ambiguity in ambiguities
-        if ambiguity.target_ref in allowed_targets[ambiguity.target_type]
-    ]
-    dropped_count = len(ambiguities) - len(filtered)
-    if dropped_count:
+    )
+    if unknown_count:
         logger.warning(
-            "Dropped Anthropic ambiguities with unknown targets: count=%s",
-            dropped_count,
+            "Rejected Anthropic proposal with unknown ambiguity targets: count=%s",
+            unknown_count,
         )
-    return filtered
+        raise SemanticProposalInvalid(
+            "Anthropic proposal contains ambiguities with unknown targets."
+        )
+    return ambiguities
 
 
 def build_semantic_discovery_input(
