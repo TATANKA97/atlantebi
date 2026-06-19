@@ -122,10 +122,12 @@ Messages API per mantenere attive le richieste lunghe. L'adapter disabilita i
 retry SDK automatici e applica un timeout esplicito per fase, evitando latenze
 nascoste oltre il timeout end-to-end.
 
-Ogni fase applica un budget operativo di 20k token e una deadline reale di 180
-secondi. I massimi sincroni del provider non sono usati come budget applicativo:
-su un endpoint interattivo consentirebbero thinking eccessivamente lungo, costi
-imprevedibili e timeout infrastrutturali prima della validazione.
+La fase annotazioni usa effort basso e un budget di 8k token; la fase metriche
+mantiene l'effort scelto dal tenant con un budget di 16k. Ogni fase ha una
+deadline reale di 240 secondi e l'intera generazione una deadline di 450
+secondi, inferiore al timeout Cloud Run. I massimi sincroni del provider non
+sono usati come budget applicativo: su un endpoint interattivo consentirebbero
+thinking eccessivamente lungo, costi imprevedibili e timeout infrastrutturali.
 
 Anche l'output metriche e' bounded: massimo 10 metriche, con liste annidate
 brevi per dimensioni, filtri, grain preferiti e sinonimi. Il contratto

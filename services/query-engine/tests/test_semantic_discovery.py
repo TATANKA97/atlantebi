@@ -27,8 +27,10 @@ from app.semantic import (
     validate_semantic_layer,
 )
 from app.semantic_discovery import (
-    ANTHROPIC_SEMANTIC_PHASE_OUTPUT_TOKENS,
+    ANTHROPIC_ANNOTATION_OUTPUT_TOKENS,
+    ANTHROPIC_METRIC_OUTPUT_TOKENS,
     ANTHROPIC_SEMANTIC_PHASE_TIMEOUT_SECONDS,
+    ANTHROPIC_SEMANTIC_TOTAL_TIMEOUT_SECONDS,
     AnthropicSemanticDiscoveryGateway,
     OpenAISemanticDiscoveryGateway,
     SemanticDiscoveryError,
@@ -779,8 +781,10 @@ def test_openai_sdk_can_generate_strict_schema_for_ai_contract() -> None:
 
 
 def test_anthropic_phases_have_bounded_budget_and_deadline() -> None:
-    assert ANTHROPIC_SEMANTIC_PHASE_OUTPUT_TOKENS == 20_000
-    assert ANTHROPIC_SEMANTIC_PHASE_TIMEOUT_SECONDS == 180
+    assert ANTHROPIC_ANNOTATION_OUTPUT_TOKENS == 8_000
+    assert ANTHROPIC_METRIC_OUTPUT_TOKENS == 16_000
+    assert ANTHROPIC_SEMANTIC_PHASE_TIMEOUT_SECONDS == 240
+    assert ANTHROPIC_SEMANTIC_TOTAL_TIMEOUT_SECONDS == 450
 
 
 def test_anthropic_sdk_generates_bounded_schemas_for_split_outputs() -> None:
@@ -1056,14 +1060,14 @@ def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
         is AnthropicSemanticAnnotationsOutput
     )
     assert metrics_call["output_format"] is AnthropicSemanticMetricsOutput
-    assert annotations_call["output_config"] == {"effort": "xhigh"}
+    assert annotations_call["output_config"] == {"effort": "low"}
     assert metrics_call["output_config"] == {"effort": "xhigh"}
-    assert annotations_call["max_tokens"] == 20_000
-    assert metrics_call["max_tokens"] == 20_000
+    assert annotations_call["max_tokens"] == 8_000
+    assert metrics_call["max_tokens"] == 16_000
     assert annotations_call["thinking"] == {"type": "adaptive"}
     assert metrics_call["thinking"] == {"type": "adaptive"}
-    assert annotations_call["timeout"] == 180
-    assert metrics_call["timeout"] == 180
+    assert annotations_call["timeout"] == 240
+    assert metrics_call["timeout"] == 240
     assert "Never write SQL" in annotations_call["system"]
     metrics_input = json.loads(metrics_call["messages"][0]["content"])
     assert metrics_input["proposed_business_concepts"] == [
@@ -1072,7 +1076,10 @@ def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
     ]
 
 
-def test_anthropic_gateway_enforces_total_phase_deadline(monkeypatch) -> None:
+def test_anthropic_gateway_enforces_total_phase_deadline(
+    monkeypatch,
+    caplog,
+) -> None:
     class SlowStream:
         async def __aenter__(self):
             return self
@@ -1110,13 +1117,57 @@ def test_anthropic_gateway_enforces_total_phase_deadline(monkeypatch) -> None:
         0.01,
     )
 
-    with pytest.raises(SemanticDiscoveryError, match="phase deadline"):
-        asyncio.run(
-            gateway._generate_part(
-                input_content="{}",
-                output_format=AnthropicSemanticAnnotationsOutput,
-                phase_instruction="fixture",
+    with caplog.at_level("WARNING"):
+        with pytest.raises(SemanticDiscoveryError, match="phase deadline"):
+            asyncio.run(
+                gateway._generate_part(
+                    input_content="{}",
+                    output_format=AnthropicSemanticAnnotationsOutput,
+                    phase_name="annotations",
+                    max_tokens=8_000,
+                    effort="low",
+                    phase_instruction="fixture",
+                )
             )
+    assert "phase=annotations" in caplog.text
+
+
+def test_anthropic_gateway_enforces_total_generation_deadline(
+    monkeypatch,
+) -> None:
+    config = AnthropicProviderConfig.model_validate(
+        {
+            "provider": "anthropic",
+            "setting_id": "00000000-0000-4000-8000-000000000001",
+            "model_id": "claude-sonnet-4-6",
+            "thinking": {
+                "type": "anthropic_adaptive",
+                "enabled": True,
+                "effort": "medium",
+            },
+            "secret_ref": (
+                "gcp-secret-manager://projects/demo/secrets/"
+                "atlantebi-tenant-setting-anthropic-ai-key"
+            ),
+        }
+    )
+    gateway = AnthropicSemanticDiscoveryGateway(
+        client=SimpleNamespace(messages=SimpleNamespace()),
+        config=config,
+    )
+
+    async def slow_generation(discovery_input):
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(gateway, "_generate", slow_generation)
+    monkeypatch.setattr(
+        "app.semantic_discovery.ANTHROPIC_SEMANTIC_TOTAL_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    with pytest.raises(SemanticDiscoveryError, match="total deadline"):
+        asyncio.run(
+            gateway.generate(build_semantic_discovery_input(adventureworks_graph()))
         )
 
 
