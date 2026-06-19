@@ -477,7 +477,7 @@ async def _get_semantic_discovery_gateway(
                 detail="Anthropic semantic discovery provider is not installed.",
             ) from exc
         return AnthropicSemanticDiscoveryGateway(
-            client=AsyncAnthropic(api_key=api_key),
+            client=AsyncAnthropic(api_key=api_key, max_retries=0),
             config=provider_config,
         )
 

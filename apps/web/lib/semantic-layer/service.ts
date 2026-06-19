@@ -418,7 +418,7 @@ export async function generateSemanticDraft({
             seed: SemanticLayerSchema.parse(row.artifact)
           },
           SemanticGenerationResultSchema,
-          130_000
+          500_000
         )
     });
   } catch (error) {

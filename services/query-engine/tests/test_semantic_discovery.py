@@ -13,6 +13,8 @@ from app.models import (
     AISemanticDraftProposal,
     AISemanticMetricProposal,
     AnthropicProviderConfig,
+    AnthropicSemanticAnnotationsOutput,
+    AnthropicSemanticMetricsOutput,
     SemanticDimensionCompatibility,
     SemanticFilter,
     SemanticMetricFormat,
@@ -24,12 +26,16 @@ from app.semantic import (
     validate_semantic_layer,
 )
 from app.semantic_discovery import (
+    ANTHROPIC_MAX_OUTPUT_TOKENS,
     AnthropicSemanticDiscoveryGateway,
     OpenAISemanticDiscoveryGateway,
     SemanticDiscoveryError,
     SemanticDiscoveryInputTooLarge,
+    SemanticDiscoveryProviderConfigurationError,
     SemanticDiscoveryRefused,
     SemanticProposalInvalid,
+    _validate_anthropic_ambiguities,
+    _raise_anthropic_provider_error,
     build_semantic_discovery_input,
     compile_semantic_proposal,
     generate_semantic_layer,
@@ -769,6 +775,110 @@ def test_openai_sdk_can_generate_strict_schema_for_ai_contract() -> None:
     }
 
 
+def test_anthropic_models_use_provider_max_output_tokens() -> None:
+    assert ANTHROPIC_MAX_OUTPUT_TOKENS == {
+        "claude-sonnet-4-6": 64_000,
+        "claude-opus-4-8": 128_000,
+    }
+
+
+def test_anthropic_sdk_generates_bounded_schemas_for_split_outputs() -> None:
+    from anthropic.lib._parse._transform import transform_schema
+
+    for output_model in (
+        AnthropicSemanticAnnotationsOutput,
+        AnthropicSemanticMetricsOutput,
+    ):
+        schema = transform_schema(output_model.model_json_schema())
+        patterns: list[str] = []
+        unsupported_constraints: list[str] = []
+        optional_parameters = 0
+        union_parameters = 0
+
+        def collect_constraints(value: object) -> None:
+            nonlocal optional_parameters, union_parameters
+            if isinstance(value, dict):
+                pattern = value.get("pattern")
+                if isinstance(pattern, str):
+                    patterns.append(pattern)
+                unsupported_constraints.extend(
+                    key
+                    for key in (
+                        "minLength",
+                        "maxLength",
+                        "minimum",
+                        "maximum",
+                    )
+                    if key in value
+                )
+                properties = value.get("properties")
+                if isinstance(properties, dict):
+                    required = set(value.get("required", []))
+                    optional_parameters += len(set(properties) - required)
+                    union_parameters += sum(
+                        "anyOf" in property_schema
+                        or isinstance(property_schema.get("type"), list)
+                        for property_schema in properties.values()
+                        if isinstance(property_schema, dict)
+                    )
+                for child in value.values():
+                    collect_constraints(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect_constraints(child)
+
+        collect_constraints(schema)
+
+        assert patterns == []
+        assert unsupported_constraints == []
+        assert optional_parameters <= 24
+        assert union_parameters <= 16
+        assert len(json.dumps(schema, separators=(",", ":"))) < 7_000
+
+def test_anthropic_bad_request_logs_sanitized_provider_detail(caplog) -> None:
+    class FakeBadRequest(Exception):
+        status_code = 400
+        request_id = "req_fixture"
+        body = {
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "Invalid schema for sk-ant-api03-secret\npattern.",
+            },
+        }
+
+    with caplog.at_level("WARNING"):
+        with pytest.raises(SemanticDiscoveryProviderConfigurationError):
+            _raise_anthropic_provider_error(FakeBadRequest())
+
+    assert "req_fixture" in caplog.text
+    assert "invalid_request_error" in caplog.text
+    assert "Invalid schema for [redacted] pattern." in caplog.text
+    assert "sk-ant-api03-secret" not in caplog.text
+
+
+def test_anthropic_unknown_ambiguity_targets_reject_proposal(caplog) -> None:
+    proposal = proposal_from_fixture()
+    invalid = proposal.ambiguities[0].model_copy(
+        update={"target_type": "metric", "target_ref": "invented_metric"}
+    )
+
+    with caplog.at_level("WARNING"):
+        with pytest.raises(
+            SemanticProposalInvalid,
+            match="ambiguities with unknown targets",
+        ):
+            _validate_anthropic_ambiguities(
+                ambiguities=[*proposal.ambiguities, invalid],
+                discovery_input=build_semantic_discovery_input(
+                    adventureworks_graph()
+                ),
+                business_concepts=proposal.business_concepts,
+                metrics=proposal.metrics,
+            )
+
+    assert "unknown ambiguity targets: count=1" in caplog.text
+
 def test_openai_gateway_uses_structured_output_without_storing_payload() -> None:
     proposal = proposal_from_fixture()
 
@@ -808,14 +918,55 @@ def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
 
     class FakeMessages:
         def __init__(self) -> None:
-            self.kwargs = None
+            self.calls = []
 
-        async def parse(self, **kwargs):
-            self.kwargs = kwargs
-            return SimpleNamespace(
-                id="msg_anthropic_fixture",
-                parsed_output=proposal,
+        def stream(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs["output_format"] is AnthropicSemanticAnnotationsOutput:
+                parsed_output = AnthropicSemanticAnnotationsOutput(
+                    contract_version=proposal.contract_version,
+                    tables=proposal.tables,
+                    columns=proposal.columns,
+                    business_concepts=proposal.business_concepts,
+                )
+                response_id = "msg_anthropic_annotations"
+            else:
+                parsed_output = AnthropicSemanticMetricsOutput(
+                    metrics=[
+                        {
+                            **metric.model_dump(mode="json"),
+                            "measure_column_key": metric.measure_column_key,
+                            "default_date_column_key": (
+                                metric.default_date_column_key
+                            ),
+                        }
+                        for metric in proposal.metrics
+                    ],
+                    ambiguities=[
+                        ambiguity.model_dump(mode="json")
+                        for ambiguity in proposal.ambiguities
+                    ],
+                )
+                response_id = "msg_anthropic_metrics"
+            return FakeStreamManager(
+                SimpleNamespace(
+                    id=response_id,
+                    parsed_output=parsed_output,
+                )
             )
+
+    class FakeStreamManager:
+        def __init__(self, response) -> None:
+            self.response = response
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback) -> None:
+            return None
+
+        async def get_final_message(self):
+            return self.response
 
     messages = FakeMessages()
     client = SimpleNamespace(messages=messages)
@@ -842,13 +993,34 @@ def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
         gateway.generate(build_semantic_discovery_input(adventureworks_graph()))
     )
 
-    assert response.response_id == "msg_anthropic_fixture"
-    assert messages.kwargs["model"] == "claude-opus-4-8"
-    assert messages.kwargs["output_format"] is AISemanticDraftProposal
-    assert messages.kwargs["output_config"] == {"effort": "xhigh"}
-    assert messages.kwargs["thinking"] == {"type": "adaptive"}
-    assert messages.kwargs["timeout"] == 120
-    assert "Never write SQL" in messages.kwargs["system"]
+    assert response.response_id == (
+        "msg_anthropic_annotations,msg_anthropic_metrics"
+    )
+    assert response.proposal.model_dump(mode="json") == proposal.model_dump(
+        mode="json"
+    )
+    assert len(messages.calls) == 2
+    annotations_call, metrics_call = messages.calls
+    assert annotations_call["model"] == "claude-opus-4-8"
+    assert (
+        annotations_call["output_format"]
+        is AnthropicSemanticAnnotationsOutput
+    )
+    assert metrics_call["output_format"] is AnthropicSemanticMetricsOutput
+    assert annotations_call["output_config"] == {"effort": "xhigh"}
+    assert metrics_call["output_config"] == {"effort": "xhigh"}
+    assert annotations_call["max_tokens"] == 128_000
+    assert metrics_call["max_tokens"] == 128_000
+    assert annotations_call["thinking"] == {"type": "adaptive"}
+    assert metrics_call["thinking"] == {"type": "adaptive"}
+    assert annotations_call["timeout"] == 140
+    assert metrics_call["timeout"] == 140
+    assert "Never write SQL" in annotations_call["system"]
+    metrics_input = json.loads(metrics_call["messages"][0]["content"])
+    assert metrics_input["proposed_business_concepts"] == [
+        concept.model_dump(mode="json", exclude_none=True)
+        for concept in proposal.business_concepts
+    ]
 
 
 def test_anthropic_gateway_distinguishes_refusal_from_missing_structured_output() -> None:
@@ -856,7 +1028,20 @@ def test_anthropic_gateway_distinguishes_refusal_from_missing_structured_output(
         def __init__(self, response) -> None:
             self.response = response
 
-        async def parse(self, **kwargs):
+        def stream(self, **kwargs):
+            return FakeStreamManager(self.response)
+
+    class FakeStreamManager:
+        def __init__(self, response) -> None:
+            self.response = response
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback) -> None:
+            return None
+
+        async def get_final_message(self):
             return self.response
 
     config = AnthropicProviderConfig.model_validate(

@@ -74,7 +74,7 @@ jobs:
             --subnet=default \
             --vpc-egress=private-ranges-only \
             --set-env-vars="QUERY_ENGINE_AUTH_MODE=cloud_run_iam,QUERY_ENGINE_ALLOW_PRIVATE_NETWORKS=false,GCP_PROJECT_ID=${GCP_PROJECT_ID}" \
-            --timeout=180s \
+            --timeout=480s \
             --max-instances=10 \
             --quiet
 

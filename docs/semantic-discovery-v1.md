@@ -102,6 +102,39 @@ L'adapter OpenAI usa Responses API con Structured Outputs Pydantic:
 - timeout request: 120 secondi;
 - `store=false`.
 
+L'adapter Anthropic usa Messages API con Structured Outputs Pydantic e
+adaptive thinking. Il contratto canonico completo supera il limite interno di
+compilazione della grammatica Anthropic, quindi l'adapter esegue due fasi
+sequenziali:
+
+1. annotazioni di tabelle e colonne con business concept;
+2. metriche e ambiguita', usando anche i concept proposti nella prima fase.
+
+Le due risposte vengono ricomposte e validate come un unico
+`semantic_ai_draft.v1`. I response id di entrambe le chiamate sono conservati
+nella provenance. Questa suddivisione e' specifica del transport Anthropic e
+non modifica compiler, validator o contratto persistito.
+
+La fase annotazioni e' intenzionalmente sparsa e privilegia gli oggetti
+business-relevant. Gli oggetti non annotati restano nel seed deterministico;
+non vengono rimossi dal Semantic Layer. Entrambe le fasi usano lo streaming
+Messages API per mantenere attive le richieste lunghe. L'adapter disabilita i
+retry SDK automatici e applica un timeout esplicito per fase, evitando latenze
+nascoste oltre il timeout end-to-end.
+
+Il budget `max_tokens` segue il massimo sincrono dichiarato da Anthropic per il
+modello: 64k per Claude Sonnet 4.6 e 128k per Claude Opus 4.8. E' un tetto per
+thinking e risposta, non un obiettivo di consumo; gli schema bounded limitano
+comunque la dimensione utile dell'output strutturato.
+
+Anche l'output metriche e' bounded: massimo 10 metriche, con liste annidate
+brevi per dimensioni, filtri, grain preferiti e sinonimi. Il contratto
+canonico resta piu' ampio; questi limiti riguardano soltanto una singola
+generazione Anthropic e impediscono output esaustivi che verrebbero troncati.
+Le ambiguita' Anthropic con `target_ref` non presente negli input o nelle
+proposte della stessa generazione invalidano l'intera proposta. Il sistema non
+elimina silenziosamente incertezza dichiarata dal modello e resta fail-closed.
+
 La logica applicativa dipende da un gateway iniettato. Test e CI usano un
 gateway fake e non richiedono rete o API key.
 
