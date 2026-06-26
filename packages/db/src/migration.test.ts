@@ -766,6 +766,9 @@ describe("Supabase metadata migration", () => {
       "semantic_layer_versions_10_activation_quality"
     );
     expect(semanticCanonicalQualityGateMigration).toContain(
+      "select set_config('app.semantic_layer_rpc', 'on', true);"
+    );
+    expect(semanticCanonicalQualityGateMigration).toContain(
       "semantic version failed the activation quality gate"
     );
     expect(semanticCanonicalQualityGateMigration).toContain(
