@@ -140,6 +140,10 @@ insert into public.db_connections (
   trust_server_certificate,
   secret_ref,
   status,
+  default_currency,
+  semantic_policy_config,
+  resolved_semantic_policy,
+  semantic_policy_hash,
   created_by
 )
 values (
@@ -156,6 +160,26 @@ values (
   false,
   'gcp-secret-manager://projects/demo/secrets/north-star',
   'ready',
+  'EUR',
+  jsonb_build_object(
+    'policy_version', '1.0.0',
+    'missing_currency_behavior', 'clarification_required',
+    'activation_policy', 'auto_validated',
+    'minimum_eligible_metrics', 1,
+    'required_concepts', jsonb_build_array(),
+    'required_metric_specs', jsonb_build_array()
+  ),
+  jsonb_build_object(
+    'policy_version', '1.0.0',
+    'policy_hash', repeat('9', 64),
+    'default_currency', 'EUR',
+    'missing_currency_behavior', 'clarification_required',
+    'activation_policy', 'auto_validated',
+    'minimum_eligible_metrics', 1,
+    'required_concepts', jsonb_build_array(),
+    'required_metric_specs', jsonb_build_array()
+  ),
+  repeat('9', 64),
   '10000000-0000-4000-8000-000000000061'
 );
 
@@ -340,7 +364,7 @@ values (
   '50000000-0000-4000-8000-000000000061',
   repeat('e', 64),
   'semantic_layer.v1',
-  'active',
+  'proposed',
   'fresh',
   '1.0.0',
   'test',
@@ -357,8 +381,19 @@ values (
     'semantic_version_id', '60000000-0000-4000-8000-000000000061',
     'queryability_graph_version_id', '50000000-0000-4000-8000-000000000061',
     'base_graph_hash', repeat('e', 64),
+    'base_policy_hash', repeat('9', 64),
+    'semantic_policy_snapshot', jsonb_build_object(
+      'policy_version', '1.0.0',
+      'policy_hash', repeat('9', 64),
+      'default_currency', 'EUR',
+      'missing_currency_behavior', 'clarification_required',
+      'activation_policy', 'auto_validated',
+      'minimum_eligible_metrics', 1,
+      'required_concepts', jsonb_build_array(),
+      'required_metric_specs', jsonb_build_array()
+    ),
     'version', 1,
-    'status', 'active',
+    'status', 'proposed',
     'freshness', 'fresh',
     'builder_version', '1.0.0',
     'ai_model_version', 'test',
@@ -373,6 +408,14 @@ values (
     'business_concepts', jsonb_build_array(),
     'ambiguities', jsonb_build_array(),
     'metrics', jsonb_build_array(),
+    'quality_report', jsonb_build_object(
+      'status', 'passed',
+      'issues', jsonb_build_array(),
+      'required_specs_count', 0,
+      'satisfied_specs_count', 0,
+      'compiler_eligible_required_count', 0,
+      'rejected_candidates', jsonb_build_array()
+    ),
     'validation_report', jsonb_build_object(
       'status', 'valid',
       'blocking_errors', jsonb_build_array(),
@@ -392,7 +435,7 @@ values (
     'validated_at', '2026-06-16T09:00:00Z',
     'validator_version', '1.0.0'
   ),
-  now()
+  null
 );
 
 insert into public.semantic_layer_tables (
@@ -483,8 +526,19 @@ values (
   0.95000,
   'high',
   true,
-  '{}'::jsonb
+  jsonb_build_object(
+    'provenance', 'ai',
+    'provenance_detail', 'ai_generation',
+    'source_spec_key', null
+  )
 );
+
+update public.semantic_layer_versions
+set
+  status = 'active',
+  artifact = jsonb_set(artifact, '{status}', '"active"', false),
+  activated_at = now()
+where id = '60000000-0000-4000-8000-000000000061';
 
 select lives_ok(
   $test$

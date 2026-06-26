@@ -59,7 +59,8 @@ describe("semantic lifecycle contracts", () => {
       graph: graphFixture,
       semantic_version_id: nextSemanticVersionId,
       queryability_graph_version_id: nextGraphVersionId,
-      version: 2
+      version: 2,
+      semantic_policy: semanticFixture.semantic_policy_snapshot
     });
 
     expect(parsed.version).toBe(2);
@@ -72,7 +73,8 @@ describe("semantic lifecycle contracts", () => {
       target_graph: graphFixture,
       semantic_version_id: nextSemanticVersionId,
       queryability_graph_version_id: nextGraphVersionId,
-      version: 2
+      version: 2,
+      semantic_policy: semanticFixture.semantic_policy_snapshot
     });
 
     expect(parsed.source_layer.semantic_version_id).toBe(

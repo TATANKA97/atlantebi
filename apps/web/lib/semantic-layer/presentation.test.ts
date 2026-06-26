@@ -99,6 +99,8 @@ const METRIC: SemanticMetric = {
   reasoning_summary: "Uses the order header net amount.",
   validation_warnings: [],
   provenance: "ai",
+  provenance_detail: "ai_generation",
+  source_spec_key: null,
   enabled: true
 };
 
@@ -116,7 +118,8 @@ const LAYER = {
       summary: "Net or gross revenue.",
       clarification_question: "Net or document total?",
       status: "open",
-      provenance: "ai"
+      provenance: "ai",
+      severity: "material_ambiguity"
     }
   ],
   validation_report: {

@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "configure:adventureworks-semantic": "node scripts/configure-adventureworks-semantic-profile.mjs",
+    "purge:adventureworks-semantic": "node scripts/purge-adventureworks-semantic-versions.mjs",
     "purge:adventureworkslt-plan": "node scripts/purge-adventureworkslt-plan.mjs",
     "test": "vitest run"
   }

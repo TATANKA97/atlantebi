@@ -3,7 +3,12 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from app.models import AnthropicProviderConfig, SemanticLayer, SemanticMetric
+from app.models import (
+    AnthropicProviderConfig,
+    SemanticLayer,
+    SemanticMetric,
+    SemanticPolicySnapshot,
+)
 from app.semantic import compute_metric_definition_hash, compute_semantic_hash
 from tests.shared_fixtures import contract_fixture_path
 
@@ -56,6 +61,45 @@ def test_semantic_metric_requires_grain_and_opaque_metric_key() -> None:
     payload.pop("grain_column_keys")
     with pytest.raises(ValidationError):
         SemanticMetric.model_validate(payload)
+
+
+def test_quality_profile_provenance_and_concept_allowlist_are_strict() -> None:
+    metric = semantic_fixture()["metrics"][0]
+    metric.update(
+        {
+            "provenance": "system",
+            "provenance_detail": "quality_profile",
+            "source_spec_key": None,
+        }
+    )
+    with pytest.raises(ValidationError, match="source_spec_key"):
+        SemanticMetric.model_validate(metric)
+
+    policy = semantic_fixture()["semantic_policy_snapshot"]
+    policy["required_metric_specs"] = [
+        {
+            "spec_key": "demo.revenue",
+            "intent_key": "revenue",
+            "business_concept_ref": "missing_concept",
+            "expected_variant": "net_header",
+            "canonical_name": "fatturato_netto",
+            "name": "Fatturato netto",
+            "description": None,
+            "source_table_key": "a" * 64,
+            "aggregation": "sum",
+            "measure_column_key": "b" * 64,
+            "grain_column_keys": ["c" * 64],
+            "default_date_column_key": None,
+            "value_type": "currency",
+            "default_for_concept": True,
+            "required_for_activation": True,
+            "allowed_eligibility": ["eligible_with_disclosure"],
+            "dimension_expectations": [],
+            "synonyms": [],
+        }
+    ]
+    with pytest.raises(ValidationError, match="outside the allowlist"):
+        SemanticPolicySnapshot.model_validate(policy)
 
 
 def test_anthropic_sonnet_rejects_xhigh_and_max_effort() -> None:

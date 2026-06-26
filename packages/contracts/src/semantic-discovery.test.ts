@@ -12,7 +12,6 @@ import {
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
-const HASH_C = "c".repeat(64);
 
 const emptyDiscoveryInput = {
   contract_version: "semantic_discovery_input.v1",
@@ -33,24 +32,9 @@ const metricProposal = {
   source_table_key: HASH_A,
   aggregation: "sum",
   measure_column_key: HASH_B,
-  grain_table_key: HASH_A,
-  grain_column_keys: [HASH_C],
-  aggregation_level: "entity",
-  additivity: "additive",
   default_date_column_key: null,
-  required_join_edge_keys: [],
-  common_dimensions: [
-    {
-      dimension_column_key: HASH_C,
-      edge_path: []
-    }
-  ],
-  preferred_for_grains: [],
-  preferred_for_dimensions: [],
-  filters: [],
-  format: {
+  format_hint: {
     value_type: "currency",
-    currency: "EUR",
     decimals: 2
   },
   synonyms: [],
@@ -125,15 +109,11 @@ describe("semantic discovery and AI draft contracts", () => {
     ).toBe("net_header");
   });
 
-  it("accepts common dimension proposals without AI safety metadata", () => {
+  it("accepts minimal stable-key metric candidates", () => {
     const parsed = AISemanticMetricProposalSchema.parse(metricProposal);
 
-    expect(parsed.common_dimensions).toEqual([
-      {
-        dimension_column_key: HASH_C,
-        edge_path: []
-      }
-    ]);
+    expect(parsed.source_table_key).toBe(HASH_A);
+    expect(parsed.measure_column_key).toBe(HASH_B);
     expect(parsed.default_date_column_key).toBeNull();
   });
 
@@ -163,13 +143,7 @@ describe("semantic discovery and AI draft contracts", () => {
     expect(() =>
       AISemanticMetricProposalSchema.parse({
         ...metricProposal,
-        common_dimensions: [
-          {
-            dimension_column_key: HASH_C,
-            edge_path: [],
-            safety: "safe"
-          }
-        ]
+        grain_table_key: HASH_A
       })
     ).toThrow();
   });

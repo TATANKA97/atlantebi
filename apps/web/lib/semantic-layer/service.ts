@@ -8,11 +8,12 @@ import {
   SemanticGenerationResultSchema,
   SemanticLayerSchema,
   SemanticMetricFormatSchema,
-   SemanticRebaseResultSchema,
-   type QueryabilityGraphArtifact,
-   type SemanticGenerationResult,
-   type SemanticLayer
- } from "@atlantebi/contracts";
+  SemanticRebaseResultSchema,
+  type QueryabilityGraphArtifact,
+  type SemanticGenerationResult,
+  type SemanticLayer,
+  type SemanticPolicySnapshot
+} from "@atlantebi/contracts";
 import { z } from "zod";
 
 import { postQueryEngine, QueryEngineRequestError } from "../query-engine/client";
@@ -22,6 +23,7 @@ import {
   withSecurityOperationLease
 } from "../security/operation-lease";
 import { createSupabaseAdminClient } from "../supabase/admin";
+import { resolveSemanticPolicy } from "./policy";
 import {
   canManageSemanticLayer,
   type ActiveTenantContext
@@ -226,6 +228,7 @@ export type SemanticVersionSummary = {
 type SemanticVersionRow = Omit<SemanticVersionSummary, "effective_freshness"> & {
   artifact: unknown;
   base_graph_hash: string;
+  base_policy_hash: string;
   rebased_from_version_id: string | null;
 };
 
@@ -241,7 +244,8 @@ export class SemanticLayerServiceError extends Error {
   constructor(
     readonly code: string,
     message: string,
-    readonly status = 400
+    readonly status = 400,
+    readonly semanticVersionId?: string
   ) {
     super(message);
     this.name = "SemanticLayerServiceError";
@@ -255,15 +259,19 @@ export async function listSemanticVersions({
   connectionId: string;
   context: ActiveTenantContext;
 }): Promise<SemanticVersionSummary[]> {
-  const [versions, currentGraph] = await Promise.all([
+  const [versions, currentGraph, currentPolicy] = await Promise.all([
     readSemanticVersionRows(context.tenantId, connectionId, false),
-    readCurrentGraph(context.tenantId, connectionId, false)
+    readCurrentGraph(context.tenantId, connectionId, false),
+    readCurrentSemanticPolicy(context.tenantId, connectionId, false)
   ]);
   const currentGraphHash = currentGraph?.graph_hash;
   return versions.map((version) => ({
     ...version,
     effective_freshness:
-      currentGraphHash && version.base_graph_hash === currentGraphHash
+      currentGraphHash &&
+      currentPolicy &&
+      version.base_graph_hash === currentGraphHash &&
+      version.base_policy_hash === currentPolicy.policy_hash
         ? "fresh"
         : "stale"
   }));
@@ -280,14 +288,13 @@ export async function readSemanticLayerVersion({
     context.tenantId,
     semanticVersionId
   );
-  const graph = await readCurrentGraph(
-    context.tenantId,
-    row.connection_id,
-    false
-  );
+  const [graph, policy] = await Promise.all([
+    readCurrentGraph(context.tenantId, row.connection_id, false),
+    readCurrentSemanticPolicy(context.tenantId, row.connection_id, false)
+  ]);
   return {
     artifact: SemanticLayerSchema.parse(row.artifact),
-    summary: toVersionSummary(row, graph?.graph_hash)
+    summary: toVersionSummary(row, graph?.graph_hash, policy?.policy_hash)
   };
 }
 
@@ -311,11 +318,28 @@ export async function readCurrentSemanticLayer({
   if (!selected) {
     return null;
   }
-  const graph = await readCurrentGraph(context.tenantId, connectionId, false);
+  const [graph, policy] = await Promise.all([
+    readCurrentGraph(context.tenantId, connectionId, false),
+    readCurrentSemanticPolicy(context.tenantId, connectionId, false)
+  ]);
   return {
     artifact: SemanticLayerSchema.parse(selected.artifact),
-    summary: toVersionSummary(selected, graph?.graph_hash)
+    summary: toVersionSummary(
+      selected,
+      graph?.graph_hash,
+      policy?.policy_hash
+    )
   };
+}
+
+export async function readConnectionSemanticPolicy({
+  connectionId,
+  context
+}: {
+  connectionId: string;
+  context: ActiveTenantContext;
+}) {
+  return readCurrentSemanticPolicy(context.tenantId, connectionId, true);
 }
 
 export async function createSemanticDraft({
@@ -329,11 +353,17 @@ export async function createSemanticDraft({
 }) {
   assertSemanticAdmin(context);
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const [graphRow, versions] = await Promise.all([
+    const [graphRow, versions, semanticPolicy] = await Promise.all([
       readCurrentGraph(context.tenantId, connectionId, true),
-      readSemanticVersionRows(context.tenantId, connectionId, false)
+      readSemanticVersionRows(context.tenantId, connectionId, false),
+      readCurrentSemanticPolicy(context.tenantId, connectionId, true)
     ]);
     const version = Math.max(0, ...versions.map((item) => item.version)) + 1;
+    await synchronizeSemanticPolicy({
+      connectionId,
+      context,
+      policy: semanticPolicy
+    });
     const semanticVersionId = randomUUID();
     const artifact = await postQueryEngine(
       "/semantic/seed",
@@ -341,7 +371,8 @@ export async function createSemanticDraft({
         graph: graphRow.graph,
         queryability_graph_version_id: graphRow.id,
         semantic_version_id: semanticVersionId,
-        version
+        version,
+        semantic_policy: semanticPolicy
       },
       SemanticLayerSchema,
       30_000
@@ -392,7 +423,17 @@ export async function generateSemanticDraft({
     row.connection_id,
     true
   );
-  assertVersionTargetsCurrentGraph(row, graphRow);
+  const semanticPolicy = await readCurrentSemanticPolicy(
+    context.tenantId,
+    row.connection_id,
+    true
+  );
+  await synchronizeSemanticPolicy({
+    connectionId: row.connection_id,
+    context,
+    policy: semanticPolicy
+  });
+  assertVersionTargetsCurrentContext(row, graphRow, semanticPolicy);
   const providerConfig = await readDefaultAIProviderConfig({ context });
   if (!providerConfig) {
     throw new SemanticLayerServiceError(
@@ -415,7 +456,8 @@ export async function generateSemanticDraft({
           {
             graph: graphRow.graph,
             provider_config: providerConfig,
-            seed: SemanticLayerSchema.parse(row.artifact)
+            seed: SemanticLayerSchema.parse(row.artifact),
+            semantic_policy: semanticPolicy
           },
           SemanticGenerationResultSchema,
           500_000
@@ -445,11 +487,20 @@ export async function generateSemanticDraft({
     row.activation_policy === "auto_validated" &&
     persisted.artifact.status === "proposed"
   ) {
-    return activateSemanticVersion({
-      context,
-      expectedRevision: persisted.artifact.revision,
-      semanticVersionId
-    });
+    try {
+      return await activateSemanticVersion({
+        context,
+        expectedRevision: persisted.artifact.revision,
+        semanticVersionId
+      });
+    } catch {
+      throw new SemanticLayerServiceError(
+        "semantic_activation_failed_after_persistence",
+        "La proposta e stata salvata e validata, ma l'attivazione automatica e fallita.",
+        500,
+        persisted.artifact.semantic_version_id
+      );
+    }
   }
   return persisted;
 }
@@ -477,7 +528,17 @@ export async function patchSemanticDraft({
     row.connection_id,
     true
   );
-  assertVersionTargetsCurrentGraph(row, graphRow);
+  const semanticPolicy = await readCurrentSemanticPolicy(
+    context.tenantId,
+    row.connection_id,
+    true
+  );
+  await synchronizeSemanticPolicy({
+    connectionId: row.connection_id,
+    context,
+    policy: semanticPolicy
+  });
+  assertVersionTargetsCurrentContext(row, graphRow, semanticPolicy);
   const reviewPatch = {
     tables: patch.tables,
     columns: patch.columns,
@@ -491,6 +552,7 @@ export async function patchSemanticDraft({
     expectedRevision: row.revision,
     graphRow,
     patch: reviewPatch,
+    semanticPolicy,
     semanticVersionId
   });
 }
@@ -518,13 +580,24 @@ export async function validateSemanticDraft({
     row.connection_id,
     true
   );
-  assertVersionTargetsCurrentGraph(row, graphRow);
+  const semanticPolicy = await readCurrentSemanticPolicy(
+    context.tenantId,
+    row.connection_id,
+    true
+  );
+  await synchronizeSemanticPolicy({
+    connectionId: row.connection_id,
+    context,
+    policy: semanticPolicy
+  });
+  assertVersionTargetsCurrentContext(row, graphRow, semanticPolicy);
   return reviewAndPersist({
     activationPolicy: row.activation_policy,
     context,
     expectedRevision,
     graphRow,
     patch: {},
+    semanticPolicy,
     semanticVersionId
   });
 }
@@ -540,6 +613,23 @@ export async function activateSemanticVersion({
 }) {
   assertSemanticAdmin(context);
   const row = await readSemanticVersionRow(context.tenantId, semanticVersionId);
+  const semanticPolicy = await readCurrentSemanticPolicy(
+    context.tenantId,
+    row.connection_id,
+    true
+  );
+  await synchronizeSemanticPolicy({
+    connectionId: row.connection_id,
+    context,
+    policy: semanticPolicy
+  });
+  if (row.base_policy_hash !== semanticPolicy.policy_hash) {
+    throw new SemanticLayerServiceError(
+      "semantic_version_stale",
+      "La versione Semantic Layer e stale e deve essere ribasata.",
+      409
+    );
+  }
   const { data, error } = await createSupabaseAdminClient().rpc(
     "activate_semantic_layer_version",
     {
@@ -580,6 +670,32 @@ export async function archiveSemanticVersion({
   return readSemanticLayerVersion({ context, semanticVersionId });
 }
 
+export async function setConnectionSemanticCurrency({
+  connectionId,
+  context,
+  defaultCurrency
+}: {
+  connectionId: string;
+  context: ActiveTenantContext;
+  defaultCurrency: string | null;
+}) {
+  assertSemanticAdmin(context);
+  const { error } = await createSupabaseAdminClient().rpc(
+    "update_semantic_policy_settings",
+    {
+      actor_user_id: context.userId,
+      target_connection_id: connectionId,
+      target_default_currency: defaultCurrency,
+      target_policy_config: null,
+      target_tenant_id: context.tenantId,
+      update_policy_config: false
+    }
+  );
+  if (error) {
+    throw mapDatabaseError(error, "semantic_policy_save_failed");
+  }
+}
+
 export async function rebaseSemanticVersion({
   context,
   semanticVersionId
@@ -599,11 +715,17 @@ export async function rebaseSemanticVersion({
     );
   }
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const [graphRow, versions] = await Promise.all([
+    const [graphRow, versions, semanticPolicy] = await Promise.all([
       readCurrentGraph(context.tenantId, source.connection_id, true),
-      readSemanticVersionRows(context.tenantId, source.connection_id, false)
+      readSemanticVersionRows(context.tenantId, source.connection_id, false),
+      readCurrentSemanticPolicy(context.tenantId, source.connection_id, true)
     ]);
     const version = Math.max(0, ...versions.map((item) => item.version)) + 1;
+    await synchronizeSemanticPolicy({
+      connectionId: source.connection_id,
+      context,
+      policy: semanticPolicy
+    });
     const targetVersionId = randomUUID();
     const rebased = await postQueryEngine(
       "/semantic/rebase",
@@ -611,6 +733,7 @@ export async function rebaseSemanticVersion({
         queryability_graph_version_id: graphRow.id,
         semantic_version_id: targetVersionId,
         source_layer: SemanticLayerSchema.parse(source.artifact),
+        semantic_policy: semanticPolicy,
         target_graph: graphRow.graph,
         version
       },
@@ -646,6 +769,7 @@ async function reviewAndPersist({
   expectedRevision,
   graphRow,
   patch,
+  semanticPolicy,
   semanticVersionId
 }: {
   activationPolicy: SemanticActivationPolicy;
@@ -653,6 +777,7 @@ async function reviewAndPersist({
   expectedRevision: number;
   graphRow: GraphRow;
   patch: Record<string, unknown>;
+  semanticPolicy: SemanticPolicySnapshot;
   semanticVersionId: string;
 }) {
   const row = await readMutableSemanticVersion(context, semanticVersionId);
@@ -670,6 +795,7 @@ async function reviewAndPersist({
       {
         graph: graphRow.graph,
         patch,
+        semantic_policy: semanticPolicy,
         source_layer: SemanticLayerSchema.parse(row.artifact)
       },
       SemanticLayerSchema,
@@ -757,7 +883,7 @@ async function readSemanticVersionRow(
   const { data, error } = await createSupabaseAdminClient()
     .from("semantic_layer_versions")
     .select(
-      "id,connection_id,queryability_graph_version_id,base_graph_hash,version,status,freshness,revision,semantic_hash,validation_report,activation_policy,artifact,rebased_from_version_id,created_at,updated_at,activated_at,archived_at"
+      "id,connection_id,queryability_graph_version_id,base_graph_hash,base_policy_hash,version,status,freshness,revision,semantic_hash,validation_report,activation_policy,artifact,rebased_from_version_id,created_at,updated_at,activated_at,archived_at"
     )
     .eq("tenant_id", tenantId)
     .eq("id", semanticVersionId)
@@ -789,6 +915,7 @@ async function readSemanticVersionRows(
     "connection_id",
     "queryability_graph_version_id",
     "base_graph_hash",
+    "base_policy_hash",
     "version",
     "status",
     "freshness",
@@ -895,6 +1022,91 @@ async function readCurrentGraph(
   };
 }
 
+async function readCurrentSemanticPolicy(
+  tenantId: string,
+  connectionId: string,
+  required: true
+): Promise<SemanticPolicySnapshot>;
+async function readCurrentSemanticPolicy(
+  tenantId: string,
+  connectionId: string,
+  required: false
+): Promise<SemanticPolicySnapshot | null>;
+async function readCurrentSemanticPolicy(
+  tenantId: string,
+  connectionId: string,
+  required: boolean
+): Promise<SemanticPolicySnapshot | null> {
+  const admin = createSupabaseAdminClient();
+  const [{ data: tenant, error: tenantError }, { data: connection, error: connectionError }] =
+    await Promise.all([
+      admin
+        .from("tenants")
+        .select("default_currency")
+        .eq("id", tenantId)
+        .maybeSingle(),
+      admin
+        .from("db_connections")
+        .select("default_currency,semantic_policy_config")
+        .eq("tenant_id", tenantId)
+        .eq("id", connectionId)
+        .maybeSingle()
+    ]);
+  if (tenantError || connectionError) {
+    throw new SemanticLayerServiceError(
+      "semantic_policy_read_failed",
+      "Lettura policy semantica fallita.",
+      500
+    );
+  }
+  if (!tenant || !connection) {
+    if (!required) {
+      return null;
+    }
+    throw new SemanticLayerServiceError(
+      "semantic_policy_not_found",
+      "Policy semantica della connessione non trovata.",
+      404
+    );
+  }
+  return resolveSemanticPolicy({
+    connectionDefaultCurrency: z
+      .string()
+      .regex(/^[A-Z]{3}$/)
+      .nullable()
+      .parse(connection.default_currency),
+    policyConfig: connection.semantic_policy_config,
+    tenantDefaultCurrency: z
+      .string()
+      .regex(/^[A-Z]{3}$/)
+      .nullable()
+      .parse(tenant.default_currency)
+  });
+}
+
+async function synchronizeSemanticPolicy({
+  connectionId,
+  context,
+  policy
+}: {
+  connectionId: string;
+  context: ActiveTenantContext;
+  policy: SemanticPolicySnapshot;
+}) {
+  const { error } = await createSupabaseAdminClient().rpc(
+    "save_resolved_semantic_policy",
+    {
+      actor_user_id: context.userId,
+      target_connection_id: connectionId,
+      target_policy: policy,
+      target_tenant_id: context.tenantId
+    }
+  );
+  if (error) {
+    throw mapDatabaseError(error, "semantic_policy_save_failed");
+  }
+}
+
 function parseSemanticVersionRow(row: Record<string, unknown>): SemanticVersionRow {
   const validation = z
     .strictObject({
@@ -915,6 +1127,7 @@ function parseSemanticVersionRow(row: Record<string, unknown>): SemanticVersionR
       .uuid()
       .parse(row.queryability_graph_version_id),
     base_graph_hash: z.string().regex(/^[0-9a-f]{64}$/).parse(row.base_graph_hash),
+    base_policy_hash: z.string().regex(/^[0-9a-f]{64}$/).parse(row.base_policy_hash),
     version: z.number().int().positive().parse(row.version),
     status: z
       .enum(["draft", "proposed", "active", "archived"])
@@ -939,7 +1152,8 @@ function parseSemanticVersionRow(row: Record<string, unknown>): SemanticVersionR
 
 function toVersionSummary(
   row: SemanticVersionRow,
-  currentGraphHash: string | undefined
+  currentGraphHash: string | undefined,
+  currentPolicyHash: string | undefined
 ): SemanticVersionSummary {
   return {
     id: row.id,
@@ -957,16 +1171,24 @@ function toVersionSummary(
     activated_at: row.activated_at,
     archived_at: row.archived_at,
     effective_freshness:
-      currentGraphHash && row.base_graph_hash === currentGraphHash
+      currentGraphHash &&
+      currentPolicyHash &&
+      row.base_graph_hash === currentGraphHash &&
+      row.base_policy_hash === currentPolicyHash
         ? "fresh"
         : "stale"
   };
 }
 
-function assertVersionTargetsCurrentGraph(row: SemanticVersionRow, graph: GraphRow) {
+function assertVersionTargetsCurrentContext(
+  row: SemanticVersionRow,
+  graph: GraphRow,
+  policy: SemanticPolicySnapshot
+) {
   if (
     row.queryability_graph_version_id !== graph.id ||
-    row.base_graph_hash !== graph.graph_hash
+    row.base_graph_hash !== graph.graph_hash ||
+    row.base_policy_hash !== policy.policy_hash
   ) {
     throw new SemanticLayerServiceError(
       "semantic_version_stale",

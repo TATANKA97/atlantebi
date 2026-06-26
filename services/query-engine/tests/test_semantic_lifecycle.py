@@ -24,6 +24,7 @@ from tests.test_semantic_builder import (
     edge_key,
     key,
     semantic_draft,
+    semantic_policy,
 )
 
 
@@ -64,7 +65,12 @@ def _source_layer(graph: QueryabilityGraphArtifact):
     ]
     metrics = [
         metric.model_copy(
-            update={"status": "human_verified", "provenance": "human"}
+            update={
+                "status": "human_verified",
+                "provenance": "human",
+                "provenance_detail": "human_override",
+                "source_spec_key": None,
+            }
         )
         if metric.canonical_name == "fatturato_netto"
         else metric
@@ -83,6 +89,7 @@ def _source_layer(graph: QueryabilityGraphArtifact):
     validated = validate_semantic_layer(
         layer=updated,
         graph=graph,
+        semantic_policy=semantic_policy(),
         validated_at=VALIDATED_AT,
     )
     return validated.model_copy(update={"status": "active"})
@@ -103,6 +110,7 @@ def _rebase(source_layer, target_graph):
         semantic_version_id=TARGET_SEMANTIC_VERSION_ID,
         queryability_graph_version_id=TARGET_GRAPH_VERSION_ID,
         version=2,
+        semantic_policy=semantic_policy(),
         validated_at=VALIDATED_AT,
     )
 
@@ -114,6 +122,7 @@ def test_seed_and_rebase_requests_are_strict_and_reject_blocked_graphs() -> None
         "semantic_version_id": TARGET_SEMANTIC_VERSION_ID,
         "queryability_graph_version_id": TARGET_GRAPH_VERSION_ID,
         "version": 2,
+        "semantic_policy": semantic_policy().model_dump(mode="json"),
     }
     SemanticSeedRequest.model_validate(seed_payload)
 
@@ -126,6 +135,7 @@ def test_seed_and_rebase_requests_are_strict_and_reject_blocked_graphs() -> None
             semantic_version_id=TARGET_SEMANTIC_VERSION_ID,
             queryability_graph_version_id=TARGET_GRAPH_VERSION_ID,
             version=2,
+            semantic_policy=semantic_policy(),
         )
 
 
@@ -142,6 +152,7 @@ def test_rebase_request_rejects_scope_reuse_and_blocked_target() -> None:
             semantic_version_id=TARGET_SEMANTIC_VERSION_ID,
             queryability_graph_version_id=TARGET_GRAPH_VERSION_ID,
             version=2,
+            semantic_policy=semantic_policy(),
         )
 
     with pytest.raises(ValidationError, match="must differ"):
@@ -151,6 +162,7 @@ def test_rebase_request_rejects_scope_reuse_and_blocked_target() -> None:
             semantic_version_id=SEMANTIC_VERSION_ID,
             queryability_graph_version_id=TARGET_GRAPH_VERSION_ID,
             version=2,
+            semantic_policy=semantic_policy(),
         )
 
     with pytest.raises(ValidationError, match="newer"):
@@ -160,6 +172,7 @@ def test_rebase_request_rejects_scope_reuse_and_blocked_target() -> None:
             semantic_version_id=TARGET_SEMANTIC_VERSION_ID,
             queryability_graph_version_id=TARGET_GRAPH_VERSION_ID,
             version=source.version,
+            semantic_policy=semantic_policy(),
         )
 
     with pytest.raises(ValidationError, match="active or archived"):
@@ -169,6 +182,7 @@ def test_rebase_request_rejects_scope_reuse_and_blocked_target() -> None:
             semantic_version_id=TARGET_SEMANTIC_VERSION_ID,
             queryability_graph_version_id=TARGET_GRAPH_VERSION_ID,
             version=2,
+            semantic_policy=semantic_policy(),
         )
 
     with pytest.raises(ValidationError, match="must not be blocked"):
@@ -178,6 +192,7 @@ def test_rebase_request_rejects_scope_reuse_and_blocked_target() -> None:
             semantic_version_id=TARGET_SEMANTIC_VERSION_ID,
             queryability_graph_version_id=TARGET_GRAPH_VERSION_ID,
             version=2,
+            semantic_policy=semantic_policy(),
         )
 
 
@@ -417,6 +432,7 @@ def test_semantic_seed_and_rebase_endpoints_are_authenticated_and_strict(
         "semantic_version_id": TARGET_SEMANTIC_VERSION_ID,
         "queryability_graph_version_id": TARGET_GRAPH_VERSION_ID,
         "version": 2,
+        "semantic_policy": semantic_policy().model_dump(mode="json"),
     }
     assert client.post("/semantic/seed", json=seed_payload).status_code == 401
 
@@ -445,6 +461,7 @@ def test_semantic_seed_and_rebase_endpoints_are_authenticated_and_strict(
             "semantic_version_id": TARGET_SEMANTIC_VERSION_ID,
             "queryability_graph_version_id": TARGET_GRAPH_VERSION_ID,
             "version": 2,
+            "semantic_policy": semantic_policy().model_dump(mode="json"),
         },
     )
     assert rebase_response.status_code == 200
@@ -470,6 +487,7 @@ def test_semantic_seed_and_rebase_endpoints_are_authenticated_and_strict(
             "semantic_version_id": TARGET_SEMANTIC_VERSION_ID,
             "queryability_graph_version_id": TARGET_GRAPH_VERSION_ID,
             "version": 2,
+            "semantic_policy": semantic_policy().model_dump(mode="json"),
         },
     )
     assert scope_response.status_code == 422
@@ -485,6 +503,7 @@ def test_semantic_seed_and_rebase_endpoints_are_authenticated_and_strict(
             "semantic_version_id": TARGET_SEMANTIC_VERSION_ID,
             "queryability_graph_version_id": TARGET_GRAPH_VERSION_ID,
             "version": 2,
+            "semantic_policy": semantic_policy().model_dump(mode="json"),
         },
     )
     assert tampered_response.status_code == 422

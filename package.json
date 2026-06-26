@@ -3,17 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@10.32.1",
-  "pnpm": {
-    "overrides": {
-      "postcss": "8.5.15"
-    }
-  },
   "scripts": {
     "lint": "eslint .",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
     "build": "pnpm -r --if-present build",
     "db:purge-demo-schema": "pnpm --filter @atlantebi/db purge:adventureworkslt-plan",
+    "db:configure-adventureworks-semantic": "pnpm --filter @atlantebi/db configure:adventureworks-semantic",
+    "db:purge-demo-semantic": "pnpm --filter @atlantebi/db purge:adventureworks-semantic",
     "schema:audit:adventureworks": "python services/query-engine/scripts/audit_adventureworkslt.py"
   },
   "devDependencies": {

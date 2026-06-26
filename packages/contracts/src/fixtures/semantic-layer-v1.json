@@ -5,6 +5,24 @@
   "semantic_version_id": "88888888-8888-4888-8888-888888888888",
   "queryability_graph_version_id": "44444444-4444-4444-8444-444444444444",
   "base_graph_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "base_policy_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "semantic_policy_snapshot": {
+    "policy_version": "1.0.0",
+    "policy_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "default_currency": "EUR",
+    "missing_currency_behavior": "clarification_required",
+    "activation_policy": "auto_validated",
+    "minimum_eligible_metrics": 1,
+    "required_concepts": [
+      {
+        "concept_ref": "records",
+        "preferred_variants": ["parent_count"],
+        "required": true,
+        "required_for_activation": true
+      }
+    ],
+    "required_metric_specs": []
+  },
   "version": 1,
   "status": "active",
   "freshness": "fresh",
@@ -14,7 +32,7 @@
   "validator_version": "1.0.0",
   "policy_version": "1.0.0",
   "revision": 2,
-  "semantic_hash": "ebd1dfbce3d7cc4c2201b69b8d530c264348b14a10330d88cf30dfdc1f3f6bd3",
+  "semantic_hash": "b1963e3bf473804ab0daec9b8494af5cc9a2d338eb69b863eb87ddd088f63724",
   "tables": [
     {
       "node_key": "1111111111111111111111111111111111111111111111111111111111111111",
@@ -193,9 +211,19 @@
       "reasoning_summary": "Primary key supports a stable entity count.",
       "validation_warnings": [],
       "provenance": "ai",
+      "provenance_detail": "ai_generation",
+      "source_spec_key": null,
       "enabled": true
     }
   ],
+  "quality_report": {
+    "status": "passed",
+    "issues": [],
+    "required_specs_count": 0,
+    "satisfied_specs_count": 0,
+    "compiler_eligible_required_count": 0,
+    "rejected_candidates": []
+  },
   "validation_report": {
     "status": "valid_with_warnings",
     "blocking_errors": [],

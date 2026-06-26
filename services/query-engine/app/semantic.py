@@ -14,6 +14,10 @@ from app.models import (
     SemanticLayer,
     SemanticAmbiguity,
     SemanticMetric,
+    SemanticPolicySnapshot,
+    SemanticQualityIssue,
+    SemanticQualityReport,
+    SemanticRequiredMetricSpec,
     SemanticReviewPatch,
     SemanticRebaseDropReasonCode,
     SemanticRebaseDroppedColumn,
@@ -52,6 +56,7 @@ _AMBIGUITY_CODES = {
     "DUPLICATE_METRIC_SYNONYM",
     "AI_FILTER_VALUE_UNVERIFIED",
     "SEMANTIC_AMBIGUITY_DECLARED",
+    "METRIC_CURRENCY_UNRESOLVED",
 }
 
 
@@ -61,10 +66,13 @@ def build_semantic_seed(
     semantic_version_id: str,
     queryability_graph_version_id: str,
     version: int,
+    semantic_policy: SemanticPolicySnapshot,
     builder_version: str = DEFAULT_SEMANTIC_BUILDER_VERSION,
     policy_version: str = DEFAULT_SEMANTIC_POLICY_VERSION,
     validator_version: str = DEFAULT_SEMANTIC_VALIDATOR_VERSION,
 ) -> SemanticLayer:
+    if semantic_policy.policy_hash != compute_semantic_policy_hash(semantic_policy):
+        raise ValueError("semantic policy hash is invalid")
     tables = sorted(
         [
             SemanticTable(
@@ -138,6 +146,8 @@ def build_semantic_seed(
         semantic_version_id=semantic_version_id,
         queryability_graph_version_id=queryability_graph_version_id,
         base_graph_hash=graph.graph_hash,
+        base_policy_hash=semantic_policy.policy_hash,
+        semantic_policy_snapshot=semantic_policy,
         version=version,
         status="draft",
         freshness="fresh",
@@ -152,6 +162,7 @@ def build_semantic_seed(
         business_concepts=[],
         ambiguities=[],
         metrics=[],
+        quality_report=SemanticQualityReport(status="not_evaluated"),
         validation_report=report,
     )
     return layer.model_copy(update={"semantic_hash": compute_semantic_hash(layer)})
@@ -192,11 +203,22 @@ def compute_metric_definition_hash(metric: SemanticMetric) -> str:
     )
 
 
+def compute_semantic_policy_hash(policy: SemanticPolicySnapshot) -> str:
+    payload = policy.model_dump(mode="json", exclude_none=False)
+    payload.pop("policy_hash", None)
+    return _hash_json(payload)
+
+
 def compute_semantic_hash(layer: SemanticLayer) -> str:
     return _hash_json(
         {
             "contract_version": layer.contract_version,
             "base_graph_hash": layer.base_graph_hash,
+            "base_policy_hash": layer.base_policy_hash,
+            "semantic_policy_snapshot": layer.semantic_policy_snapshot.model_dump(
+                mode="json",
+                exclude_none=False,
+            ),
             "builder_version": layer.builder_version,
             "policy_version": layer.policy_version,
             "tables": _canonical_models(
@@ -242,6 +264,7 @@ def rebase_semantic_layer(
     semantic_version_id: str,
     queryability_graph_version_id: str,
     version: int,
+    semantic_policy: SemanticPolicySnapshot,
     validated_at: datetime | None = None,
 ) -> SemanticRebaseResult:
     if source_layer.semantic_hash != compute_semantic_hash(source_layer):
@@ -252,6 +275,7 @@ def rebase_semantic_layer(
         semantic_version_id=semantic_version_id,
         queryability_graph_version_id=queryability_graph_version_id,
         version=version,
+        semantic_policy=semantic_policy,
     )
     carried_table_keys: list[str] = []
     dropped_tables: list[SemanticRebaseDroppedTable] = []
@@ -406,6 +430,7 @@ def rebase_semantic_layer(
     first_validation = validate_semantic_layer(
         layer=candidate,
         graph=target_graph,
+        semantic_policy=semantic_policy,
         validated_at=validated_at,
     )
     blocked_metric_keys = {
@@ -456,6 +481,7 @@ def rebase_semantic_layer(
     validated = validate_semantic_layer(
         layer=candidate,
         graph=target_graph,
+        semantic_policy=semantic_policy,
         validated_at=validated_at,
     )
     rebased = validated.model_copy(update={"status": "draft", "freshness": "fresh"})
@@ -492,8 +518,10 @@ def validate_semantic_layer(
     *,
     layer: SemanticLayer,
     graph: QueryabilityGraphArtifact,
+    semantic_policy: SemanticPolicySnapshot | None = None,
     validated_at: datetime | None = None,
 ) -> SemanticLayer:
+    current_policy = semantic_policy or layer.semantic_policy_snapshot
     issues: list[SemanticValidationIssue] = []
     nodes = {node.node_key: node for node in graph.nodes}
     graph_columns = {
@@ -546,6 +574,29 @@ def validate_semantic_layer(
             "layer",
             str(layer.semantic_version_id),
             "Semantic layer base graph hash does not match the supplied graph.",
+        )
+    policy_hash_valid = (
+        layer.base_policy_hash == layer.semantic_policy_snapshot.policy_hash
+        and layer.base_policy_hash
+        == compute_semantic_policy_hash(layer.semantic_policy_snapshot)
+    )
+    if not policy_hash_valid:
+        _issue(
+            issues,
+            "SEMANTIC_POLICY_HASH_MISMATCH",
+            "blocking",
+            "layer",
+            str(layer.semantic_version_id),
+            "Semantic policy hash does not match the canonical policy snapshot.",
+        )
+    if current_policy.policy_hash != compute_semantic_policy_hash(current_policy):
+        _issue(
+            issues,
+            "CURRENT_SEMANTIC_POLICY_HASH_MISMATCH",
+            "blocking",
+            "layer",
+            str(layer.semantic_version_id),
+            "Current semantic policy hash is invalid.",
         )
     if layer.tenant_id != graph.tenant_id or layer.connection_id != graph.connection_id:
         _issue(
@@ -812,8 +863,21 @@ def validate_semantic_layer(
             )
 
     concept_names: dict[str, list[str]] = {}
+    allowed_concepts = {
+        item.concept_ref: item
+        for item in layer.semantic_policy_snapshot.required_concepts
+    }
     for concept in layer.business_concepts:
         key = str(concept.business_concept_key)
+        if concept.canonical_name not in allowed_concepts:
+            _issue(
+                issues,
+                "BUSINESS_CONCEPT_NOT_ALLOWLISTED",
+                "blocking",
+                "business_concept",
+                key,
+                "Business concept is not present in the semantic policy allowlist.",
+            )
         if (
             concept.status == "human_verified"
             and concept.provenance != "human"
@@ -853,10 +917,32 @@ def validate_semantic_layer(
             semantic_columns=semantic_columns,
             fk_edges=routing_edges,
             concepts=concepts,
+            missing_currency_behavior=(
+                layer.semantic_policy_snapshot.missing_currency_behavior
+            ),
         )
         for metric in layer.metrics
     ]
     for metric in metrics:
+        concept = concepts.get(str(metric.business_concept_key))
+        concept_policy = (
+            allowed_concepts.get(concept.canonical_name)
+            if concept is not None
+            else None
+        )
+        if (
+            concept_policy is not None
+            and concept_policy.preferred_variants
+            and metric.metric_variant not in concept_policy.preferred_variants
+        ):
+            _issue(
+                issues,
+                "METRIC_VARIANT_NOT_ALLOWLISTED",
+                "blocking",
+                "metric",
+                str(metric.metric_key),
+                "Metric variant is not allowed by its semantic concept policy.",
+            )
         if (
             metric.status == "human_verified"
             and metric.provenance != "human"
@@ -904,6 +990,12 @@ def validate_semantic_layer(
         for metric in metrics
     ]
 
+    quality_report = _evaluate_quality_gate(
+        layer=layer,
+        metrics=metrics,
+        issues=issues,
+    )
+
     blocking = sorted(
         [issue for issue in issues if issue.severity == "blocking"],
         key=_issue_sort_key,
@@ -940,9 +1032,13 @@ def validate_semantic_layer(
                 else layer.status
             ),
             "freshness": (
-                "fresh" if layer.base_graph_hash == graph.graph_hash else "stale"
+                "fresh"
+                if layer.base_graph_hash == graph.graph_hash
+                and layer.base_policy_hash == current_policy.policy_hash
+                else "stale"
             ),
             "metrics": metrics,
+            "quality_report": quality_report,
             "validation_report": report,
         }
     )
@@ -951,15 +1047,206 @@ def validate_semantic_layer(
     )
 
 
+def _evaluate_quality_gate(
+    *,
+    layer: SemanticLayer,
+    metrics: list[SemanticMetric],
+    issues: list[SemanticValidationIssue],
+) -> SemanticQualityReport:
+    policy = layer.semantic_policy_snapshot
+    generated_issues = [
+        issue
+        for issue in layer.quality_report.issues
+        if issue.code == "AI_REQUIRED_METRIC_MISMATCH"
+    ]
+    quality_issues = list(generated_issues)
+    concept_keys = {
+        concept.canonical_name: concept.business_concept_key
+        for concept in layer.business_concepts
+    }
+    satisfied_specs = 0
+    compiler_eligible_required = 0
+
+    for spec in policy.required_metric_specs:
+        concept_key = concept_keys.get(spec.business_concept_ref)
+        matches = [
+            metric
+            for metric in metrics
+            if concept_key is not None
+            and metric.business_concept_key == concept_key
+            and metric.metric_variant == spec.expected_variant
+            and _metric_matches_quality_spec(metric, spec)
+        ]
+        if not matches:
+            quality_issues.append(
+                SemanticQualityIssue(
+                    code="REQUIRED_METRIC_SPEC_UNSATISFIED",
+                    severity="blocking",
+                    message="No metric satisfies the configured quality profile spec.",
+                    spec_key=spec.spec_key,
+                )
+            )
+            continue
+
+        metric = matches[0]
+        expectation_failures = _quality_dimension_expectation_failures(metric, spec)
+        if expectation_failures:
+            quality_issues.append(
+                SemanticQualityIssue(
+                    code="REQUIRED_METRIC_DIMENSION_POLICY_UNSATISFIED",
+                    severity="blocking",
+                    message=(
+                        "Metric does not satisfy "
+                        f"{len(expectation_failures)} configured dimension safety "
+                        "expectation(s)."
+                    ),
+                    spec_key=spec.spec_key,
+                    metric_key=metric.metric_key,
+                )
+            )
+            continue
+
+        satisfied_specs += 1
+        if metric.compiler_eligibility not in spec.allowed_eligibility:
+            quality_issues.append(
+                SemanticQualityIssue(
+                    code="REQUIRED_METRIC_ELIGIBILITY_UNSATISFIED",
+                    severity="blocking" if spec.required_for_activation else "warning",
+                    message=(
+                        "Metric compiler eligibility is not allowed by its quality spec."
+                    ),
+                    spec_key=spec.spec_key,
+                    metric_key=metric.metric_key,
+                )
+            )
+        elif spec.required_for_activation:
+            compiler_eligible_required += 1
+
+    metrics_by_concept = {
+        concept_key: [
+            metric for metric in metrics if metric.business_concept_key == concept_key
+        ]
+        for concept_key in concept_keys.values()
+    }
+    compiler_eligible = {
+        "eligible",
+        "eligible_with_disclosure",
+    }
+    for concept_policy in policy.required_concepts:
+        concept_key = concept_keys.get(concept_policy.concept_ref)
+        concept_metrics = metrics_by_concept.get(concept_key, [])
+        if concept_policy.required and not concept_metrics:
+            quality_issues.append(
+                SemanticQualityIssue(
+                    code="REQUIRED_CONCEPT_UNSATISFIED",
+                    severity="blocking",
+                    message=(
+                        "Required semantic concept has no metric candidate or synthesis."
+                    ),
+                )
+            )
+        if concept_policy.required_for_activation and not any(
+            metric.compiler_eligibility in compiler_eligible
+            for metric in concept_metrics
+        ):
+            quality_issues.append(
+                SemanticQualityIssue(
+                    code="ACTIVATION_CONCEPT_NOT_ELIGIBLE",
+                    severity="blocking",
+                    message=(
+                        "Activation-required semantic concept has no compiler-eligible metric."
+                    ),
+                )
+            )
+
+    eligible_count = sum(
+        metric.compiler_eligibility in compiler_eligible for metric in metrics
+    )
+    if eligible_count < policy.minimum_eligible_metrics:
+        quality_issues.append(
+            SemanticQualityIssue(
+                code="MINIMUM_ELIGIBLE_METRICS_UNSATISFIED",
+                severity="blocking",
+                message=(
+                    "Semantic layer does not meet the configured minimum eligible metrics."
+                ),
+            )
+        )
+
+    quality_issues = sorted(
+        quality_issues,
+        key=lambda item: (
+            {"blocking": 0, "warning": 1, "info": 2}[item.severity],
+            item.code,
+            item.spec_key or "",
+            str(item.metric_key or ""),
+        ),
+    )
+    status = (
+        "blocked"
+        if any(issue.severity == "blocking" for issue in quality_issues)
+        else "passed"
+    )
+    if status == "blocked":
+        _issue_once(
+            issues,
+            "SEMANTIC_QUALITY_GATE_BLOCKED",
+            "blocking",
+            "layer",
+            str(layer.semantic_version_id),
+            "Semantic quality profile requirements are not satisfied.",
+        )
+    return SemanticQualityReport(
+        status=status,
+        issues=quality_issues,
+        required_specs_count=len(policy.required_metric_specs),
+        satisfied_specs_count=satisfied_specs,
+        compiler_eligible_required_count=compiler_eligible_required,
+        rejected_candidates=layer.quality_report.rejected_candidates,
+    )
+
+
+def _metric_matches_quality_spec(
+    metric: SemanticMetric,
+    spec: SemanticRequiredMetricSpec,
+) -> bool:
+    return (
+        metric.source_table_key == spec.source_table_key
+        and metric.aggregation == spec.aggregation
+        and metric.measure_column_key == spec.measure_column_key
+        and sorted(metric.grain_column_keys) == sorted(spec.grain_column_keys)
+        and metric.default_date_column_key == spec.default_date_column_key
+        and metric.format.value_type == spec.value_type
+    )
+
+
+def _quality_dimension_expectation_failures(
+    metric: SemanticMetric,
+    spec: SemanticRequiredMetricSpec,
+) -> list[str]:
+    compatibilities = {
+        item.dimension_column_key: item.safety
+        for item in metric.common_dimension_compatibility
+    }
+    return [
+        expectation.dimension_column_key
+        for expectation in spec.dimension_expectations
+        if compatibilities.get(expectation.dimension_column_key)
+        != expectation.expected_safety
+    ]
+
+
 def review_semantic_layer(
     *,
     source_layer: SemanticLayer,
     graph: QueryabilityGraphArtifact,
+    semantic_policy: SemanticPolicySnapshot | None = None,
     patch: SemanticReviewPatch,
     validated_at: datetime | None = None,
 ) -> SemanticLayer:
     if source_layer.semantic_hash != compute_semantic_hash(source_layer):
         raise ValueError("source semantic layer hash is invalid")
+    current_policy = semantic_policy or source_layer.semantic_policy_snapshot
 
     table_patches = _unique_review_patches(
         patch.tables,
@@ -1079,6 +1366,7 @@ def review_semantic_layer(
     return validate_semantic_layer(
         layer=candidate,
         graph=graph,
+        semantic_policy=current_policy,
         validated_at=validated_at,
     )
 
@@ -1160,6 +1448,8 @@ def _apply_metric_review_patch(
     } & updates.keys():
         updates["common_dimension_compatibility"] = []
     updates["provenance"] = "human"
+    updates["provenance_detail"] = "human_override"
+    updates["source_spec_key"] = None
     if updates.get("status") in {"disabled", "rejected"}:
         updates["enabled"] = False
     updates.update(
@@ -1190,6 +1480,7 @@ def _validate_metric(
     semantic_columns: dict[str, SemanticColumn],
     fk_edges: dict[str, QueryabilityForeignKeyEdge],
     concepts: dict[str, object],
+    missing_currency_behavior: Literal["clarification_required", "blocked"],
 ) -> SemanticMetric:
     metric_key = str(metric.metric_key)
     source = semantic_tables.get(metric.source_table_key)
@@ -1561,11 +1852,15 @@ def _validate_metric(
     if metric.format.value_type == "currency" and not metric.format.currency:
         _issue(
             issues,
-            "METRIC_CURRENCY_REQUIRED",
-            "blocking",
+            "METRIC_CURRENCY_UNRESOLVED",
+            (
+                "blocking"
+                if missing_currency_behavior == "blocked"
+                else "warning"
+            ),
             "metric",
             metric_key,
-            "Currency metrics must declare an ISO currency code.",
+            "Currency metric has no resolved ISO currency code.",
         )
     if metric.format.value_type != "currency" and metric.format.currency:
         _issue(
@@ -1709,6 +2004,11 @@ def _apply_metric_eligibility(
         reasons = []
         score = 0.98
         label = "high"
+    elif metric.provenance_detail == "quality_profile":
+        eligibility = "eligible_with_disclosure"
+        reasons = ["QUALITY_PROFILE_DISCLOSURE_REQUIRED"]
+        score = max(0.8, 0.96 - 0.03 * len(warning_codes))
+        label = "high" if score >= 0.8 else "medium"
     else:
         eligibility = "eligible_with_disclosure"
         reasons = ["AI_PROPOSED_DISCLOSURE_REQUIRED"]
@@ -1965,10 +2265,18 @@ def _validate_declared_ambiguities(
             continue
         if ambiguity.status != "open":
             continue
+        issue_code = (
+            "SEMANTIC_AMBIGUITY_DECLARED"
+            if ambiguity.severity == "material_ambiguity"
+            else "SEMANTIC_MINOR_AMBIGUITY"
+            if ambiguity.severity == "minor_ambiguity"
+            else "SEMANTIC_AMBIGUITY_INFO"
+        )
+        issue_severity = "info" if ambiguity.severity == "info" else "warning"
         _issue_once(
             issues,
-            "SEMANTIC_AMBIGUITY_DECLARED",
-            "warning",
+            issue_code,
+            issue_severity,
             ambiguity.target_type,
             ambiguity.target_key,
             ambiguity.summary,
@@ -1979,8 +2287,8 @@ def _validate_declared_ambiguities(
                 if str(metric.business_concept_key) == ambiguity.target_key:
                     _issue_once(
                         issues,
-                        "SEMANTIC_AMBIGUITY_DECLARED",
-                        "warning",
+                        issue_code,
+                        issue_severity,
                         "metric",
                         str(metric.metric_key),
                         ambiguity.summary,
@@ -2021,8 +2329,8 @@ def _validate_declared_ambiguities(
                 if uses_target:
                     _issue_once(
                         issues,
-                        "SEMANTIC_AMBIGUITY_DECLARED",
-                        "warning",
+                        issue_code,
+                        issue_severity,
                         "metric",
                         str(metric.metric_key),
                         ambiguity.summary,
