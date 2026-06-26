@@ -645,6 +645,15 @@ describe("Supabase metadata migration", () => {
     expect(concurrentSchemaImportsFixture).toContain(
       "public.persist_semantic_layer_version("
     );
+    expect(concurrentSchemaImportsFixture).toContain(
+      "public.save_resolved_semantic_policy("
+    );
+    expect(concurrentSchemaImportsFixture).toContain(
+      "'base_policy_hash', repeat('9', 64)"
+    );
+    expect(concurrentSchemaImportsFixture).toContain(
+      "'quality_report', jsonb_build_object("
+    );
   });
 
   it("projects view column lineage coverage from immutable node payloads", () => {
