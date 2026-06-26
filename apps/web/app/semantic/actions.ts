@@ -847,6 +847,16 @@ function redirectSemanticError(
   metricPage?: number
 ): never {
   const response = semanticServiceResponse(error);
+  if (response.code === "semantic_internal_error") {
+    console.error("Semantic Layer server action failed", {
+      connection_id: connectionId,
+      error:
+        error instanceof Error
+          ? { message: error.message, name: error.name }
+          : { type: typeof error },
+      semantic_version_id: semanticVersionId
+    });
+  }
   const persistedSemanticVersionId =
     error instanceof SemanticLayerServiceError
       ? error.semanticVersionId
