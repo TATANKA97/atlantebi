@@ -1087,7 +1087,10 @@ Queryability Graph
 ```
 
 La manualita' e' governance e override, non il flusso principale. La
-freshness dipende da `base_graph_hash`, non da `schema_hash`.
+freshness dipende da `base_graph_hash` e `base_policy_hash`, non da
+`schema_hash`. Valuta, concept allowlist, preferred variant, stable-key
+override, activation policy e soglia minima di metriche eligible partecipano
+al policy hash.
 
 ### 14.3 Deterministic semantic seed
 
@@ -1110,12 +1113,12 @@ extended properties, dati raw, sample, credenziali e colonne escluse o
 Nomi di database, schema, oggetti, colonne e constraint sono dati non fidati:
 non possono contenere istruzioni per il modello.
 
-L'output AI contiene solo annotazioni e proposte:
+L'output AI contiene solo annotazioni e candidate minimali:
 
 * table e column annotation referenziate tramite stable key;
-* concept referenziati tramite `concept_ref` logica;
-* metriche con source, aggregation, measure, grain, default date, FK edge,
-  dimensioni comuni, format e reasoning breve;
+* concept referenziati tramite `concept_ref` presente nella policy allowlist;
+* metriche con concept/variant, source stable key, aggregation, measure stable
+  key, default date candidate, format hint e reasoning breve;
 * ambiguita' esplicite.
 
 L'AI non assegna e non puo' modificare:
@@ -1124,11 +1127,17 @@ L'AI non assegna e non puo' modificare:
 * queryability, exclusion o sensitivity;
 * cardinalita' e relationship tecniche;
 * status, provenance, confidence o compiler eligibility;
-* dimension safety e validation report.
+* grain, join path, dimension safety e validation report.
 
-Il server assegna identity stabile, calcola dimension safety, definition
-hash, semantic hash, provenance, confidence ed eligibility, quindi esegue il
-Semantic Validator.
+Il server assegna identity stabile e costruisce la metrica canonica: grain,
+shortest trusted grain-safe path, business date, common dimensions, valuta,
+definition hash, semantic hash, provenance, confidence ed eligibility. Poi
+esegue quality gate e Semantic Validator.
+
+La policy prodotto e' concept-level. Stable-key metric specs sono ammesse solo
+per demo/eval o override enterprise. Se una candidate AI non coincide con una
+spec, resta auditabile come rejected; il server sintetizza deterministicamente
+la metrica mancante con provenance `system/quality_profile`.
 
 Una metrica header non puo' essere spezzata su dimensioni detail in V1.
 `SUM(SalesOrderHeader.SubTotal)` per categoria prodotto e' vietata;
@@ -1154,9 +1163,9 @@ Una proposta AI valida e high-confidence puo' essere usata senza onboarding
 manuale, mostrando l'interpretazione applicata.
 
 La confidence certifica la coerenza tecnica rispetto a graph e policy, non la
-verita' business. In assenza di profiling, filtri letterali proposti dall'AI
-richiedono chiarimento (`AI_FILTER_VALUE_UNVERIFIED`). Ambiguita' aperte su
-table o column si propagano alle metriche che usano quei riferimenti.
+verita' business. Le candidate AI V1 non contengono filtri. Ambiguita'
+`material_ambiguity` aperte si propagano alle metriche coinvolte e richiedono
+chiarimento; `minor_ambiguity` e `info` non riducono da sole l'eligibility.
 
 ### 14.6 Profiling privacy-safe
 
@@ -2370,8 +2379,11 @@ MySQL è differito. Non deve rallentare il percorso SQL Server end-to-end.
   immutabilità, RLS/RPC e audit;
 * **5.4 API e Workspace**: API tenant-scoped e UI AI-first per generazione,
   review, correzione, validation, activation e rebase.
+* **5.5 Canonical quality hardening**: AI candidate minimali, policy hash,
+  canonical metric builder, synthesis da quality profile, valuta risolta,
+  shortest grain-safe path, quality report e messaggi UI coerenti con l'esito.
 
-### Milestone 6 — North Star Foundation — prossima
+### Milestone 6 — North Star Foundation — completata
 
 * contract `north_star_benchmarks`;
 * persistence tenant-scoped;
@@ -2381,7 +2393,7 @@ MySQL è differito. Non deve rallentare il percorso SQL Server end-to-end.
 * tab UI dedicato;
 * nessuna triangolazione o modifica del calcolo metrica.
 
-### Milestone 7 — Semantic End-to-End Gate
+### Milestone 7 — Semantic End-to-End Gate — in corso
 
 * graph -> seed -> AI draft -> validation -> activation;
 * auto-activation e manual review policy;
@@ -2389,6 +2401,8 @@ MySQL è differito. Non deve rallentare il percorso SQL Server end-to-end.
 * eval AdventureWorksLT;
 * verifica DB/API/UI e security suite;
 * semantic active pronto come input del compiler.
+* generazione sincrona mantenuta per il gate; background generation job e UX
+  asincrona sono il successivo hardening production.
 
 ### Milestone 8 — Query Intent Resolver
 
@@ -2556,25 +2570,20 @@ Sistema:
 
 ## 35. Prossima implementazione
 
-Fondamenta, connessione SQL Server, Technical Snapshot, Queryability Graph e
-Semantic Layer V1 fino al workspace API/UI sono completati.
-
-Il prossimo task è **Milestone 6 — North Star Foundation**:
+Fondamenta, connessione SQL Server, Technical Snapshot, Queryability Graph,
+North Star Foundation e Semantic Layer fino al workspace API/UI sono
+completati. Il gate corrente è il **Semantic End-to-End Gate**:
 
 ```txt
-Implementare contract, persistenza tenant-scoped, RPC/API e UI minima per
-North Star Benchmarks collegati tramite metric_key.
-
-La North Star deve contenere valore atteso, unità, periodo, tolleranza e
-severità. Non deve modificare semantic metric, metric_definition_hash,
-semantic_hash, queryability o compiler eligibility.
-
-Non implementare ancora Query Compiler, triangolazione completa, chart o
-dashboard.
+Validare graph -> seed -> AI candidate -> canonical builder -> quality gate ->
+validator -> activation su AdventureWorksLT. Devono risultare compiler-eligible
+almeno fatturato netto, totale documento, quantità venduta e ordini; clienti
+può richiedere chiarimento. Nessuna metrica header può attraversare un fanout
+detail per essere raggruppata per prodotto o categoria.
 ```
 
-Dopo il gate North Star si esegue il Semantic End-to-End Gate, poi si
-implementano Query Intent Resolver e Query Compiler SQL Server.
+Dopo il gate si introduce la generazione semantica asincrona production e poi
+si implementano Query Intent Resolver e Query Compiler SQL Server.
 
 ---
 

@@ -73,6 +73,38 @@ select public.save_connection_test_result(
   }'::jsonb
 );
 
+select public.update_semantic_policy_settings(
+  '10000000-0000-4000-8000-000000000002',
+  '20000000-0000-4000-8000-000000000002',
+  '30000000-0000-4000-8000-000000000002',
+  'EUR',
+  jsonb_build_object(
+    'policy_version', '1.0.0',
+    'missing_currency_behavior', 'clarification_required',
+    'activation_policy', 'auto_validated',
+    'minimum_eligible_metrics', 1,
+    'required_concepts', jsonb_build_array(),
+    'required_metric_specs', jsonb_build_array()
+  ),
+  true
+);
+
+select public.save_resolved_semantic_policy(
+  '10000000-0000-4000-8000-000000000002',
+  '20000000-0000-4000-8000-000000000002',
+  '30000000-0000-4000-8000-000000000002',
+  jsonb_build_object(
+    'policy_version', '1.0.0',
+    'policy_hash', repeat('9', 64),
+    'default_currency', 'EUR',
+    'missing_currency_behavior', 'clarification_required',
+    'activation_policy', 'auto_validated',
+    'minimum_eligible_metrics', 1,
+    'required_concepts', jsonb_build_array(),
+    'required_metric_specs', jsonb_build_array()
+  )
+);
+
 create or replace function public.hardening_test_concurrent_import()
 returns integer
 language plpgsql
@@ -211,6 +243,17 @@ begin
       'semantic_version_id', gen_random_uuid(),
       'queryability_graph_version_id', current_graph.id,
       'base_graph_hash', current_graph.graph_hash,
+      'base_policy_hash', repeat('9', 64),
+      'semantic_policy_snapshot', jsonb_build_object(
+        'policy_version', '1.0.0',
+        'policy_hash', repeat('9', 64),
+        'default_currency', 'EUR',
+        'missing_currency_behavior', 'clarification_required',
+        'activation_policy', 'auto_validated',
+        'minimum_eligible_metrics', 1,
+        'required_concepts', jsonb_build_array(),
+        'required_metric_specs', jsonb_build_array()
+      ),
       'version', 1,
       'status', 'draft',
       'freshness', 'fresh',
@@ -227,6 +270,14 @@ begin
       'business_concepts', jsonb_build_array(),
       'ambiguities', jsonb_build_array(),
       'metrics', jsonb_build_array(),
+      'quality_report', jsonb_build_object(
+        'status', 'not_evaluated',
+        'issues', jsonb_build_array(),
+        'required_specs_count', 0,
+        'satisfied_specs_count', 0,
+        'compiler_eligible_required_count', 0,
+        'rejected_candidates', jsonb_build_array()
+      ),
       'validation_report', jsonb_build_object(
         'status', 'not_validated',
         'blocking_errors', jsonb_build_array(),

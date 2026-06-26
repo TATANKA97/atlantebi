@@ -317,6 +317,7 @@ async def semantic_seed(
             request.queryability_graph_version_id
         ),
         version=request.version,
+        semantic_policy=request.semantic_policy,
     )
 
 
@@ -334,6 +335,7 @@ async def semantic_generate(
             graph=request.graph,
             seed=request.seed,
             gateway=gateway,
+            semantic_policy=request.semantic_policy,
         )
     except SemanticDiscoveryInputTooLarge as exc:
         raise HTTPException(
@@ -390,6 +392,7 @@ async def semantic_review(
         return review_semantic_layer(
             source_layer=request.source_layer,
             graph=request.graph,
+            semantic_policy=request.semantic_policy,
             patch=request.patch,
         )
     except ValueError as exc:
@@ -411,6 +414,7 @@ async def semantic_validate(
     return validate_semantic_layer(
         layer=request.semantic_layer,
         graph=request.graph,
+        semantic_policy=request.semantic_policy,
     )
 
 
@@ -432,6 +436,7 @@ async def semantic_rebase(
                 request.queryability_graph_version_id
             ),
             version=request.version,
+            semantic_policy=request.semantic_policy,
         )
     except ValueError as exc:
         raise HTTPException(

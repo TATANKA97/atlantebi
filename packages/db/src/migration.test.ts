@@ -68,6 +68,27 @@ const northStarBenchmarksMigration = readFileSync(
   ),
   "utf8"
 );
+const semanticCanonicalQualityGateMigration = readFileSync(
+  resolve(
+    migrationsDirectory,
+    "20260620020000_semantic_canonical_quality_gate.sql"
+  ),
+  "utf8"
+);
+const configureAdventureWorksSemanticProfileScript = readFileSync(
+  resolve(
+    import.meta.dirname,
+    "../scripts/configure-adventureworks-semantic-profile.mjs"
+  ),
+  "utf8"
+);
+const purgeAdventureWorksSemanticVersionsScript = readFileSync(
+  resolve(
+    import.meta.dirname,
+    "../scripts/purge-adventureworks-semantic-versions.mjs"
+  ),
+  "utf8"
+);
 const purgeAdventureWorksPlanScript = readFileSync(
   resolve(
     import.meta.dirname,
@@ -624,6 +645,15 @@ describe("Supabase metadata migration", () => {
     expect(concurrentSchemaImportsFixture).toContain(
       "public.persist_semantic_layer_version("
     );
+    expect(concurrentSchemaImportsFixture).toContain(
+      "public.save_resolved_semantic_policy("
+    );
+    expect(concurrentSchemaImportsFixture).toContain(
+      "'base_policy_hash', repeat('9', 64)"
+    );
+    expect(concurrentSchemaImportsFixture).toContain(
+      "'quality_report', jsonb_build_object("
+    );
   });
 
   it("projects view column lineage coverage from immutable node payloads", () => {
@@ -725,6 +755,54 @@ describe("Supabase metadata migration", () => {
     );
     expect(northStarBenchmarksMigration).not.toContain(
       "update public.semantic_layer_metrics"
+    );
+  });
+
+  it("enforces policy-aware canonical semantic quality gates", () => {
+    expect(semanticCanonicalQualityGateMigration).toContain(
+      "add column semantic_policy_config jsonb"
+    );
+    expect(semanticCanonicalQualityGateMigration).toContain(
+      "semantic_layer_versions_10_activation_quality"
+    );
+    expect(semanticCanonicalQualityGateMigration).toContain(
+      "semantic version failed the activation quality gate"
+    );
+    expect(semanticCanonicalQualityGateMigration).toContain(
+      "version.base_policy_hash = ("
+    );
+    expect(semanticCanonicalQualityGateMigration).toContain(
+      "semantic_layer_metrics_provenance_audit_check"
+    );
+    expect(semanticCanonicalQualityGateMigration).toContain(
+      "revoke all on function public.update_semantic_policy_settings"
+    );
+    expect(semanticCanonicalQualityGateMigration).toContain(
+      "to service_role"
+    );
+  });
+
+  it("restricts the AdventureWorks stable-key profile to explicit demo use", () => {
+    expect(configureAdventureWorksSemanticProfileScript).toContain(
+      'const DATABASE_NAME = "AdventureWorksLT"'
+    );
+    expect(configureAdventureWorksSemanticProfileScript).toContain(
+      "Profile configuration is restricted to demo/test tenants."
+    );
+    expect(configureAdventureWorksSemanticProfileScript).toContain(
+      'required(values, "confirm")'
+    );
+    expect(configureAdventureWorksSemanticProfileScript).toContain(
+      '"adventureworks.revenue.net_header"'
+    );
+    expect(configureAdventureWorksSemanticProfileScript).toContain(
+      '"adventureworks.quantity.line_quantity"'
+    );
+    expect(purgeAdventureWorksSemanticVersionsScript).toContain(
+      'required(values, "actor-user-id")'
+    );
+    expect(purgeAdventureWorksSemanticVersionsScript).toContain(
+      'request("rpc/purge_demo_semantic_versions"'
     );
   });
 

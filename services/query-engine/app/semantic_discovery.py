@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import re
+from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
@@ -39,6 +40,12 @@ from app.models import (
     SemanticAmbiguity,
     SemanticLayer,
     SemanticMetric,
+    SemanticMetricFormat,
+    SemanticPolicySnapshot,
+    SemanticQualityIssue,
+    SemanticQualityReport,
+    SemanticRejectedCandidate,
+    SemanticRequiredMetricSpec,
     SemanticTable,
 )
 from app.semantic import (
@@ -62,6 +69,18 @@ ANTHROPIC_SEMANTIC_TOTAL_TIMEOUT_SECONDS = 450
 
 logger = logging.getLogger(__name__)
 
+
+@dataclass(frozen=True)
+class _PathResolution:
+    path: list[str]
+    ambiguous: bool
+
+
+@dataclass(frozen=True)
+class _MetricCompilation:
+    metric: SemanticMetric
+    ambiguities: list[SemanticAmbiguity]
+
 SEMANTIC_DISCOVERY_SYSTEM_PROMPT = """
 You propose business semantics for a deterministic BI semantic layer.
 
@@ -82,8 +101,10 @@ Security and authority rules:
 Product rules:
 - Propose readable table and column annotations, business concept families, and
   structured metric candidates.
-- Metrics must declare source, aggregation, measure, grain, optional date,
-  required trusted FK paths, common dimensions, format, and concise reasoning.
+- Metric candidates must choose an allowlisted concept ref, source stable key,
+  optional measure stable key, aggregation, optional date stable key, format,
+  and concise reasoning. The server derives grain, join paths, dimension safety,
+  currency, confidence, and compiler eligibility.
 - Propose only semantics supported by the technical metadata.
 """.strip()
 
@@ -271,7 +292,7 @@ class AnthropicSemanticDiscoveryGateway:
                 "proposed business concept refs. Report uncertainty inside the "
                 "ambiguities list of the metric it affects. Prefer 5-6 "
                 "decision-useful metrics and never exceed 8. Return only the "
-                "requested metric identity, source, aggregation, grain, date, "
+                "requested metric identity, source, aggregation, date, "
                 "format, synonyms, reasoning, and ambiguity fields. The server "
                 "derives join and dimension safety deterministically."
             ),
@@ -409,6 +430,7 @@ def _compile_anthropic_concepts(
                 target_ref=concept.concept_ref,
                 summary=ambiguity.summary,
                 clarification_question=ambiguity.clarification_question,
+                severity=ambiguity.severity,
             )
             for ambiguity in item.ambiguities
         )
@@ -428,13 +450,6 @@ def _compile_anthropic_metrics(
         metric_payload.update(
             measure_column_key=item.measure_column_key,
             default_date_column_key=item.default_date_column_key,
-            aggregation_level="entity",
-            additivity=_anthropic_metric_additivity(item.aggregation),
-            required_join_edge_keys=[],
-            common_dimensions=[],
-            preferred_for_grains=[],
-            preferred_for_dimensions=[],
-            filters=[],
         )
         metric = AISemanticMetricProposal.model_validate(metric_payload)
         metrics.append(metric)
@@ -445,6 +460,7 @@ def _compile_anthropic_metrics(
                 target_ref=metric.canonical_name,
                 summary=ambiguity.summary,
                 clarification_question=ambiguity.clarification_question,
+                severity=ambiguity.severity,
             )
             for ambiguity in item.ambiguities
         )
@@ -459,6 +475,7 @@ def _anthropic_metric_additivity(aggregation: str) -> str:
 
 def build_semantic_discovery_input(
     graph: QueryabilityGraphArtifact,
+    semantic_policy: SemanticPolicySnapshot,
 ) -> SemanticDiscoveryInput:
     if graph.status == "blocked":
         raise SemanticProposalInvalid(
@@ -568,6 +585,7 @@ def build_semantic_discovery_input(
         engine="sqlserver",
         base_graph_hash=graph.graph_hash,
         graph_status=graph.status,
+        allowed_concepts=semantic_policy.required_concepts,
         tables=sorted(tables, key=lambda table: table.node_key),
         columns=sorted(columns, key=lambda column: column.column_key),
         relationships=sorted(
@@ -590,12 +608,14 @@ async def generate_semantic_layer(
     graph: QueryabilityGraphArtifact,
     seed: SemanticLayer,
     gateway: SemanticDiscoveryGateway,
+    semantic_policy: SemanticPolicySnapshot | None = None,
     generated_at: datetime | None = None,
 ) -> SemanticGenerationResult:
     timestamp = generated_at or datetime.now(UTC)
+    current_policy = semantic_policy or seed.semantic_policy_snapshot
     if seed.semantic_hash != compute_semantic_hash(seed):
         raise SemanticProposalInvalid("Semantic seed hash is invalid.")
-    discovery_input = build_semantic_discovery_input(graph)
+    discovery_input = build_semantic_discovery_input(graph, current_policy)
     response = await gateway.generate(discovery_input)
     proposal = response.proposal
     if proposal.contract_version != SEMANTIC_AI_DRAFT_VERSION:
@@ -607,6 +627,7 @@ async def generate_semantic_layer(
             seed=seed,
             proposal=proposal,
             model_version=gateway.model_version,
+            semantic_policy=current_policy,
         )
     except ValueError as exc:
         raise SemanticProposalInvalid(
@@ -615,6 +636,7 @@ async def generate_semantic_layer(
     validated = validate_semantic_layer(
         layer=compiled,
         graph=graph,
+        semantic_policy=current_policy,
         validated_at=timestamp,
     )
     provenance = SemanticGenerationProvenance(
@@ -640,21 +662,29 @@ def compile_semantic_proposal(
     seed: SemanticLayer,
     proposal: AISemanticDraftProposal,
     model_version: str,
+    semantic_policy: SemanticPolicySnapshot | None = None,
 ) -> SemanticLayer:
+    current_policy = semantic_policy or seed.semantic_policy_snapshot
     if seed.base_graph_hash != graph.graph_hash:
         raise SemanticProposalInvalid("Semantic seed is stale for the supplied graph.")
+    if (
+        seed.base_policy_hash != current_policy.policy_hash
+        or seed.semantic_policy_snapshot != current_policy
+    ):
+        raise SemanticProposalInvalid("Semantic seed is stale for the supplied policy.")
 
-    allowed_input = build_semantic_discovery_input(graph)
+    allowed_input = build_semantic_discovery_input(graph, current_policy)
     allowed_nodes = {table.node_key for table in allowed_input.tables}
     allowed_columns = {column.column_key for column in allowed_input.columns}
-    allowed_edges = {
-        relationship.edge_key for relationship in allowed_input.relationships
-    }
-    _validate_proposal_references(
+    (
+        allowed_metric_proposals,
+        reference_rejected_candidates,
+        reference_quality_issues,
+    ) = _validate_proposal_references(
         proposal=proposal,
         allowed_nodes=allowed_nodes,
         allowed_columns=allowed_columns,
-        allowed_edges=allowed_edges,
+        semantic_policy=current_policy,
     )
 
     table_proposals = _unique_by_key(
@@ -673,7 +703,7 @@ def compile_semantic_proposal(
         "business concept proposal",
     )
     _unique_by_key(
-        proposal.metrics,
+        allowed_metric_proposals,
         lambda item: f"{item.business_concept_ref}:{item.metric_variant}",
         "metric variant proposal",
     )
@@ -686,34 +716,111 @@ def compile_semantic_proposal(
         _apply_column_proposal(column, column_proposals.get(column.column_key))
         for column in seed.columns
     ]
-    concepts = [
-        SemanticBusinessConcept(
-            business_concept_key=_stable_uuid(
-                seed.connection_id,
-                "concept",
-                item.concept_ref,
-            ),
-            canonical_name=item.concept_ref,
-            display_name=item.display_name,
-            description=item.description,
-            synonyms=_canonical_strings(item.synonyms),
-            status="ai_proposed",
-            provenance="ai",
+    concepts = []
+    for concept_policy in current_policy.required_concepts:
+        item = concept_proposals.get(concept_policy.concept_ref)
+        concepts.append(
+            SemanticBusinessConcept(
+                business_concept_key=_stable_uuid(
+                    seed.connection_id,
+                    "concept",
+                    concept_policy.concept_ref,
+                ),
+                canonical_name=concept_policy.concept_ref,
+                display_name=(
+                    item.display_name
+                    if item is not None
+                    else concept_policy.concept_ref.replace("_", " ").title()
+                ),
+                description=item.description if item is not None else None,
+                synonyms=(
+                    _canonical_strings(item.synonyms) if item is not None else []
+                ),
+                status="ai_proposed" if item is not None else "system_seeded",
+                provenance="ai" if item is not None else "system",
+            )
         )
-        for item in proposal.business_concepts
-    ]
     concept_keys = {
-        item.concept_ref: concept.business_concept_key
-        for item, concept in zip(proposal.business_concepts, concepts, strict=True)
+        concept.canonical_name: concept.business_concept_key for concept in concepts
     }
-    metrics = [
-        _compile_metric(
+    specs_by_signature = {
+        (item.business_concept_ref, item.expected_variant): item
+        for item in current_policy.required_metric_specs
+    }
+    quality_issues: list[SemanticQualityIssue] = list(reference_quality_issues)
+    rejected_candidates: list[SemanticRejectedCandidate] = list(
+        reference_rejected_candidates
+    )
+    metrics: list[SemanticMetric] = []
+    system_ambiguities: list[SemanticAmbiguity] = []
+    for item in allowed_metric_proposals:
+        spec = specs_by_signature.get(
+            (item.business_concept_ref, item.metric_variant)
+        )
+        if spec is not None and not _proposal_matches_spec(item, spec):
+            rejected_candidates.append(
+                SemanticRejectedCandidate(
+                    canonical_name=item.canonical_name,
+                    business_concept_ref=item.business_concept_ref,
+                    metric_variant=item.metric_variant,
+                    source_table_key=item.source_table_key,
+                    measure_column_key=item.measure_column_key,
+                    reason_code="AI_REQUIRED_METRIC_MISMATCH",
+                )
+            )
+            quality_issues.append(
+                SemanticQualityIssue(
+                    code="AI_REQUIRED_METRIC_MISMATCH",
+                    severity="warning",
+                    message=(
+                        "AI candidate did not match configured quality profile spec."
+                    ),
+                    spec_key=spec.spec_key,
+                )
+            )
+            continue
+        compiled_metric = _compile_metric(
             graph=graph,
             connection_id=seed.connection_id,
             proposal=item,
             business_concept_key=concept_keys[item.business_concept_ref],
+            semantic_policy=current_policy,
+            quality_spec=spec,
         )
-        for item in proposal.metrics
+        metrics.append(compiled_metric.metric)
+        system_ambiguities.extend(compiled_metric.ambiguities)
+
+    metric_signatures = {
+        (metric.business_concept_key, metric.metric_variant) for metric in metrics
+    }
+    for spec in current_policy.required_metric_specs:
+        signature = (concept_keys[spec.business_concept_ref], spec.expected_variant)
+        if signature in metric_signatures:
+            continue
+        synthesized = _synthesize_metric(
+            graph=graph,
+            connection_id=seed.connection_id,
+            spec=spec,
+            business_concept_key=concept_keys[spec.business_concept_ref],
+            semantic_policy=current_policy,
+        )
+        metrics.append(synthesized.metric)
+        system_ambiguities.extend(synthesized.ambiguities)
+        metric_signatures.add(signature)
+
+    default_metrics = {
+        concept_keys[spec.business_concept_ref]: metric.metric_key
+        for spec in current_policy.required_metric_specs
+        if spec.default_for_concept
+        for metric in metrics
+        if metric.business_concept_key == concept_keys[spec.business_concept_ref]
+        and metric.metric_variant == spec.expected_variant
+    }
+    concepts = [
+        concept.model_copy(
+            update={"default_metric_key": default_metrics.get(concept.business_concept_key)}
+        )
+        for concept in concepts
     ]
     ambiguities = _compile_ambiguities(
         connection_id=seed.connection_id,
@@ -722,6 +829,12 @@ def compile_semantic_proposal(
         metrics=metrics,
         allowed_nodes=allowed_nodes,
         allowed_columns=allowed_columns,
+    )
+    ambiguities = _compile_system_ambiguities(
+        connection_id=seed.connection_id,
+        concept_keys=concept_keys,
+        metrics=metrics,
+        ambiguities=[*ambiguities, *system_ambiguities],
     )
 
     compiled = seed.model_copy(
@@ -739,6 +852,12 @@ def compile_semantic_proposal(
                 key=lambda ambiguity: str(ambiguity.ambiguity_key),
             ),
             "metrics": sorted(metrics, key=lambda metric: str(metric.metric_key)),
+            "quality_report": SemanticQualityReport(
+                status="not_evaluated",
+                issues=quality_issues,
+                required_specs_count=len(current_policy.required_metric_specs),
+                rejected_candidates=rejected_candidates,
+            ),
             "revision": seed.revision + 1,
             "status": "draft",
         }
@@ -754,23 +873,94 @@ def _compile_metric(
     connection_id: UUID,
     proposal: AISemanticMetricProposal,
     business_concept_key: UUID,
-) -> SemanticMetric:
-    compatibilities = [
-        evaluate_dimension_compatibility(
-            graph=graph,
-            grain_node_key=proposal.grain_table_key,
-            dimension_column_key=item.dimension_column_key,
-            edge_path=item.edge_path,
-        )
-        for item in proposal.common_dimensions
-    ]
-    metric = SemanticMetric(
-        metric_key=_stable_uuid(
-            connection_id,
-            "metric",
-            proposal.business_concept_ref,
-            proposal.metric_variant,
+    semantic_policy: SemanticPolicySnapshot,
+    quality_spec: SemanticRequiredMetricSpec | None = None,
+) -> _MetricCompilation:
+    metric_key = _stable_uuid(
+        connection_id,
+        "metric",
+        proposal.business_concept_ref,
+        proposal.metric_variant,
+    )
+    grain_columns = (
+        quality_spec.grain_column_keys
+        if quality_spec is not None
+        else _derive_grain_column_keys(graph, proposal.source_table_key)
+    )
+    default_date, date_path, date_path_ambiguous = _derive_default_date(
+        graph=graph,
+        source_table_key=proposal.source_table_key,
+        proposed_column_key=(
+            quality_spec.default_date_column_key
+            if quality_spec is not None
+            else proposal.default_date_column_key
         ),
+    )
+    compatibilities = _derive_common_dimensions(
+        graph=graph,
+        grain_node_key=proposal.source_table_key,
+    )
+    if quality_spec is not None:
+        by_dimension = {
+            item.dimension_column_key: item for item in compatibilities
+        }
+        for expectation in quality_spec.dimension_expectations:
+            resolution = _shortest_path_for_expectation(
+                graph=graph,
+                from_node_key=proposal.source_table_key,
+                dimension_column_key=expectation.dimension_column_key,
+                expected_safety=expectation.expected_safety,
+            )
+            path = resolution.path
+            by_dimension[expectation.dimension_column_key] = (
+                evaluate_dimension_compatibility(
+                    graph=graph,
+                    grain_node_key=proposal.source_table_key,
+                    dimension_column_key=expectation.dimension_column_key,
+                    edge_path=path,
+                )
+            )
+        compatibilities = sorted(
+            by_dimension.values(),
+            key=lambda item: (item.dimension_column_key, item.edge_path),
+        )
+    value_type = (
+        quality_spec.value_type
+        if quality_spec is not None
+        else _resolved_value_type(graph, proposal)
+    )
+    currency = (
+        semantic_policy.default_currency if value_type == "currency" else None
+    )
+    ambiguities: list[SemanticAmbiguity] = []
+    if date_path_ambiguous:
+        ambiguities.append(
+            _metric_path_ambiguity(
+                connection_id=connection_id,
+                metric_key=metric_key,
+                code="MULTIPLE_SHORTEST_SAFE_PATHS",
+                scope="default_date",
+            )
+        )
+    if quality_spec is not None:
+        for expectation in quality_spec.dimension_expectations:
+            resolution = _shortest_path_for_expectation(
+                graph=graph,
+                from_node_key=proposal.source_table_key,
+                dimension_column_key=expectation.dimension_column_key,
+                expected_safety=expectation.expected_safety,
+            )
+            if expectation.expected_safety == "safe" and resolution.ambiguous:
+                ambiguities.append(
+                    _metric_path_ambiguity(
+                        connection_id=connection_id,
+                        metric_key=metric_key,
+                        code="MULTIPLE_SHORTEST_SAFE_PATHS",
+                        scope=f"dimension:{expectation.dimension_column_key}",
+                    )
+                )
+    metric = SemanticMetric(
+        metric_key=metric_key,
         canonical_name=proposal.canonical_name,
         metric_definition_hash="0" * 64,
         business_concept_key=business_concept_key,
@@ -781,12 +971,12 @@ def _compile_metric(
         source_table_key=proposal.source_table_key,
         aggregation=proposal.aggregation,
         measure_column_key=proposal.measure_column_key,
-        grain_table_key=proposal.grain_table_key,
-        grain_column_keys=proposal.grain_column_keys,
-        aggregation_level=proposal.aggregation_level,
-        additivity=proposal.additivity,
-        default_date_column_key=proposal.default_date_column_key,
-        required_join_edge_keys=proposal.required_join_edge_keys,
+        grain_table_key=proposal.source_table_key,
+        grain_column_keys=grain_columns,
+        aggregation_level="entity",
+        additivity=_anthropic_metric_additivity(proposal.aggregation),
+        default_date_column_key=default_date,
+        required_join_edge_keys=date_path,
         common_dimension_compatibility=compatibilities,
         dimension_policy=SemanticDimensionPolicy(
             same_grain="safe",
@@ -795,10 +985,18 @@ def _compile_metric(
             bridge_or_many_to_many="forbidden",
             self_reference="conditional",
         ),
-        preferred_for_grains=_canonical_strings(proposal.preferred_for_grains),
-        preferred_for_dimensions=sorted(set(proposal.preferred_for_dimensions)),
-        filters=proposal.filters,
-        format=proposal.format,
+        preferred_for_grains=[],
+        preferred_for_dimensions=[
+            item.dimension_column_key
+            for item in compatibilities
+            if item.safety == "safe"
+        ],
+        filters=[],
+        format=SemanticMetricFormat(
+            value_type=value_type,
+            currency=currency,
+            decimals=proposal.format_hint.decimals,
+        ),
         synonyms=_canonical_strings(proposal.synonyms),
         confidence_score=0,
         confidence_label="blocked",
@@ -807,11 +1005,436 @@ def _compile_metric(
         reasoning_summary=proposal.reasoning_summary,
         validation_warnings=[],
         provenance="ai",
+        provenance_detail="ai_generation",
         enabled=True,
     )
-    return metric.model_copy(
+    metric = metric.model_copy(
         update={"metric_definition_hash": compute_metric_definition_hash(metric)}
     )
+    return _MetricCompilation(metric=metric, ambiguities=ambiguities)
+
+
+def _synthesize_metric(
+    *,
+    graph: QueryabilityGraphArtifact,
+    connection_id: UUID,
+    spec: SemanticRequiredMetricSpec,
+    business_concept_key: UUID,
+    semantic_policy: SemanticPolicySnapshot,
+) -> _MetricCompilation:
+    metric_key = _stable_uuid(
+        connection_id,
+        "metric",
+        spec.business_concept_ref,
+        spec.expected_variant,
+    )
+    default_date, date_path, date_path_ambiguous = _derive_default_date(
+        graph=graph,
+        source_table_key=spec.source_table_key,
+        proposed_column_key=spec.default_date_column_key,
+    )
+    compatibilities = []
+    ambiguities: list[SemanticAmbiguity] = []
+    if date_path_ambiguous:
+        ambiguities.append(
+            _metric_path_ambiguity(
+                connection_id=connection_id,
+                metric_key=metric_key,
+                code="MULTIPLE_SHORTEST_SAFE_PATHS",
+                scope="default_date",
+            )
+        )
+    for expectation in spec.dimension_expectations:
+        resolution = _shortest_path_for_expectation(
+            graph=graph,
+            from_node_key=spec.source_table_key,
+            dimension_column_key=expectation.dimension_column_key,
+            expected_safety=expectation.expected_safety,
+        )
+        path = resolution.path
+        if expectation.expected_safety == "safe" and resolution.ambiguous:
+            ambiguities.append(
+                _metric_path_ambiguity(
+                    connection_id=connection_id,
+                    metric_key=metric_key,
+                    code="MULTIPLE_SHORTEST_SAFE_PATHS",
+                    scope=f"dimension:{expectation.dimension_column_key}",
+                )
+            )
+        compatibility = evaluate_dimension_compatibility(
+            graph=graph,
+            grain_node_key=spec.source_table_key,
+            dimension_column_key=expectation.dimension_column_key,
+            edge_path=path,
+        )
+        if compatibility.safety != expectation.expected_safety:
+            raise SemanticProposalInvalid(
+                f"Quality profile dimension expectation failed: {spec.spec_key}"
+            )
+        compatibilities.append(compatibility)
+    metric = SemanticMetric(
+        metric_key=metric_key,
+        canonical_name=spec.canonical_name,
+        metric_definition_hash="0" * 64,
+        business_concept_key=business_concept_key,
+        metric_variant=spec.expected_variant,
+        name=spec.name,
+        description=spec.description,
+        status="system_seeded",
+        source_table_key=spec.source_table_key,
+        aggregation=spec.aggregation,
+        measure_column_key=spec.measure_column_key,
+        grain_table_key=spec.source_table_key,
+        grain_column_keys=spec.grain_column_keys,
+        aggregation_level="entity",
+        additivity=_anthropic_metric_additivity(spec.aggregation),
+        default_date_column_key=default_date,
+        required_join_edge_keys=date_path,
+        common_dimension_compatibility=compatibilities,
+        dimension_policy=SemanticDimensionPolicy(
+            same_grain="safe",
+            parent_many_to_one="safe",
+            child_one_to_many="forbidden",
+            bridge_or_many_to_many="forbidden",
+            self_reference="conditional",
+        ),
+        preferred_for_grains=[],
+        preferred_for_dimensions=[
+            item.dimension_column_key
+            for item in compatibilities
+            if item.safety == "safe"
+        ],
+        filters=[],
+        format=SemanticMetricFormat(
+            value_type=spec.value_type,
+            currency=(
+                semantic_policy.default_currency
+                if spec.value_type == "currency"
+                else None
+            ),
+            decimals=2 if spec.value_type == "currency" else 0,
+        ),
+        synonyms=_canonical_strings(spec.synonyms),
+        confidence_score=0,
+        confidence_label="blocked",
+        compiler_eligibility="not_eligible",
+        eligibility_reasons=["NOT_VALIDATED"],
+        reasoning_summary=(
+            "Synthesized from configured quality profile spec "
+            f"{spec.spec_key}"
+        ),
+        validation_warnings=[],
+        provenance="system",
+        provenance_detail="quality_profile",
+        source_spec_key=spec.spec_key,
+        enabled=True,
+    )
+    metric = metric.model_copy(
+        update={"metric_definition_hash": compute_metric_definition_hash(metric)}
+    )
+    return _MetricCompilation(metric=metric, ambiguities=ambiguities)
+
+
+def _proposal_matches_spec(
+    proposal: AISemanticMetricProposal,
+    spec: SemanticRequiredMetricSpec,
+) -> bool:
+    return (
+        proposal.source_table_key == spec.source_table_key
+        and proposal.aggregation == spec.aggregation
+        and proposal.measure_column_key == spec.measure_column_key
+        and (
+            proposal.default_date_column_key is None
+            or proposal.default_date_column_key == spec.default_date_column_key
+        )
+    )
+
+
+def _derive_grain_column_keys(
+    graph: QueryabilityGraphArtifact,
+    source_table_key: str,
+) -> list[str]:
+    node = next(
+        (item for item in graph.nodes if item.node_key == source_table_key),
+        None,
+    )
+    if node is None:
+        raise SemanticProposalInvalid("Metric source table is missing from graph.")
+    columns_by_name = {column.name: column.column_key for column in node.columns}
+    candidates = [
+        item for item in node.candidate_keys if item.eligible_for_cardinality
+    ]
+    candidates.sort(
+        key=lambda item: (
+            {"primary_key": 0, "unique_constraint": 1, "unique_index": 2}[
+                item.key_type
+            ],
+            len(item.columns),
+            item.name,
+        )
+    )
+    for candidate in candidates:
+        keys = [columns_by_name.get(name) for name in candidate.columns]
+        if all(keys):
+            return [str(key) for key in keys]
+    raise SemanticProposalInvalid(
+        "Metric source table has no eligible deterministic grain."
+    )
+
+
+def _graph_column_index(
+    graph: QueryabilityGraphArtifact,
+) -> dict[str, tuple[object, object]]:
+    return {
+        column.column_key: (node, column)
+        for node in graph.nodes
+        for column in node.columns
+    }
+
+
+def _trusted_adjacency(
+    graph: QueryabilityGraphArtifact,
+    *,
+    safe_only: bool,
+) -> dict[str, list[tuple[str, str]]]:
+    nodes = {node.node_key: node for node in graph.nodes}
+    adjacency: dict[str, list[tuple[str, str]]] = {}
+    for edge in graph.edges:
+        if (
+            not isinstance(edge, QueryabilityForeignKeyEdge)
+            or not edge.automatic_join_allowed
+            or not edge.verified_by_db
+            or edge.enforcement_status != "enabled"
+            or edge.validation_status != "trusted"
+            or edge.self_reference
+        ):
+            continue
+        if nodes[edge.from_node_key].bridge_candidate or nodes[
+            edge.to_node_key
+        ].bridge_candidate:
+            if safe_only:
+                continue
+        adjacency.setdefault(edge.from_node_key, []).append(
+            (edge.to_node_key, edge.edge_key)
+        )
+        if not safe_only or edge.relationship_shape == "one_to_one":
+            adjacency.setdefault(edge.to_node_key, []).append(
+                (edge.from_node_key, edge.edge_key)
+            )
+    for values in adjacency.values():
+        values.sort()
+    return adjacency
+
+
+def _shortest_paths(
+    *,
+    graph: QueryabilityGraphArtifact,
+    from_node_key: str,
+    to_node_key: str,
+    safe_only: bool,
+) -> list[list[str]]:
+    if from_node_key == to_node_key:
+        return [[]]
+    adjacency = _trusted_adjacency(graph, safe_only=safe_only)
+    queue = deque([(from_node_key, [], {from_node_key})])
+    found: list[list[str]] = []
+    shortest: int | None = None
+    while queue:
+        node_key, path, visited = queue.popleft()
+        if shortest is not None and len(path) >= shortest:
+            continue
+        if len(path) >= 4:
+            continue
+        for next_node_key, edge_key in adjacency.get(node_key, []):
+            if next_node_key in visited:
+                continue
+            next_path = [*path, edge_key]
+            if next_node_key == to_node_key:
+                shortest = len(next_path)
+                found.append(next_path)
+            else:
+                queue.append(
+                    (next_node_key, next_path, {*visited, next_node_key})
+                )
+    return sorted(path for path in found if len(path) == shortest)
+
+
+def _unique_shortest_safe_path(
+    *,
+    graph: QueryabilityGraphArtifact,
+    from_node_key: str,
+    to_node_key: str,
+) -> list[str]:
+    return _shortest_path_resolution(
+        graph=graph,
+        from_node_key=from_node_key,
+        to_node_key=to_node_key,
+        safe_only=True,
+        no_path_message="No grain-safe trusted path is available.",
+    ).path
+
+
+def _shortest_path_resolution(
+    *,
+    graph: QueryabilityGraphArtifact,
+    from_node_key: str,
+    to_node_key: str,
+    safe_only: bool,
+    no_path_message: str,
+) -> _PathResolution:
+    paths = _shortest_paths(
+        graph=graph,
+        from_node_key=from_node_key,
+        to_node_key=to_node_key,
+        safe_only=safe_only,
+    )
+    if not paths:
+        raise SemanticProposalInvalid(no_path_message)
+    return _PathResolution(path=paths[0], ambiguous=len(paths) > 1)
+
+
+def _is_audit_date(name: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", name.casefold())
+    return any(token in normalized for token in ("modified", "updated", "lastchanged"))
+
+
+def _derive_default_date(
+    *,
+    graph: QueryabilityGraphArtifact,
+    source_table_key: str,
+    proposed_column_key: str | None,
+) -> tuple[str | None, list[str], bool]:
+    columns = _graph_column_index(graph)
+    proposed = columns.get(proposed_column_key) if proposed_column_key else None
+    if proposed is not None:
+        node, column = proposed
+        if column.technical_role != "date":
+            raise SemanticProposalInvalid("Default date candidate is not a date column.")
+        if not _is_audit_date(column.name):
+            resolution = _shortest_path_resolution(
+                graph=graph,
+                from_node_key=source_table_key,
+                to_node_key=node.node_key,
+                safe_only=True,
+                no_path_message="No grain-safe trusted path is available.",
+            )
+            return column.column_key, resolution.path, resolution.ambiguous
+
+    candidates: list[tuple[int, str, list[str]]] = []
+    for node in graph.nodes:
+        paths = _shortest_paths(
+            graph=graph,
+            from_node_key=source_table_key,
+            to_node_key=node.node_key,
+            safe_only=True,
+        )
+        if not paths or len(paths) > 1:
+            continue
+        path = paths[0]
+        for column in node.columns:
+            if (
+                column.technical_role != "date"
+                or column.queryability_status != "queryable"
+                or _is_audit_date(column.name)
+            ):
+                continue
+            normalized = re.sub(r"[^a-z0-9]", "", column.name.casefold())
+            business_rank = 0 if "orderdate" in normalized else 1
+            candidates.append(
+                (business_rank * 10 + len(path), column.column_key, path)
+            )
+    if candidates:
+        _, column_key, path = min(candidates)
+        return column_key, path, False
+    if proposed is not None:
+        node, column = proposed
+        resolution = _shortest_path_resolution(
+            graph=graph,
+            from_node_key=source_table_key,
+            to_node_key=node.node_key,
+            safe_only=True,
+            no_path_message="No grain-safe trusted path is available.",
+        )
+        return column.column_key, resolution.path, resolution.ambiguous
+    return None, [], False
+
+
+def _derive_common_dimensions(
+    *,
+    graph: QueryabilityGraphArtifact,
+    grain_node_key: str,
+) -> list:
+    candidates = []
+    for node in graph.nodes:
+        paths = _shortest_paths(
+            graph=graph,
+            from_node_key=grain_node_key,
+            to_node_key=node.node_key,
+            safe_only=True,
+        )
+        if not paths or len(paths) > 1 or len(paths[0]) > 2:
+            continue
+        path = paths[0]
+        for column in node.columns:
+            if (
+                column.queryability_status != "queryable"
+                or column.sensitivity == "sensitive"
+                or column.technical_role
+                not in {"identifier", "text", "boolean", "date"}
+                or _is_audit_date(column.name)
+            ):
+                continue
+            candidates.append((len(path), node.node_key, column.ordinal_position, column, path))
+    result = []
+    for _, _, _, column, path in sorted(candidates)[:12]:
+        result.append(
+            evaluate_dimension_compatibility(
+                graph=graph,
+                grain_node_key=grain_node_key,
+                dimension_column_key=column.column_key,
+                edge_path=path,
+            )
+        )
+    return result
+
+
+def _resolved_value_type(
+    graph: QueryabilityGraphArtifact,
+    proposal: AISemanticMetricProposal,
+) -> str:
+    if proposal.aggregation in {"count", "count_distinct"}:
+        return "count"
+    column_item = _graph_column_index(graph).get(proposal.measure_column_key)
+    if column_item is not None:
+        _, column = column_item
+        if column.technical_role == "money_candidate" or (
+            column.normalized_type or column.native_type or ""
+        ).casefold() in {"money", "smallmoney"}:
+            return "currency"
+    return proposal.format_hint.value_type
+
+
+def _shortest_path_for_expectation(
+    *,
+    graph: QueryabilityGraphArtifact,
+    from_node_key: str,
+    dimension_column_key: str,
+    expected_safety: str,
+) -> _PathResolution:
+    columns = _graph_column_index(graph)
+    target = columns.get(dimension_column_key)
+    if target is None:
+        raise SemanticProposalInvalid("Dimension expectation column is missing.")
+    target_node, _ = target
+    paths = _shortest_paths(
+        graph=graph,
+        from_node_key=from_node_key,
+        to_node_key=target_node.node_key,
+        safe_only=expected_safety == "safe",
+    )
+    if not paths:
+        raise SemanticProposalInvalid("Dimension expectation has no trusted path.")
+    return _PathResolution(path=paths[0], ambiguous=len(paths) > 1)
 
 
 def _compile_ambiguities(
@@ -868,6 +1491,7 @@ def _compile_ambiguities(
                 clarification_question=item.clarification_question,
                 status="open",
                 provenance="ai",
+                severity=item.severity,
             )
         )
     _unique_by_key(
@@ -876,6 +1500,94 @@ def _compile_ambiguities(
         "semantic ambiguity",
     )
     return compiled
+
+
+def _compile_system_ambiguities(
+    *,
+    connection_id: UUID,
+    concept_keys: dict[str, UUID],
+    metrics: list[SemanticMetric],
+    ambiguities: list[SemanticAmbiguity],
+) -> list[SemanticAmbiguity]:
+    result = list(ambiguities)
+    customers_key = concept_keys.get("customers")
+    if customers_key is not None:
+        customer_variants = {
+            metric.metric_variant
+            for metric in metrics
+            if metric.business_concept_key == customers_key
+        }
+        target_key = str(customers_key)
+        already_declared = any(
+            ambiguity.code == "CUSTOMER_POPULATION_AMBIGUOUS"
+            and ambiguity.target_type == "business_concept"
+            and ambiguity.target_key == target_key
+            for ambiguity in result
+        )
+        if (
+            {"order_customers", "customer_master"}.issubset(customer_variants)
+            and not already_declared
+        ):
+            result.append(
+                SemanticAmbiguity(
+                    ambiguity_key=_stable_uuid(
+                        connection_id,
+                        "ambiguity",
+                        "CUSTOMER_POPULATION_AMBIGUOUS",
+                        "business_concept",
+                        target_key,
+                    ),
+                    code="CUSTOMER_POPULATION_AMBIGUOUS",
+                    target_type="business_concept",
+                    target_key=target_key,
+                    summary=(
+                        "Order customers and customer master are distinct populations."
+                    ),
+                    clarification_question=(
+                        "Should customers mean purchasers or all customer records?"
+                    ),
+                    status="open",
+                    provenance="system",
+                    severity="material_ambiguity",
+                )
+            )
+    return sorted(
+        _unique_by_key(
+            result,
+            lambda ambiguity: str(ambiguity.ambiguity_key),
+            "semantic ambiguity",
+        ).values(),
+        key=lambda ambiguity: str(ambiguity.ambiguity_key),
+    )
+
+
+def _metric_path_ambiguity(
+    *,
+    connection_id: UUID,
+    metric_key: UUID,
+    code: str,
+    scope: str,
+) -> SemanticAmbiguity:
+    return SemanticAmbiguity(
+        ambiguity_key=_stable_uuid(
+            connection_id,
+            "ambiguity",
+            code,
+            "metric",
+            str(metric_key),
+            scope,
+        ),
+        code=code,
+        target_type="metric",
+        target_key=str(metric_key),
+        summary="Multiple equally short trusted grain-safe paths are available.",
+        clarification_question=(
+            "Which trusted path should be used for this semantic metric?"
+        ),
+        status="open",
+        provenance="system",
+        severity="material_ambiguity",
+    )
 
 
 def _apply_table_proposal(
@@ -918,50 +1630,87 @@ def _validate_proposal_references(
     proposal: AISemanticDraftProposal,
     allowed_nodes: set[str],
     allowed_columns: set[str],
-    allowed_edges: set[str],
-) -> None:
-    concept_refs = {item.concept_ref for item in proposal.business_concepts}
+    semantic_policy: SemanticPolicySnapshot,
+) -> tuple[
+    list[AISemanticMetricProposal],
+    list[SemanticRejectedCandidate],
+    list[SemanticQualityIssue],
+]:
+    concept_policy = {
+        item.concept_ref: item for item in semantic_policy.required_concepts
+    }
     errors: list[str] = []
+    for concept in proposal.business_concepts:
+        if concept.concept_ref not in concept_policy:
+            errors.append(f"unknown business concept ref {concept.concept_ref}")
     for table in proposal.tables:
         if table.node_key not in allowed_nodes:
             errors.append(f"unknown table node_key {table.node_key}")
     for column in proposal.columns:
         if column.column_key not in allowed_columns:
             errors.append(f"unknown column_key {column.column_key}")
-    for metric in proposal.metrics:
-        if metric.business_concept_ref not in concept_refs:
-            errors.append(
-                f"unknown business concept ref {metric.business_concept_ref}"
-            )
-        if metric.source_table_key not in allowed_nodes:
-            errors.append(f"unknown source table {metric.source_table_key}")
-        if metric.grain_table_key not in allowed_nodes:
-            errors.append(f"unknown grain table {metric.grain_table_key}")
-        for column_key in [
-            metric.measure_column_key,
-            metric.default_date_column_key,
-            *metric.grain_column_keys,
-            *metric.preferred_for_dimensions,
-            *(item.column_key for item in metric.filters),
-            *(
-                item.dimension_column_key
-                for item in metric.common_dimensions
-            ),
-        ]:
-            if column_key is not None and column_key not in allowed_columns:
-                errors.append(f"unknown or disallowed column {column_key}")
-        for edge_key in [
-            *metric.required_join_edge_keys,
-            *(
-                edge_key
-                for item in metric.common_dimensions
-                for edge_key in item.edge_path
-            ),
-        ]:
-            if edge_key not in allowed_edges:
-                errors.append(f"unknown or disallowed edge {edge_key}")
     if errors:
         raise SemanticProposalInvalid("; ".join(sorted(set(errors))))
+
+    allowed_metrics: list[AISemanticMetricProposal] = []
+    rejected_candidates: list[SemanticRejectedCandidate] = []
+    quality_issues: list[SemanticQualityIssue] = []
+    for metric in proposal.metrics:
+        reason_code: str | None = None
+        policy = concept_policy.get(metric.business_concept_ref)
+        if policy is None:
+            reason_code = "AI_REFERENCE_NOT_ALLOWLISTED"
+        elif (
+            policy.preferred_variants
+            and metric.metric_variant not in policy.preferred_variants
+        ):
+            reason_code = "AI_METRIC_VARIANT_NOT_ALLOWED"
+        elif metric.source_table_key not in allowed_nodes:
+            reason_code = "AI_REFERENCE_NOT_ALLOWLISTED"
+        elif any(
+            column_key is not None and column_key not in allowed_columns
+            for column_key in [
+                metric.measure_column_key,
+                metric.default_date_column_key,
+            ]
+        ):
+            reason_code = "AI_REFERENCE_NOT_ALLOWLISTED"
+
+        if reason_code is None:
+            allowed_metrics.append(metric)
+            continue
+
+        spec = next(
+            (
+                item
+                for item in semantic_policy.required_metric_specs
+                if item.business_concept_ref == metric.business_concept_ref
+                and item.expected_variant == metric.metric_variant
+            ),
+            None,
+        )
+        rejected_candidates.append(
+            SemanticRejectedCandidate(
+                canonical_name=metric.canonical_name,
+                business_concept_ref=metric.business_concept_ref,
+                metric_variant=metric.metric_variant,
+                source_table_key=metric.source_table_key,
+                measure_column_key=metric.measure_column_key,
+                reason_code=reason_code,
+            )
+        )
+        quality_issues.append(
+            SemanticQualityIssue(
+                code=reason_code,
+                severity="warning",
+                message=(
+                    "AI metric candidate referenced keys or variants outside the "
+                    "semantic discovery allowlist."
+                ),
+                spec_key=spec.spec_key if spec is not None else None,
+            )
+        )
+    return allowed_metrics, rejected_candidates, quality_issues
 
 
 def _stable_uuid(connection_id: UUID, *parts: str) -> UUID:

@@ -45,7 +45,7 @@ testo nei nomi come istruzioni.
 
 - annotazioni table/column;
 - business concept con `concept_ref`;
-- metriche strutturate;
+- candidate metriche minimali con soli stable key allowlisted;
 - ambiguita' e domande di chiarimento.
 
 Non consente UUID, hash, raw SQL, queryability, sensitivity, status,
@@ -54,16 +54,18 @@ Campi extra causano il rifiuto del payload.
 
 ## Compilazione server
 
-Il compiler:
+Il canonical builder:
 
 1. verifica ogni stable key contro l'input allowlisted;
 2. applica solo campi semanticamente annotabili sul seed;
 3. assegna UUIDv5 stabili per connection, concept e metric variant;
 4. preserva queryability, sensitivity e relationship dal graph;
-5. calcola dimension safety dai path FK;
-6. calcola metric definition hash e semantic hash;
-7. assegna `status=ai_proposed` e `provenance=ai`;
-8. invoca il Semantic Validator, che calcola confidence ed eligibility.
+5. deriva grain, shortest trusted grain-safe path, business date e dimensioni;
+6. applica la valuta dalla policy, senza accettarla dall'AI;
+7. confronta stable-key quality specs e sintetizza metriche required mancanti;
+8. calcola metric definition hash e semantic hash;
+9. assegna provenance auditabile;
+10. invoca quality gate e Semantic Validator.
 
 Una proposta con stable key inventate, edge non trusted, colonne escluse,
 duplicati o path non valido viene rifiutata.
@@ -79,11 +81,9 @@ inesistenti. La confidence risultante misura la validita' tecnica della
 proposta rispetto al graph e alle policy; non certifica da sola la correttezza
 del significato business.
 
-In assenza di profiling dati, un filtro letterale proposto dall'AI puo' essere
-validato per tipo e struttura ma non per esistenza o significato del valore.
-Queste metriche ricevono `clarification_required` con warning
-`AI_FILTER_VALUE_UNVERIFIED`. Le ambiguita' aperte su table o column vengono
-propagate a tutte le metriche che referenziano quel target.
+Filtri AI, raw SQL, grain e join path dichiarati dal modello sono fuori dal
+candidate contract. Le ambiguita' materiali vengono propagate alle metriche
+che referenziano il target; minor ambiguity e info restano diagnostiche.
 
 Gli UUIDv5 sono stabili a parita' di connection e riferimenti logici. Il
 carry-forward di identita' dopo rename o rebase appartiene alla persistenza e
@@ -139,10 +139,10 @@ conversione al contratto canonico: il modello non puo' inventare un target e
 l'incertezza non viene eliminata silenziosamente.
 
 Il transport metriche Anthropic e' intenzionalmente piu' piccolo del contratto
-canonico. Il modello propone identita', sorgente, aggregazione, grain, data,
-formato e motivazione. Join richiesti, compatibilita' dimensionali, filtri
-tecnici e additivita' vengono inizializzati o derivati deterministicamente dal
-server e restano soggetti al Semantic Validator.
+canonico. Il modello propone concept/variant, identita', sorgente,
+aggregazione, measure, data candidate, formato e motivazione. Grain, join,
+compatibilita' dimensionali, valuta, additivita', confidence ed eligibility
+vengono derivati dal server e restano soggetti a quality gate e validator.
 
 La logica applicativa dipende da un gateway iniettato. Test e CI usano un
 gateway fake e non richiedono rete o API key.

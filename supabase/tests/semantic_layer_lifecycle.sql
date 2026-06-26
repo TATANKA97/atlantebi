@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(35);
+select plan(44);
 
 select ok(
   to_regclass('public.semantic_versions') is null,
@@ -67,6 +67,60 @@ select ok(
     'EXECUTE'
   ),
   'service role cannot call semantic persistence core directly'
+);
+
+select ok(
+  not has_function_privilege(
+    'authenticated',
+    'public.update_semantic_policy_settings(uuid,uuid,uuid,text,jsonb,boolean)',
+    'EXECUTE'
+  ),
+  'authenticated cannot update semantic policy settings'
+);
+
+select ok(
+  has_function_privilege(
+    'service_role',
+    'public.update_semantic_policy_settings(uuid,uuid,uuid,text,jsonb,boolean)',
+    'EXECUTE'
+  ),
+  'service role can invoke controlled semantic policy settings'
+);
+
+select ok(
+  not has_function_privilege(
+    'authenticated',
+    'public.save_resolved_semantic_policy(uuid,uuid,uuid,jsonb)',
+    'EXECUTE'
+  ),
+  'authenticated cannot persist resolved semantic policies'
+);
+
+select ok(
+  has_function_privilege(
+    'service_role',
+    'public.save_resolved_semantic_policy(uuid,uuid,uuid,jsonb)',
+    'EXECUTE'
+  ),
+  'service role can persist resolved semantic policies'
+);
+
+select ok(
+  not has_function_privilege(
+    'authenticated',
+    'public.purge_demo_semantic_versions(uuid,uuid,uuid,text)',
+    'EXECUTE'
+  ),
+  'authenticated cannot purge semantic versions'
+);
+
+select ok(
+  has_function_privilege(
+    'service_role',
+    'public.purge_demo_semantic_versions(uuid,uuid,uuid,text)',
+    'EXECUTE'
+  ),
+  'service role can invoke the guarded demo semantic purge'
 );
 
 insert into auth.users (
@@ -159,6 +213,10 @@ insert into public.db_connections (
   trust_server_certificate,
   secret_ref,
   status,
+  default_currency,
+  semantic_policy_config,
+  resolved_semantic_policy,
+  semantic_policy_hash,
   created_by
 )
 values (
@@ -175,6 +233,26 @@ values (
   false,
   'gcp-secret-manager://projects/demo/secrets/semantic',
   'ready',
+  'EUR',
+  jsonb_build_object(
+    'policy_version', '1.0.0',
+    'missing_currency_behavior', 'clarification_required',
+    'activation_policy', 'auto_validated',
+    'minimum_eligible_metrics', 1,
+    'required_concepts', jsonb_build_array(),
+    'required_metric_specs', jsonb_build_array()
+  ),
+  jsonb_build_object(
+    'policy_version', '1.0.0',
+    'policy_hash', repeat('9', 64),
+    'default_currency', 'EUR',
+    'missing_currency_behavior', 'clarification_required',
+    'activation_policy', 'auto_validated',
+    'minimum_eligible_metrics', 1,
+    'required_concepts', jsonb_build_array(),
+    'required_metric_specs', jsonb_build_array()
+  ),
+  repeat('9', 64),
   '10000000-0000-4000-8000-000000000031'
 );
 
@@ -456,6 +534,17 @@ as $$
     'semantic_version_id', target_id,
     'queryability_graph_version_id', target_graph_id,
     'base_graph_hash', target_graph_hash,
+    'base_policy_hash', repeat('9', 64),
+    'semantic_policy_snapshot', jsonb_build_object(
+      'policy_version', '1.0.0',
+      'policy_hash', repeat('9', 64),
+      'default_currency', 'EUR',
+      'missing_currency_behavior', 'clarification_required',
+      'activation_policy', 'auto_validated',
+      'minimum_eligible_metrics', 1,
+      'required_concepts', jsonb_build_array(),
+      'required_metric_specs', jsonb_build_array()
+    ),
     'version', target_version,
     'status', target_status,
     'freshness', 'fresh',
@@ -497,9 +586,76 @@ as $$
       )
     ),
     'relationships', jsonb_build_array(),
-    'business_concepts', jsonb_build_array(),
+    'business_concepts', jsonb_build_array(
+      jsonb_build_object(
+        'business_concept_key',
+          '70000000-0000-4000-8000-000000000030',
+        'canonical_name', 'parent_count',
+        'display_name', 'Parent count',
+        'synonyms', jsonb_build_array(),
+        'status', 'system_seeded',
+        'provenance', 'system'
+      )
+    ),
     'ambiguities', jsonb_build_array(),
-    'metrics', jsonb_build_array(),
+    'metrics', jsonb_build_array(
+      jsonb_build_object(
+        'metric_key', '71000000-0000-4000-8000-000000000030',
+        'canonical_name', 'parent_count',
+        'metric_definition_hash', repeat('8', 64),
+        'business_concept_key',
+          '70000000-0000-4000-8000-000000000030',
+        'metric_variant', 'count',
+        'name', 'Parent count',
+        'status', 'system_seeded',
+        'source_table_key', repeat('1', 64),
+        'aggregation', 'count',
+        'measure_column_key', repeat('2', 64),
+        'grain_table_key', repeat('1', 64),
+        'grain_column_keys', jsonb_build_array(repeat('2', 64)),
+        'aggregation_level', 'entity',
+        'additivity', 'additive',
+        'default_date_column_key', null,
+        'required_join_edge_keys', jsonb_build_array(),
+        'common_dimension_compatibility', jsonb_build_array(),
+        'dimension_policy', jsonb_build_object(
+          'same_grain', 'safe',
+          'parent_many_to_one', 'safe',
+          'child_one_to_many', 'forbidden',
+          'bridge_or_many_to_many', 'forbidden',
+          'self_reference', 'conditional'
+        ),
+        'preferred_for_grains', jsonb_build_array(),
+        'preferred_for_dimensions', jsonb_build_array(),
+        'filters', jsonb_build_array(),
+        'format', jsonb_build_object(
+          'value_type', 'count',
+          'currency', null,
+          'decimals', 0
+        ),
+        'synonyms', jsonb_build_array(),
+        'confidence_score', 1,
+        'confidence_label', 'high',
+        'compiler_eligibility', 'eligible',
+        'eligibility_reasons', jsonb_build_array(),
+        'validation_warnings', jsonb_build_array(),
+        'provenance', 'system',
+        'provenance_detail', 'system_seed',
+        'source_spec_key', null,
+        'enabled', true
+      )
+    ),
+    'quality_report', jsonb_build_object(
+      'status', case
+        when target_status = 'proposed' then 'passed'
+        else 'not_evaluated'
+      end,
+      'issues', jsonb_build_array(),
+      'required_specs_count', 0,
+      'satisfied_specs_count', 0,
+      'compiler_eligible_required_count', 0,
+      'rejected_candidates', jsonb_build_array()
+    ),
     'validation_report', jsonb_build_object(
       'status', case
         when target_status = 'proposed' then 'valid'
@@ -708,6 +864,8 @@ select throws_ok(
             'eligibility_reasons', jsonb_build_array(),
             'validation_warnings', jsonb_build_array(),
             'provenance', 'system',
+            'provenance_detail', 'system_seed',
+            'source_spec_key', null,
             'enabled', true
           )
         )
@@ -780,6 +938,8 @@ select throws_ok(
             'eligibility_reasons', jsonb_build_array(),
             'validation_warnings', jsonb_build_array(),
             'provenance', 'system',
+            'provenance_detail', 'system_seed',
+            'source_spec_key', null,
             'enabled', true
           )
         )
@@ -865,6 +1025,8 @@ select throws_ok(
             'eligibility_reasons', jsonb_build_array(),
             'validation_warnings', jsonb_build_array(),
             'provenance', 'system',
+            'provenance_detail', 'system_seed',
+            'source_spec_key', null,
             'enabled', true
           )
         )
@@ -957,6 +1119,8 @@ select throws_ok(
             'eligibility_reasons', jsonb_build_array(),
             'validation_warnings', jsonb_build_array(),
             'provenance', 'system',
+            'provenance_detail', 'system_seed',
+            'source_spec_key', null,
             'enabled', true
           )
         )
@@ -1049,6 +1213,8 @@ select throws_ok(
             'eligibility_reasons', jsonb_build_array(),
             'validation_warnings', jsonb_build_array(),
             'provenance', 'system',
+            'provenance_detail', 'system_seed',
+            'source_spec_key', null,
             'enabled', true
           )
         )
@@ -1132,6 +1298,27 @@ select is(
   'canonical artifact is projected transactionally'
 );
 
+select is(
+  (
+    select base_policy_hash
+    from public.semantic_layer_versions
+    where id = '60000000-0000-4000-8000-000000000031'
+  ),
+  repeat('9', 64),
+  'resolved semantic policy hash is projected with the version'
+);
+
+select is(
+  (
+    select provenance_detail
+    from public.semantic_layer_metrics
+    where semantic_version_id =
+      '60000000-0000-4000-8000-000000000031'
+  ),
+  'system_seed',
+  'metric provenance detail is projected for audit'
+);
+
 select throws_ok(
   $$
     select *
@@ -1183,6 +1370,46 @@ select lives_ok(
   $$,
   'owner can persist a validated proposed revision'
 );
+
+create temporary table semantic_blocked as
+select *
+from public.persist_semantic_layer_version(
+  '10000000-0000-4000-8000-000000000031',
+  '20000000-0000-4000-8000-000000000031',
+  '30000000-0000-4000-8000-000000000031',
+  '50000000-0000-4000-8000-000000000031',
+  jsonb_set(
+    pg_temp.semantic_artifact(
+      '60000000-0000-4000-8000-000000000039',
+      2,
+      1,
+      'proposed',
+      '50000000-0000-4000-8000-000000000031',
+      repeat('e', 64),
+      repeat('6', 64)
+    ),
+    '{quality_report,status}',
+    '"blocked"'
+  )
+);
+
+select throws_ok(
+  $$
+    select public.activate_semantic_layer_version(
+      '10000000-0000-4000-8000-000000000031',
+      '20000000-0000-4000-8000-000000000031',
+      '30000000-0000-4000-8000-000000000031',
+      '60000000-0000-4000-8000-000000000039',
+      1
+    )
+  $$,
+  '55000',
+  'semantic version failed the activation quality gate',
+  'blocked quality report cannot activate'
+);
+
+delete from public.semantic_layer_versions
+where id = '60000000-0000-4000-8000-000000000039';
 
 select lives_ok(
   $$

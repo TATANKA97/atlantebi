@@ -20,6 +20,7 @@ from tests.test_semantic_builder import (
     GRAPH_VERSION_ID,
     SEMANTIC_VERSION_ID,
     adventureworks_graph,
+    semantic_policy,
     semantic_draft,
 )
 from tests.test_semantic_discovery import proposal_from_fixture
@@ -34,6 +35,7 @@ def semantic_seed():
         semantic_version_id=SEMANTIC_VERSION_ID,
         queryability_graph_version_id=GRAPH_VERSION_ID,
         version=1,
+        semantic_policy=semantic_policy(),
     )
 
 
@@ -109,6 +111,7 @@ def test_semantic_generation_and_validation_requests_are_strict() -> None:
         "graph": graph.model_dump(mode="json"),
         "provider_config": provider_config(),
         "seed": seed.model_dump(mode="json"),
+        "semantic_policy": semantic_policy().model_dump(mode="json"),
     }
 
     SemanticGenerationRequest.model_validate(generation_payload)
@@ -116,6 +119,7 @@ def test_semantic_generation_and_validation_requests_are_strict() -> None:
         {
             "graph": generation_payload["graph"],
             "semantic_layer": generation_payload["seed"],
+            "semantic_policy": generation_payload["semantic_policy"],
         }
     )
 
@@ -129,6 +133,7 @@ def test_semantic_generation_and_validation_requests_are_strict() -> None:
             {
                 "graph": graph.model_dump(mode="json"),
                 "provider_config": provider_config(),
+                "semantic_policy": semantic_policy().model_dump(mode="json"),
                 "seed": seed.model_copy(
                     update={"base_graph_hash": "f" * 64}
                 ).model_dump(mode="json"),
@@ -146,6 +151,7 @@ def test_semantic_generate_endpoint_is_authenticated_and_uses_gateway(
         "graph": adventureworks_graph().model_dump(mode="json"),
         "provider_config": provider_config(),
         "seed": semantic_seed().model_dump(mode="json"),
+        "semantic_policy": semantic_policy().model_dump(mode="json"),
     }
 
     assert client.post("/semantic/generate", json=payload).status_code == 401
@@ -179,6 +185,7 @@ def test_semantic_generate_requires_provider_configuration(
         json={
             "graph": adventureworks_graph().model_dump(mode="json"),
             "seed": semantic_seed().model_dump(mode="json"),
+            "semantic_policy": semantic_policy().model_dump(mode="json"),
         },
     )
 
@@ -199,6 +206,7 @@ def test_semantic_generate_sanitizes_provider_failures(
             "graph": adventureworks_graph().model_dump(mode="json"),
             "provider_config": provider_config(),
             "seed": semantic_seed().model_dump(mode="json"),
+            "semantic_policy": semantic_policy().model_dump(mode="json"),
         },
     )
 
@@ -240,6 +248,7 @@ def test_semantic_generate_returns_sanitized_provider_error_categories(
             "graph": adventureworks_graph().model_dump(mode="json"),
             "provider_config": provider_config(),
             "seed": semantic_seed().model_dump(mode="json"),
+            "semantic_policy": semantic_policy().model_dump(mode="json"),
         },
     )
 
@@ -270,6 +279,7 @@ def test_semantic_validate_endpoint_returns_updated_validation(
         json={
             "graph": graph.model_dump(mode="json"),
             "semantic_layer": reviewed.model_dump(mode="json"),
+            "semantic_policy": semantic_policy().model_dump(mode="json"),
         },
     )
 
@@ -294,6 +304,7 @@ def test_semantic_review_endpoint_applies_patch_and_advances_revision(
     payload = {
         "graph": graph.model_dump(mode="json"),
         "source_layer": draft.model_dump(mode="json"),
+        "semantic_policy": semantic_policy().model_dump(mode="json"),
         "patch": {
             "metrics": [
                 {
@@ -334,6 +345,7 @@ def test_semantic_review_endpoint_accepts_empty_patch_for_revalidation(
         json={
             "graph": graph.model_dump(mode="json"),
             "source_layer": draft.model_dump(mode="json"),
+            "semantic_policy": semantic_policy().model_dump(mode="json"),
             "patch": {},
         },
     )
@@ -356,6 +368,7 @@ def test_semantic_review_endpoint_rejects_unknown_stable_key(
         json={
             "graph": graph.model_dump(mode="json"),
             "source_layer": draft.model_dump(mode="json"),
+            "semantic_policy": semantic_policy().model_dump(mode="json"),
             "patch": {
                 "metrics": [
                     {
@@ -386,6 +399,7 @@ def test_semantic_review_enforces_disabled_metric_and_rehashes_definition(
         json={
             "graph": graph.model_dump(mode="json"),
             "source_layer": draft.model_dump(mode="json"),
+            "semantic_policy": semantic_policy().model_dump(mode="json"),
             "patch": {
                 "metrics": [
                     {
@@ -432,6 +446,7 @@ def test_semantic_review_rejects_invalid_patch_output(
         json={
             "graph": graph.model_dump(mode="json"),
             "source_layer": draft.model_dump(mode="json"),
+            "semantic_policy": semantic_policy().model_dump(mode="json"),
             "patch": {
                 "metrics": [
                     {

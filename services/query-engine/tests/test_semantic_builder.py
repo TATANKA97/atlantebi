@@ -19,17 +19,22 @@ from app.models import (
     QueryabilityGraphArtifact,
     QueryabilityNode,
     SemanticBusinessConcept,
+    SemanticConceptPolicy,
     SemanticDimensionCompatibility,
     SemanticDimensionPolicy,
     SemanticFilter,
     SemanticLayer,
     SemanticMetric,
     SemanticMetricFormat,
+    SemanticPolicySnapshot,
+    SemanticRequiredMetricSpec,
+    SemanticDimensionExpectation,
 )
 from app.queryability import build_queryability_graph
 from app.semantic import (
     build_semantic_seed,
     compute_metric_definition_hash,
+    compute_semantic_policy_hash,
     compute_semantic_hash,
     validate_semantic_layer,
 )
@@ -466,6 +471,214 @@ DIMENSION_POLICY = SemanticDimensionPolicy(
 )
 
 
+def semantic_policy() -> SemanticPolicySnapshot:
+    policy = SemanticPolicySnapshot(
+        policy_version="1.0.0",
+        policy_hash="0" * 64,
+        default_currency="EUR",
+        missing_currency_behavior="clarification_required",
+        activation_policy="auto_validated",
+        minimum_eligible_metrics=1,
+        required_concepts=[
+            SemanticConceptPolicy(
+                concept_ref="revenue",
+                preferred_variants=["net_header", "document_total", "line_detail"],
+            ),
+            SemanticConceptPolicy(
+                concept_ref="quantity_sold",
+                preferred_variants=["line_quantity"],
+            ),
+            SemanticConceptPolicy(
+                concept_ref="orders",
+                preferred_variants=["header_count"],
+            ),
+            SemanticConceptPolicy(
+                concept_ref="customers",
+                preferred_variants=["order_customers", "customer_master"],
+            ),
+        ],
+        required_metric_specs=[],
+    )
+    return policy.model_copy(
+        update={"policy_hash": compute_semantic_policy_hash(policy)}
+    )
+
+
+def adventureworks_quality_policy() -> SemanticPolicySnapshot:
+    category = SemanticDimensionExpectation(
+        dimension_column_key=column_key("ProductCategory", "ProductCategoryID"),
+        expected_safety="safe",
+    )
+    forbidden_header_category = category.model_copy(
+        update={"expected_safety": "forbidden"}
+    )
+
+    def spec(
+        *,
+        spec_key: str,
+        concept: str,
+        variant: str,
+        canonical_name: str,
+        source_table: str,
+        aggregation: str,
+        measure_column: str,
+        grain_columns: list[str],
+        value_type: str,
+        default_date: tuple[str, str] | None = None,
+        default_for_concept: bool = False,
+        required_for_activation: bool = False,
+        dimensions: list[SemanticDimensionExpectation] | None = None,
+        allowed_eligibility: list[str] | None = None,
+    ) -> SemanticRequiredMetricSpec:
+        return SemanticRequiredMetricSpec(
+            spec_key=spec_key,
+            intent_key=canonical_name,
+            business_concept_ref=concept,
+            expected_variant=variant,
+            canonical_name=canonical_name,
+            name=canonical_name.replace("_", " ").title(),
+            source_table_key=node_key(source_table),
+            aggregation=aggregation,
+            measure_column_key=column_key(source_table, measure_column),
+            grain_column_keys=[
+                column_key(source_table, column) for column in grain_columns
+            ],
+            default_date_column_key=(
+                column_key(*default_date) if default_date else None
+            ),
+            value_type=value_type,
+            default_for_concept=default_for_concept,
+            required_for_activation=required_for_activation,
+            allowed_eligibility=allowed_eligibility
+            or ["eligible", "eligible_with_disclosure"],
+            dimension_expectations=dimensions or [],
+            synonyms=[],
+        )
+
+    base = semantic_policy()
+    policy = base.model_copy(
+        update={
+            "required_concepts": [
+                item.model_copy(
+                    update={
+                        "required": True,
+                        "required_for_activation": item.concept_ref
+                        in {"revenue", "quantity_sold", "orders"},
+                    }
+                )
+                for item in base.required_concepts
+            ],
+            "minimum_eligible_metrics": 4,
+            "required_metric_specs": [
+                spec(
+                    spec_key="adventureworks.revenue.net_header",
+                    concept="revenue",
+                    variant="net_header",
+                    canonical_name="fatturato_netto",
+                    source_table="SalesOrderHeader",
+                    aggregation="sum",
+                    measure_column="SubTotal",
+                    grain_columns=["SalesOrderID"],
+                    default_date=("SalesOrderHeader", "OrderDate"),
+                    value_type="currency",
+                    default_for_concept=True,
+                    required_for_activation=True,
+                    dimensions=[forbidden_header_category],
+                ),
+                spec(
+                    spec_key="adventureworks.revenue.document_total",
+                    concept="revenue",
+                    variant="document_total",
+                    canonical_name="totale_documento",
+                    source_table="SalesOrderHeader",
+                    aggregation="sum",
+                    measure_column="TotalDue",
+                    grain_columns=["SalesOrderID"],
+                    default_date=("SalesOrderHeader", "OrderDate"),
+                    value_type="currency",
+                    required_for_activation=True,
+                ),
+                spec(
+                    spec_key="adventureworks.revenue.line_detail",
+                    concept="revenue",
+                    variant="line_detail",
+                    canonical_name="fatturato_righe",
+                    source_table="SalesOrderDetail",
+                    aggregation="sum",
+                    measure_column="LineTotal",
+                    grain_columns=["SalesOrderID", "SalesOrderDetailID"],
+                    default_date=("SalesOrderHeader", "OrderDate"),
+                    value_type="currency",
+                    dimensions=[category],
+                ),
+                spec(
+                    spec_key="adventureworks.quantity.line_quantity",
+                    concept="quantity_sold",
+                    variant="line_quantity",
+                    canonical_name="quantita_venduta",
+                    source_table="SalesOrderDetail",
+                    aggregation="sum",
+                    measure_column="OrderQty",
+                    grain_columns=["SalesOrderID", "SalesOrderDetailID"],
+                    default_date=("SalesOrderHeader", "OrderDate"),
+                    value_type="number",
+                    required_for_activation=True,
+                    dimensions=[category],
+                ),
+                spec(
+                    spec_key="adventureworks.orders.header_count",
+                    concept="orders",
+                    variant="header_count",
+                    canonical_name="ordini",
+                    source_table="SalesOrderHeader",
+                    aggregation="count",
+                    measure_column="SalesOrderID",
+                    grain_columns=["SalesOrderID"],
+                    default_date=("SalesOrderHeader", "OrderDate"),
+                    value_type="count",
+                    required_for_activation=True,
+                ),
+                spec(
+                    spec_key="adventureworks.customers.order_customers",
+                    concept="customers",
+                    variant="order_customers",
+                    canonical_name="clienti_ordini",
+                    source_table="SalesOrderHeader",
+                    aggregation="count_distinct",
+                    measure_column="CustomerID",
+                    grain_columns=["SalesOrderID"],
+                    default_date=("SalesOrderHeader", "OrderDate"),
+                    value_type="count",
+                    allowed_eligibility=[
+                        "eligible",
+                        "eligible_with_disclosure",
+                        "clarification_required",
+                    ],
+                ),
+                spec(
+                    spec_key="adventureworks.customers.customer_master",
+                    concept="customers",
+                    variant="customer_master",
+                    canonical_name="clienti_anagrafica",
+                    source_table="Customer",
+                    aggregation="count",
+                    measure_column="CustomerID",
+                    grain_columns=["CustomerID"],
+                    value_type="count",
+                    allowed_eligibility=[
+                        "eligible",
+                        "eligible_with_disclosure",
+                        "clarification_required",
+                    ],
+                ),
+            ],
+        }
+    )
+    return policy.model_copy(
+        update={"policy_hash": compute_semantic_policy_hash(policy)}
+    )
+
+
 def _metric(
     *,
     metric_key: str,
@@ -525,6 +738,7 @@ def _metric(
         eligibility_reasons=["NOT_VALIDATED"],
         validation_warnings=[],
         provenance="ai",
+        provenance_detail="ai_generation",
         enabled=True,
     )
     return metric.model_copy(
@@ -538,6 +752,7 @@ def semantic_draft(graph: QueryabilityGraphArtifact) -> SemanticLayer:
         semantic_version_id=SEMANTIC_VERSION_ID,
         queryability_graph_version_id=GRAPH_VERSION_ID,
         version=1,
+        semantic_policy=semantic_policy(),
     )
     revenue = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     quantity = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -716,6 +931,7 @@ def test_adventureworks_seed_preserves_graph_authority_and_expected_counts() -> 
         semantic_version_id=SEMANTIC_VERSION_ID,
         queryability_graph_version_id=GRAPH_VERSION_ID,
         version=1,
+        semantic_policy=semantic_policy(),
     )
 
     assert len(seed.tables) == 13
@@ -863,6 +1079,7 @@ def test_snapshot_to_graph_to_semantic_seed_preserves_only_trusted_fks() -> None
         semantic_version_id=SEMANTIC_VERSION_ID,
         queryability_graph_version_id=GRAPH_VERSION_ID,
         version=1,
+        semantic_policy=semantic_policy(),
     )
 
     assert len(seed.tables) == 3
@@ -1449,7 +1666,7 @@ def test_safe_dimension_path_cannot_be_declared_forbidden() -> None:
     }
 
 
-def test_ambiguous_business_concept_requires_metric_clarification() -> None:
+def test_concept_variant_mismatch_is_not_compiler_eligible() -> None:
     graph = adventureworks_graph()
     draft = semantic_draft(graph)
     concepts = list(draft.business_concepts)
@@ -1472,7 +1689,8 @@ def test_ambiguous_business_concept_requires_metric_clarification() -> None:
         if metric.canonical_name == "quantita_venduta"
     )
 
-    assert quantity.compiler_eligibility == "clarification_required"
+    assert quantity.compiler_eligibility == "not_eligible"
+    assert "METRIC_VARIANT_NOT_ALLOWLISTED" in quantity.eligibility_reasons
     assert "AMBIGUOUS_BUSINESS_CONCEPT" in quantity.validation_warnings
 
 
@@ -1518,3 +1736,25 @@ def test_validator_blocks_reenabled_sensitive_column_and_stale_graph() -> None:
         for metric in validated.metrics
     )
     assert "SEMANTIC_COLUMN_TECHNICAL_METADATA_MISMATCH" in codes
+
+
+def test_policy_change_marks_semantic_layer_stale_without_graph_change() -> None:
+    graph = adventureworks_graph()
+    layer = semantic_draft(graph)
+    current_policy = semantic_policy().model_copy(
+        update={"default_currency": "USD", "policy_hash": "0" * 64}
+    )
+    current_policy = current_policy.model_copy(
+        update={
+            "policy_hash": compute_semantic_policy_hash(current_policy)
+        }
+    )
+
+    validated = validate_semantic_layer(
+        layer=layer,
+        graph=graph,
+        semantic_policy=current_policy,
+        validated_at=VALIDATED_AT,
+    )
+
+    assert validated.freshness == "stale"

@@ -628,6 +628,119 @@ CompilerEligibility = Literal[
     "clarification_required",
     "not_eligible",
 ]
+SemanticAmbiguitySeverity = Literal[
+    "material_ambiguity",
+    "minor_ambiguity",
+    "info",
+]
+
+
+class SemanticConceptPolicy(StrictModel):
+    concept_ref: str = Field(pattern=r"^[a-z][a-z0-9_]{1,99}$")
+    preferred_variants: list[
+        Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{1,99}$")]
+    ] = Field(default_factory=list, max_length=100)
+    required: bool = False
+    required_for_activation: bool = False
+
+
+class SemanticDimensionExpectation(StrictModel):
+    dimension_column_key: Sha256
+    expected_safety: Literal["safe", "forbidden"]
+
+
+class SemanticRequiredMetricSpec(StrictModel):
+    spec_key: str = Field(pattern=r"^[a-z][a-z0-9_.-]{1,99}$")
+    intent_key: str = Field(pattern=r"^[a-z][a-z0-9_.-]{1,99}$")
+    business_concept_ref: str = Field(pattern=r"^[a-z][a-z0-9_]{1,99}$")
+    expected_variant: str = Field(pattern=r"^[a-z][a-z0-9_]{1,99}$")
+    canonical_name: str = Field(pattern=r"^[a-z][a-z0-9_]{1,99}$")
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, min_length=1, max_length=2_000)
+    source_table_key: Sha256
+    aggregation: Literal["count", "count_distinct", "sum", "avg", "min", "max"]
+    measure_column_key: Sha256 | None
+    grain_column_keys: list[Sha256] = Field(min_length=1, max_length=100)
+    default_date_column_key: Sha256 | None = None
+    value_type: Literal["currency", "number", "percentage", "count", "duration"]
+    default_for_concept: bool = False
+    required_for_activation: bool = False
+    allowed_eligibility: list[CompilerEligibility] = Field(min_length=1, max_length=4)
+    dimension_expectations: list[SemanticDimensionExpectation] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    synonyms: list[Annotated[str, Field(min_length=1, max_length=255)]] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+
+
+class SemanticPolicySnapshot(StrictModel):
+    policy_version: str = Field(min_length=1, max_length=100)
+    policy_hash: Sha256
+    default_currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
+    missing_currency_behavior: Literal["clarification_required", "blocked"]
+    activation_policy: Literal["auto_validated", "manual_review"]
+    minimum_eligible_metrics: int = Field(default=1, ge=0, le=100_000)
+    required_concepts: list[SemanticConceptPolicy] = Field(max_length=1_000)
+    required_metric_specs: list[SemanticRequiredMetricSpec] = Field(
+        default_factory=list,
+        max_length=10_000,
+    )
+
+    @model_validator(mode="after")
+    def validate_policy_references(self) -> "SemanticPolicySnapshot":
+        concepts = {item.concept_ref: item for item in self.required_concepts}
+        if len(concepts) != len(self.required_concepts):
+            raise ValueError("semantic policy concept_ref values must be unique")
+        spec_keys = {item.spec_key for item in self.required_metric_specs}
+        if len(spec_keys) != len(self.required_metric_specs):
+            raise ValueError("semantic quality spec_key values must be unique")
+        default_concepts: set[str] = set()
+        for spec in self.required_metric_specs:
+            concept = concepts.get(spec.business_concept_ref)
+            if concept is None:
+                raise ValueError("quality spec references a concept outside the allowlist")
+            if (
+                concept.preferred_variants
+                and spec.expected_variant not in concept.preferred_variants
+            ):
+                raise ValueError("quality spec variant is not allowed by its concept")
+            if spec.default_for_concept:
+                if spec.business_concept_ref in default_concepts:
+                    raise ValueError("semantic concept has multiple default metric specs")
+                default_concepts.add(spec.business_concept_ref)
+        return self
+
+
+class SemanticQualityIssue(StrictModel):
+    code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,99}$")
+    severity: Literal["blocking", "warning", "info"]
+    message: str = Field(min_length=1, max_length=500)
+    spec_key: str | None = Field(default=None, max_length=100)
+    metric_key: CanonicalJsonUUID | None = None
+
+
+class SemanticRejectedCandidate(StrictModel):
+    canonical_name: str = Field(pattern=r"^[a-z][a-z0-9_]{1,99}$")
+    business_concept_ref: str = Field(pattern=r"^[a-z][a-z0-9_]{1,99}$")
+    metric_variant: str = Field(pattern=r"^[a-z][a-z0-9_]{1,99}$")
+    source_table_key: Sha256
+    measure_column_key: Sha256 | None
+    reason_code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,99}$")
+
+
+class SemanticQualityReport(StrictModel):
+    status: Literal["not_evaluated", "passed", "blocked"]
+    issues: list[SemanticQualityIssue] = Field(default_factory=list, max_length=10_000)
+    required_specs_count: int = Field(default=0, ge=0)
+    satisfied_specs_count: int = Field(default=0, ge=0)
+    compiler_eligible_required_count: int = Field(default=0, ge=0)
+    rejected_candidates: list[SemanticRejectedCandidate] = Field(
+        default_factory=list,
+        max_length=10_000,
+    )
 
 
 class SemanticTable(StrictModel):
@@ -704,6 +817,7 @@ class SemanticBusinessConcept(StrictModel):
     )
     status: SemanticElementStatus
     provenance: Literal["system", "ai", "human"]
+    default_metric_key: CanonicalJsonUUID | None = None
 
 
 class SemanticAmbiguity(StrictModel):
@@ -714,7 +828,8 @@ class SemanticAmbiguity(StrictModel):
     summary: str = Field(min_length=1, max_length=500)
     clarification_question: str = Field(min_length=1, max_length=500)
     status: Literal["open", "resolved"]
-    provenance: Literal["ai", "human"]
+    provenance: Literal["system", "ai", "human"]
+    severity: SemanticAmbiguitySeverity
 
 
 class SemanticFilter(StrictModel):
@@ -818,7 +933,34 @@ class SemanticMetric(StrictModel):
         Annotated[str, Field(min_length=1, max_length=100)]
     ] = Field(default_factory=list, max_length=100)
     provenance: Literal["system", "ai", "human"]
+    provenance_detail: Literal[
+        "system_seed",
+        "ai_generation",
+        "quality_profile",
+        "human_override",
+    ]
+    source_spec_key: str | None = Field(default=None, max_length=100)
     enabled: bool
+
+    @model_validator(mode="after")
+    def validate_metric_provenance(self) -> "SemanticMetric":
+        if self.provenance_detail == "quality_profile":
+            if self.provenance != "system" or not self.source_spec_key:
+                raise ValueError(
+                    "quality-profile metrics require system provenance and source_spec_key"
+                )
+        elif self.source_spec_key is not None:
+            raise ValueError("source_spec_key is only valid for quality-profile metrics")
+        if self.provenance == "ai" and self.provenance_detail != "ai_generation":
+            raise ValueError("AI metrics require ai_generation provenance detail")
+        if self.provenance == "human" and self.provenance_detail != "human_override":
+            raise ValueError("human metrics require human_override provenance detail")
+        if self.provenance == "system" and self.provenance_detail not in {
+            "system_seed",
+            "quality_profile",
+        }:
+            raise ValueError("system metrics require system provenance detail")
+        return self
 
 
 class SemanticValidationIssue(StrictModel):
@@ -887,6 +1029,8 @@ class SemanticLayer(StrictModel):
     semantic_version_id: CanonicalJsonUUID
     queryability_graph_version_id: CanonicalJsonUUID
     base_graph_hash: Sha256
+    base_policy_hash: Sha256
+    semantic_policy_snapshot: SemanticPolicySnapshot
     version: int = Field(gt=0)
     status: Literal["draft", "proposed", "active", "archived"]
     freshness: Literal["fresh", "stale"]
@@ -903,6 +1047,7 @@ class SemanticLayer(StrictModel):
     business_concepts: list[SemanticBusinessConcept] = Field(max_length=10_000)
     ambiguities: list[SemanticAmbiguity] = Field(max_length=10_000)
     metrics: list[SemanticMetric] = Field(max_length=100_000)
+    quality_report: SemanticQualityReport
     validation_report: SemanticValidationReport
 
 
@@ -911,6 +1056,7 @@ class SemanticSeedRequest(StrictModel):
     semantic_version_id: CanonicalJsonUUID
     queryability_graph_version_id: CanonicalJsonUUID
     version: int = Field(gt=0)
+    semantic_policy: SemanticPolicySnapshot
 
     @model_validator(mode="after")
     def validate_target_graph(self) -> "SemanticSeedRequest":
@@ -986,6 +1132,7 @@ class SemanticRebaseRequest(StrictModel):
     semantic_version_id: CanonicalJsonUUID
     queryability_graph_version_id: CanonicalJsonUUID
     version: int = Field(gt=0)
+    semantic_policy: SemanticPolicySnapshot
 
     @model_validator(mode="after")
     def validate_rebase_scope(self) -> "SemanticRebaseRequest":
@@ -1079,6 +1226,7 @@ class SemanticDiscoveryInput(StrictModel):
     engine: Literal["sqlserver"]
     base_graph_hash: Sha256
     graph_status: Literal["complete", "partial"]
+    allowed_concepts: list[SemanticConceptPolicy] = Field(max_length=1_000)
     tables: list[SemanticDiscoveryTableInput] = Field(max_length=5_000)
     columns: list[SemanticDiscoveryColumnInput] = Field(max_length=250_000)
     relationships: list[SemanticDiscoveryRelationshipInput] = Field(
@@ -1186,6 +1334,11 @@ class AISemanticDimensionProposal(StrictModel):
     edge_path: list[Sha256] = Field(max_length=4)
 
 
+class AISemanticMetricFormatHint(StrictModel):
+    value_type: Literal["currency", "number", "percentage", "count", "duration"]
+    decimals: int | None = Field(default=None, ge=0, le=6)
+
+
 class AISemanticMetricProposal(StrictModel):
     canonical_name: str = Field(pattern=r"^[a-z][a-z0-9_]{1,99}$")
     business_concept_ref: str = Field(pattern=r"^[a-z][a-z0-9_]{1,99}$")
@@ -1195,19 +1348,8 @@ class AISemanticMetricProposal(StrictModel):
     source_table_key: Sha256
     aggregation: Literal["count", "count_distinct", "sum", "avg", "min", "max"]
     measure_column_key: Sha256 | None
-    grain_table_key: Sha256
-    grain_column_keys: list[Sha256] = Field(min_length=1, max_length=100)
-    aggregation_level: Literal["row", "entity", "period"]
-    additivity: Literal["additive", "semi_additive", "non_additive"]
     default_date_column_key: Sha256 | None
-    required_join_edge_keys: list[Sha256] = Field(max_length=4)
-    common_dimensions: list[AISemanticDimensionProposal] = Field(max_length=100)
-    preferred_for_grains: list[
-        Annotated[str, Field(min_length=1, max_length=100)]
-    ] = Field(max_length=100)
-    preferred_for_dimensions: list[Sha256] = Field(max_length=100)
-    filters: list[SemanticFilter] = Field(max_length=100)
-    format: SemanticMetricFormat
+    format_hint: AISemanticMetricFormatHint
     synonyms: list[Annotated[str, Field(min_length=1, max_length=255)]] = Field(
         max_length=100
     )
@@ -1220,12 +1362,14 @@ class AISemanticAmbiguity(StrictModel):
     target_ref: str = Field(min_length=1, max_length=255)
     summary: str = Field(min_length=1, max_length=500)
     clarification_question: str = Field(min_length=1, max_length=500)
+    severity: SemanticAmbiguitySeverity
 
 
 class AnthropicSemanticScopedAmbiguity(StrictModel):
     code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,99}$")
     summary: str = Field(min_length=1, max_length=500)
     clarification_question: str = Field(min_length=1, max_length=500)
+    severity: SemanticAmbiguitySeverity
 
 
 class AnthropicSemanticBusinessConceptProposal(
@@ -1252,10 +1396,8 @@ class AnthropicSemanticMetricProposal(StrictModel):
     source_table_key: Sha256
     aggregation: Literal["count", "count_distinct", "sum", "avg", "min", "max"]
     measure_column_key: Sha256 | None
-    grain_table_key: Sha256
-    grain_column_keys: list[Sha256] = Field(min_length=1, max_length=4)
     default_date_column_key: Sha256 | None
-    format: SemanticMetricFormat
+    format_hint: AISemanticMetricFormatHint
     synonyms: list[Annotated[str, Field(min_length=1, max_length=255)]] = Field(
         max_length=6
     )
@@ -1320,6 +1462,7 @@ class SemanticGenerationRequest(StrictModel):
     graph: QueryabilityGraphArtifact
     seed: SemanticLayer
     provider_config: AISemanticProviderConfig
+    semantic_policy: SemanticPolicySnapshot
 
     @model_validator(mode="after")
     def validate_generation_scope(self) -> "SemanticGenerationRequest":
@@ -1332,6 +1475,11 @@ class SemanticGenerationRequest(StrictModel):
             raise ValueError("seed tenant and connection must match graph")
         if self.seed.base_graph_hash != self.graph.graph_hash:
             raise ValueError("seed must be based on the supplied graph")
+        if (
+            self.seed.base_policy_hash != self.semantic_policy.policy_hash
+            or self.seed.semantic_policy_snapshot != self.semantic_policy
+        ):
+            raise ValueError("seed must be based on the supplied semantic policy")
         if self.seed.status != "draft" or self.seed.freshness != "fresh":
             raise ValueError("seed must be a fresh draft")
         return self
@@ -1340,6 +1488,7 @@ class SemanticGenerationRequest(StrictModel):
 class SemanticValidationRequest(StrictModel):
     graph: QueryabilityGraphArtifact
     semantic_layer: SemanticLayer
+    semantic_policy: SemanticPolicySnapshot
 
 
 SemanticReviewElementStatus = Literal[
@@ -1480,6 +1629,7 @@ class SemanticReviewPatch(StrictModel):
 class SemanticReviewRequest(StrictModel):
     graph: QueryabilityGraphArtifact
     source_layer: SemanticLayer
+    semantic_policy: SemanticPolicySnapshot
     patch: SemanticReviewPatch
 
     @model_validator(mode="after")
@@ -1490,8 +1640,9 @@ class SemanticReviewRequest(StrictModel):
             self.source_layer.tenant_id != self.graph.tenant_id
             or self.source_layer.connection_id != self.graph.connection_id
             or self.source_layer.base_graph_hash != self.graph.graph_hash
+            or self.source_layer.base_policy_hash != self.semantic_policy.policy_hash
         ):
-            raise ValueError("source layer must target the supplied graph")
+            raise ValueError("source layer must target the supplied graph and policy")
         if (
             self.source_layer.status not in {"draft", "proposed"}
             or self.source_layer.freshness != "fresh"

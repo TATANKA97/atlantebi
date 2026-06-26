@@ -37,21 +37,9 @@
       "source_table_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "aggregation": "sum",
       "measure_column_key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "grain_table_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "grain_column_keys": [
-        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-      ],
-      "aggregation_level": "entity",
-      "additivity": "additive",
       "default_date_column_key": null,
-      "required_join_edge_keys": [],
-      "common_dimensions": [],
-      "preferred_for_grains": ["document"],
-      "preferred_for_dimensions": [],
-      "filters": [],
-      "format": {
+      "format_hint": {
         "value_type": "currency",
-        "currency": "EUR",
         "decimals": 2
       },
       "synonyms": ["fatturato"],

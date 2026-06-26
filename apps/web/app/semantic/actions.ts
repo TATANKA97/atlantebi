@@ -26,14 +26,28 @@ import {
   patchSemanticDraft,
   rebaseSemanticVersion,
   semanticServiceResponse,
+  setConnectionSemanticCurrency,
+  SemanticLayerServiceError,
   validateSemanticDraft
 } from "../../lib/semantic-layer/service";
+import { semanticGenerationMessage } from "../../lib/semantic-layer/generation-outcome";
 import { getActiveTenantContext } from "../../lib/tenant";
 
 const IntrospectionFormSchema = z.strictObject({
   tenant_id: z.string().uuid(),
   connection_id: z.string().uuid(),
   timeout_ms: z.coerce.number().int().min(1000).max(120000).default(120000)
+});
+
+const SemanticCurrencyFormSchema = z.strictObject({
+  tenant_id: z.string().uuid(),
+  connection_id: z.string().uuid(),
+  default_currency: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[A-Z]{3}$/)
+    .or(z.literal(""))
 });
 
 export async function introspectConnectionAction(formData: FormData) {
@@ -324,6 +338,7 @@ export async function createAndGenerateSemanticDraftAction(formData: FormData) {
 
   const context = await getActiveTenantContext(parsed.data.tenant_id);
   let semanticVersionId: string;
+  let message = "semantic_generation_failed";
   try {
     const draft = await createSemanticDraft({
       activationPolicy: "auto_validated",
@@ -335,12 +350,13 @@ export async function createAndGenerateSemanticDraftAction(formData: FormData) {
       semanticVersionId: draft.artifact.semantic_version_id
     });
     semanticVersionId = generated.artifact.semantic_version_id;
+    message = semanticGenerationMessage(generated.artifact);
   } catch (error) {
     redirectSemanticError(error, parsed.data.connection_id);
   }
   redirectSemantic({
     connectionId: parsed.data.connection_id,
-    message: "semantic_proposal_generated",
+    message,
     semanticVersionId
   });
 }
@@ -399,12 +415,14 @@ export async function generateSemanticDraftAction(formData: FormData) {
   }
   const context = await getActiveTenantContext(parsed.tenant_id);
   let semanticVersionId: string;
+  let message = "semantic_generation_failed";
   try {
     const generated = await generateSemanticDraft({
       context,
       semanticVersionId: parsed.semantic_version_id
     });
     semanticVersionId = generated.artifact.semantic_version_id;
+    message = semanticGenerationMessage(generated.artifact);
   } catch (error) {
     redirectSemanticError(
       error,
@@ -414,8 +432,33 @@ export async function generateSemanticDraftAction(formData: FormData) {
   }
   redirectSemantic({
     connectionId: parsed.connection_id,
-    message: "semantic_proposal_generated",
+    message,
     semanticVersionId
+  });
+}
+
+export async function updateSemanticCurrencyAction(formData: FormData) {
+  const parsed = SemanticCurrencyFormSchema.safeParse({
+    tenant_id: formData.get("tenant_id"),
+    connection_id: formData.get("connection_id"),
+    default_currency: formData.get("default_currency")
+  });
+  if (!parsed.success) {
+    redirectSemantic({ message: "invalid_semantic_policy" });
+  }
+  const context = await getActiveTenantContext(parsed.data.tenant_id);
+  try {
+    await setConnectionSemanticCurrency({
+      connectionId: parsed.data.connection_id,
+      context,
+      defaultCurrency: parsed.data.default_currency || null
+    });
+  } catch (error) {
+    redirectSemanticError(error, parsed.data.connection_id);
+  }
+  redirectSemantic({
+    connectionId: parsed.data.connection_id,
+    message: "semantic_policy_saved"
   });
 }
 
@@ -804,11 +847,19 @@ function redirectSemanticError(
   metricPage?: number
 ): never {
   const response = semanticServiceResponse(error);
+  const persistedSemanticVersionId =
+    error instanceof SemanticLayerServiceError
+      ? error.semanticVersionId
+      : undefined;
+  const selectedSemanticVersionId =
+    persistedSemanticVersionId ?? semanticVersionId;
   redirectSemantic({
     message: response.code,
     ...(connectionId ? { connectionId } : {}),
     ...(metricPage ? { metricPage } : {}),
-    ...(semanticVersionId ? { semanticVersionId } : {})
+    ...(selectedSemanticVersionId
+      ? { semanticVersionId: selectedSemanticVersionId }
+      : {})
   });
 }
 

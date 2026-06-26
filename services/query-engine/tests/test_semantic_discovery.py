@@ -9,16 +9,14 @@ from pydantic import ValidationError
 from app.models import (
     AISemanticAmbiguity,
     AISemanticBusinessConceptProposal,
-    AISemanticDimensionProposal,
     AISemanticDraftProposal,
+    AISemanticMetricFormatHint,
     AISemanticMetricProposal,
     AnthropicProviderConfig,
     AnthropicSemanticAnnotationsOutput,
     AnthropicSemanticBusinessConceptProposal,
     AnthropicSemanticMetricsOutput,
     SemanticDimensionCompatibility,
-    SemanticFilter,
-    SemanticMetricFormat,
 )
 from app.semantic import (
     build_semantic_seed,
@@ -49,9 +47,11 @@ from tests.test_semantic_builder import (
     GRAPH_VERSION_ID,
     SEMANTIC_VERSION_ID,
     adventureworks_graph,
+    adventureworks_quality_policy,
     column_key,
     edge_key,
     node_key,
+    semantic_policy,
 )
 from tests.shared_fixtures import contract_fixture_path
 
@@ -61,28 +61,6 @@ SHARED_FIXTURE = contract_fixture_path("semantic-ai-draft-v1.json")
 
 
 def proposal_from_fixture() -> AISemanticDraftProposal:
-    category_from_header = AISemanticDimensionProposal(
-        dimension_column_key=column_key(
-            "ProductCategory",
-            "ProductCategoryID",
-        ),
-        edge_path=[
-            edge_key("FK_Detail_Header"),
-            edge_key("FK_Detail_Product"),
-            edge_key("FK_Product_ProductCategory"),
-        ],
-    )
-    category_from_detail = AISemanticDimensionProposal(
-        dimension_column_key=column_key(
-            "ProductCategory",
-            "ProductCategoryID",
-        ),
-        edge_path=[
-            edge_key("FK_Detail_Product"),
-            edge_key("FK_Product_ProductCategory"),
-        ],
-    )
-
     def metric(
         *,
         canonical_name: str,
@@ -93,11 +71,12 @@ def proposal_from_fixture() -> AISemanticDraftProposal:
         measure_column: str,
         grain_columns: list[str],
         default_date: tuple[str, str] | None = None,
-        common_dimensions: list[AISemanticDimensionProposal] | None = None,
+        common_dimensions: list[object] | None = None,
         required_edges: list[str] | None = None,
         value_type: str = "number",
         synonyms: list[str] | None = None,
     ) -> AISemanticMetricProposal:
+        del grain_columns, common_dimensions, required_edges
         return AISemanticMetricProposal(
             canonical_name=canonical_name,
             business_concept_ref=concept_ref,
@@ -107,25 +86,11 @@ def proposal_from_fixture() -> AISemanticDraftProposal:
             source_table_key=node_key(source_table),
             aggregation=aggregation,
             measure_column_key=column_key(source_table, measure_column),
-            grain_table_key=node_key(source_table),
-            grain_column_keys=[
-                column_key(source_table, name) for name in grain_columns
-            ],
-            aggregation_level="entity",
-            additivity="additive",
             default_date_column_key=(
                 column_key(*default_date) if default_date else None
             ),
-            required_join_edge_keys=[
-                edge_key(name) for name in required_edges or []
-            ],
-            common_dimensions=common_dimensions or [],
-            preferred_for_grains=[],
-            preferred_for_dimensions=[],
-            filters=[],
-            format=SemanticMetricFormat(
+            format_hint=AISemanticMetricFormatHint(
                 value_type=value_type,
-                currency="EUR" if value_type == "currency" else None,
                 decimals=2 if value_type == "currency" else 0,
             ),
             synonyms=synonyms or [],
@@ -162,7 +127,6 @@ def proposal_from_fixture() -> AISemanticDraftProposal:
                 measure_column="SubTotal",
                 grain_columns=["SalesOrderID"],
                 default_date=("SalesOrderHeader", "OrderDate"),
-                common_dimensions=[category_from_header],
                 value_type="currency",
                 synonyms=["fatturato", "vendite"],
             ),
@@ -185,7 +149,6 @@ def proposal_from_fixture() -> AISemanticDraftProposal:
                 aggregation="sum",
                 measure_column="LineTotal",
                 grain_columns=["SalesOrderID", "SalesOrderDetailID"],
-                common_dimensions=[category_from_detail],
                 required_edges=[
                     "FK_Detail_Product",
                     "FK_Product_ProductCategory",
@@ -200,7 +163,6 @@ def proposal_from_fixture() -> AISemanticDraftProposal:
                 aggregation="sum",
                 measure_column="OrderQty",
                 grain_columns=["SalesOrderID", "SalesOrderDetailID"],
-                common_dimensions=[category_from_detail],
                 required_edges=[
                     "FK_Detail_Product",
                     "FK_Product_ProductCategory",
@@ -250,6 +212,7 @@ def proposal_from_fixture() -> AISemanticDraftProposal:
                 clarification_question=(
                     "Should customers mean purchasers or all customer records?"
                 ),
+                severity="material_ambiguity",
             )
         ],
     )
@@ -261,6 +224,7 @@ def semantic_seed():
         semantic_version_id=SEMANTIC_VERSION_ID,
         queryability_graph_version_id=GRAPH_VERSION_ID,
         version=1,
+        semantic_policy=adventureworks_quality_policy(),
     )
 
 
@@ -278,10 +242,8 @@ def anthropic_metric_payload(
         "source_table_key": metric.source_table_key,
         "aggregation": metric.aggregation,
         "measure_column_key": metric.measure_column_key,
-        "grain_table_key": metric.grain_table_key,
-        "grain_column_keys": metric.grain_column_keys,
         "default_date_column_key": metric.default_date_column_key,
-        "format": metric.format.model_dump(mode="json"),
+        "format_hint": metric.format_hint.model_dump(mode="json"),
         "synonyms": metric.synonyms,
         "reasoning_summary": metric.reasoning_summary,
         "ambiguities": ambiguities or [],
@@ -306,7 +268,9 @@ class FakeGateway:
 
 
 def test_discovery_input_is_allowlisted_and_omits_excluded_sensitive_metadata() -> None:
-    discovery_input = build_semantic_discovery_input(adventureworks_graph())
+    discovery_input = build_semantic_discovery_input(
+        adventureworks_graph(), semantic_policy()
+    )
 
     assert len(discovery_input.tables) == 13
     assert len(discovery_input.columns) == 124
@@ -343,9 +307,9 @@ def test_discovery_input_is_invariant_to_graph_collection_order() -> None:
     )
 
     assert build_semantic_discovery_input(
-        graph
+        graph, semantic_policy()
     ).model_dump(mode="json") == build_semantic_discovery_input(
-        reordered_graph
+        reordered_graph, semantic_policy()
     ).model_dump(mode="json")
 
 
@@ -356,7 +320,7 @@ def test_discovery_input_never_truncates_silently(monkeypatch) -> None:
     )
 
     with pytest.raises(SemanticDiscoveryInputTooLarge):
-        build_semantic_discovery_input(adventureworks_graph())
+        build_semantic_discovery_input(adventureworks_graph(), semantic_policy())
 
 
 def test_blocked_graph_cannot_enter_semantic_discovery() -> None:
@@ -366,7 +330,7 @@ def test_blocked_graph_cannot_enter_semantic_discovery() -> None:
         SemanticProposalInvalid,
         match="blocked Queryability Graph",
     ):
-        build_semantic_discovery_input(graph)
+        build_semantic_discovery_input(graph, semantic_policy())
 
 
 def test_adventureworks_proposal_compiles_and_validates_with_expected_metrics() -> None:
@@ -439,6 +403,25 @@ def test_adventureworks_proposal_compiles_and_validates_with_expected_metrics() 
         if metric.metric_variant in {"order_customers", "customer_master"}
     ]
     assert net_revenue.compiler_eligibility == "eligible_with_disclosure"
+    assert net_revenue.format.currency == "EUR"
+    assert net_revenue.grain_column_keys == [
+        column_key("SalesOrderHeader", "SalesOrderID")
+    ]
+    assert net_revenue.default_date_column_key == column_key(
+        "SalesOrderHeader", "OrderDate"
+    )
+    quantity = next(
+        metric
+        for metric in result.semantic_layer.metrics
+        if metric.metric_variant == "line_quantity"
+    )
+    assert quantity.default_date_column_key == column_key(
+        "SalesOrderHeader", "OrderDate"
+    )
+    assert quantity.required_join_edge_keys == [edge_key("FK_Detail_Header")]
+    assert result.semantic_layer.quality_report.status == "passed"
+    assert result.semantic_layer.quality_report.satisfied_specs_count == 7
+    assert result.semantic_layer.quality_report.compiler_eligible_required_count == 4
     assert all(
         metric.compiler_eligibility == "clarification_required"
         for metric in customer_metrics
@@ -487,6 +470,57 @@ def test_declared_ambiguity_drives_clarification_without_synonym_collision() -> 
     )
 
 
+def test_customer_quality_profile_synthesis_declares_system_ambiguity() -> None:
+    proposal = proposal_from_fixture()
+    metrics = [
+        metric.model_copy(
+            update={
+                "synonyms": (
+                    ["clienti acquirenti"]
+                    if metric.metric_variant == "order_customers"
+                    else ["anagrafica clienti"]
+                    if metric.metric_variant == "customer_master"
+                    else metric.synonyms
+                )
+            }
+        )
+        for metric in proposal.metrics
+        if metric.business_concept_ref != "customers"
+    ]
+
+    result = asyncio.run(
+        generate_semantic_layer(
+            graph=adventureworks_graph(),
+            seed=semantic_seed(),
+            gateway=FakeGateway(
+                proposal.model_copy(update={"metrics": metrics, "ambiguities": []})
+            ),
+            generated_at=GENERATED_AT,
+        )
+    )
+    customer_ambiguity = next(
+        ambiguity
+        for ambiguity in result.semantic_layer.ambiguities
+        if ambiguity.code == "CUSTOMER_POPULATION_AMBIGUOUS"
+    )
+    customer_metrics = [
+        metric
+        for metric in result.semantic_layer.metrics
+        if metric.metric_variant in {"order_customers", "customer_master"}
+    ]
+
+    assert customer_ambiguity.provenance == "system"
+    assert customer_ambiguity.severity == "material_ambiguity"
+    assert all(
+        metric.provenance_detail == "quality_profile"
+        for metric in customer_metrics
+    )
+    assert all(
+        metric.compiler_eligibility == "clarification_required"
+        for metric in customer_metrics
+    )
+
+
 def test_unknown_ambiguity_target_is_rejected() -> None:
     proposal = proposal_from_fixture()
     invalid_ambiguity = proposal.ambiguities[0].model_copy(
@@ -525,6 +559,7 @@ def test_table_and_column_ambiguities_propagate_to_metrics(
         target_ref=target_ref(),
         summary="Revenue source requires confirmation.",
         clarification_question="Which revenue source should be used?",
+        severity="material_ambiguity",
     )
     result = asyncio.run(
         generate_semantic_layer(
@@ -663,25 +698,32 @@ def test_proposal_rejects_disallowed_columns_unknown_edges_and_duplicates() -> N
             )
         }
     )
-    with pytest.raises(SemanticProposalInvalid, match="disallowed column"):
-        compile_semantic_proposal(
-            graph=adventureworks_graph(),
-            seed=semantic_seed(),
-            proposal=proposal.model_copy(update={"metrics": metrics}),
-            model_version="fixture-model-v2",
-        )
+    compiled = compile_semantic_proposal(
+        graph=adventureworks_graph(),
+        seed=semantic_seed(),
+        proposal=proposal.model_copy(update={"metrics": metrics}),
+        model_version="fixture-model-v2",
+    )
+    assert compiled.quality_report.rejected_candidates[0].reason_code == (
+        "AI_REFERENCE_NOT_ALLOWLISTED"
+    )
+    assert next(
+        metric
+        for metric in compiled.metrics
+        if metric.metric_variant == "net_header"
+    ).provenance_detail == "quality_profile"
 
     metrics = list(proposal.metrics)
-    metrics[0] = metrics[0].model_copy(
-        update={"required_join_edge_keys": ["f" * 64]}
+    metrics[0] = metrics[0].model_copy(update={"metric_variant": "not_allowed"})
+    compiled = compile_semantic_proposal(
+        graph=adventureworks_graph(),
+        seed=semantic_seed(),
+        proposal=proposal.model_copy(update={"metrics": metrics}),
+        model_version="fixture-model-v2",
     )
-    with pytest.raises(SemanticProposalInvalid, match="disallowed edge"):
-        compile_semantic_proposal(
-            graph=adventureworks_graph(),
-            seed=semantic_seed(),
-            proposal=proposal.model_copy(update={"metrics": metrics}),
-            model_version="fixture-model-v2",
-        )
+    assert compiled.quality_report.rejected_candidates[0].reason_code == (
+        "AI_METRIC_VARIANT_NOT_ALLOWED"
+    )
 
     with pytest.raises(SemanticProposalInvalid, match="Duplicate metric"):
         compile_semantic_proposal(
@@ -755,37 +797,90 @@ def test_generation_rejects_tampered_seed_before_provider_call() -> None:
     assert gateway.received is None
 
 
-def test_generation_maps_disconnected_dimension_path_to_invalid_proposal() -> None:
+def test_quality_profile_rejects_bad_ai_candidate_and_synthesizes_metric() -> None:
     proposal = proposal_from_fixture()
     metrics = list(proposal.metrics)
     metrics[0] = metrics[0].model_copy(
         update={
-            "common_dimensions": [
-                AISemanticDimensionProposal(
-                    dimension_column_key=column_key(
-                        "ProductCategory",
-                        "ProductCategoryID",
-                    ),
-                    edge_path=[edge_key("FK_Detail_Product")],
-                )
-            ]
+            "default_date_column_key": column_key(
+                "ProductCategory", "FixtureColumn3"
+            )
         }
     )
 
-    with pytest.raises(
-        SemanticProposalInvalid,
-        match="queryability graph constraints",
-    ):
-        asyncio.run(
-            generate_semantic_layer(
-                graph=adventureworks_graph(),
-                seed=semantic_seed(),
-                gateway=FakeGateway(
-                    proposal.model_copy(update={"metrics": metrics})
-                ),
-                generated_at=GENERATED_AT,
-            )
+    result = asyncio.run(
+        generate_semantic_layer(
+            graph=adventureworks_graph(),
+            seed=semantic_seed(),
+            gateway=FakeGateway(
+                proposal.model_copy(update={"metrics": metrics})
+            ),
+            generated_at=GENERATED_AT,
         )
+    )
+    net_revenue = next(
+        metric
+        for metric in result.semantic_layer.metrics
+        if metric.metric_variant == "net_header"
+    )
+
+    assert net_revenue.provenance == "system"
+    assert net_revenue.provenance_detail == "quality_profile"
+    assert net_revenue.source_spec_key == "adventureworks.revenue.net_header"
+    assert net_revenue.reasoning_summary == (
+        "Synthesized from configured quality profile spec "
+        "adventureworks.revenue.net_header"
+    )
+    assert result.semantic_layer.quality_report.rejected_candidates[0].reason_code == (
+        "AI_REQUIRED_METRIC_MISMATCH"
+    )
+
+
+def test_multiple_shortest_safe_paths_become_material_metric_ambiguity() -> None:
+    graph = adventureworks_graph()
+    original_edge = next(
+        edge
+        for edge in graph.edges
+        if edge.edge_key == edge_key("FK_Detail_Header")
+    )
+    duplicate_edge = original_edge.model_copy(
+        update={
+            "edge_key": edge_key("FK_Detail_Header_Alternate"),
+            "constraint_name": "FK_Detail_Header_Alternate",
+        }
+    )
+    proposal = proposal_from_fixture().model_copy(update={"ambiguities": []})
+    graph = graph.model_copy(update={"edges": [*graph.edges, duplicate_edge]})
+
+    result = asyncio.run(
+        generate_semantic_layer(
+            graph=graph,
+            seed=build_semantic_seed(
+                graph=graph,
+                semantic_version_id=SEMANTIC_VERSION_ID,
+                queryability_graph_version_id=GRAPH_VERSION_ID,
+                version=1,
+                semantic_policy=adventureworks_quality_policy(),
+            ),
+            gateway=FakeGateway(proposal),
+            generated_at=GENERATED_AT,
+        )
+    )
+    quantity = next(
+        metric
+        for metric in result.semantic_layer.metrics
+        if metric.metric_variant == "line_quantity"
+    )
+    ambiguity = next(
+        ambiguity
+        for ambiguity in result.semantic_layer.ambiguities
+        if ambiguity.code == "MULTIPLE_SHORTEST_SAFE_PATHS"
+        and ambiguity.target_key == str(quantity.metric_key)
+    )
+
+    assert ambiguity.provenance == "system"
+    assert ambiguity.severity == "material_ambiguity"
+    assert quantity.compiler_eligibility == "clarification_required"
 
 
 def test_openai_sdk_can_generate_strict_schema_for_ai_contract() -> None:
@@ -895,9 +990,10 @@ def test_anthropic_scoped_ambiguities_compile_to_existing_targets() -> None:
             {
                 "code": concept_ambiguity.code,
                 "summary": concept_ambiguity.summary,
-                "clarification_question": (
-                    concept_ambiguity.clarification_question
-                ),
+                    "clarification_question": (
+                        concept_ambiguity.clarification_question
+                    ),
+                    "severity": concept_ambiguity.severity,
             }
         ],
     )
@@ -913,6 +1009,7 @@ def test_anthropic_scoped_ambiguities_compile_to_existing_targets() -> None:
                             "clarification_question": (
                                 "Should revenue mean net or document total?"
                             ),
+                            "severity": "material_ambiguity",
                         }
                     ],
                 )
@@ -926,8 +1023,9 @@ def test_anthropic_scoped_ambiguities_compile_to_existing_targets() -> None:
     assert concepts == [proposal.business_concepts[-1]]
     assert metrics[0].canonical_name == proposal.metrics[0].canonical_name
     assert metrics[0].source_table_key == proposal.metrics[0].source_table_key
-    assert metrics[0].common_dimensions == []
-    assert metrics[0].required_join_edge_keys == []
+    assert metrics[0].default_date_column_key == (
+        proposal.metrics[0].default_date_column_key
+    )
     assert concept_ambiguities[0].target_type == "business_concept"
     assert concept_ambiguities[0].target_ref == concept.concept_ref
     assert metric_ambiguities[0].target_type == "metric"
@@ -954,7 +1052,9 @@ def test_openai_gateway_uses_structured_output_without_storing_payload() -> None
         model_version="fixture-model-v2",
     )
     response = asyncio.run(
-        gateway.generate(build_semantic_discovery_input(adventureworks_graph()))
+        gateway.generate(
+            build_semantic_discovery_input(adventureworks_graph(), semantic_policy())
+        )
     )
 
     assert response.response_id == "resp_openai_fixture"
@@ -991,6 +1091,7 @@ def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
                                     "clarification_question": (
                                         ambiguity.clarification_question
                                     ),
+                                    "severity": ambiguity.severity,
                                 }
                                 for ambiguity in proposal.ambiguities
                                 if ambiguity.target_type == "business_concept"
@@ -1013,6 +1114,7 @@ def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
                                     "clarification_question": (
                                         ambiguity.clarification_question
                                     ),
+                                    "severity": ambiguity.severity,
                                 }
                                 for ambiguity in proposal.ambiguities
                                 if ambiguity.target_type == "metric"
@@ -1066,33 +1168,16 @@ def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
         ),
     )
     response = asyncio.run(
-        gateway.generate(build_semantic_discovery_input(adventureworks_graph()))
+        gateway.generate(
+            build_semantic_discovery_input(adventureworks_graph(), semantic_policy())
+        )
     )
 
     assert response.response_id == (
         "msg_anthropic_annotations,msg_anthropic_metrics"
     )
-    expected_metrics = [
-        metric.model_copy(
-            update={
-                "aggregation_level": "entity",
-                "additivity": (
-                    "additive"
-                    if metric.aggregation in {"sum", "count"}
-                    else "non_additive"
-                ),
-                "required_join_edge_keys": [],
-                "common_dimensions": [],
-                "preferred_for_grains": [],
-                "preferred_for_dimensions": [],
-                "filters": [],
-            }
-        )
-        for metric in proposal.metrics
-    ]
-    expected_proposal = proposal.model_copy(update={"metrics": expected_metrics})
-    assert response.proposal.model_dump(mode="json") == (
-        expected_proposal.model_dump(mode="json")
+    assert response.proposal.model_dump(mode="json") == proposal.model_dump(
+        mode="json"
     )
     assert len(messages.calls) == 2
     annotations_call, metrics_call = messages.calls
@@ -1209,7 +1294,9 @@ def test_anthropic_gateway_enforces_total_generation_deadline(
 
     with pytest.raises(SemanticDiscoveryError, match="total deadline"):
         asyncio.run(
-            gateway.generate(build_semantic_discovery_input(adventureworks_graph()))
+            gateway.generate(
+                build_semantic_discovery_input(adventureworks_graph(), semantic_policy())
+            )
         )
 
 
@@ -1266,7 +1353,7 @@ def test_anthropic_gateway_distinguishes_refusal_from_missing_structured_output(
     with pytest.raises(SemanticDiscoveryRefused):
         asyncio.run(
             refusal_gateway.generate(
-                build_semantic_discovery_input(adventureworks_graph())
+                build_semantic_discovery_input(adventureworks_graph(), semantic_policy())
             )
         )
 
@@ -1289,7 +1376,7 @@ def test_anthropic_gateway_distinguishes_refusal_from_missing_structured_output(
     ):
         asyncio.run(
             empty_gateway.generate(
-                build_semantic_discovery_input(adventureworks_graph())
+                build_semantic_discovery_input(adventureworks_graph(), semantic_policy())
             )
         )
 
@@ -1318,7 +1405,7 @@ def test_openai_gateway_distinguishes_refusal_from_missing_structured_output() -
     with pytest.raises(SemanticDiscoveryRefused):
         asyncio.run(
             refusal_gateway.generate(
-                build_semantic_discovery_input(adventureworks_graph())
+                build_semantic_discovery_input(adventureworks_graph(), semantic_policy())
             )
         )
 
@@ -1337,40 +1424,13 @@ def test_openai_gateway_distinguishes_refusal_from_missing_structured_output() -
     ):
         asyncio.run(
             empty_gateway.generate(
-                build_semantic_discovery_input(adventureworks_graph())
+                build_semantic_discovery_input(adventureworks_graph(), semantic_policy())
             )
         )
 
 
-def test_validator_blocks_ai_self_promotion_and_invalid_filter_typing() -> None:
+def test_validator_blocks_ai_self_promotion() -> None:
     proposal = proposal_from_fixture()
-    metrics = list(proposal.metrics)
-    metrics[0] = metrics[0].model_copy(
-        update={
-            "filters": [
-                SemanticFilter(
-                    column_key=column_key("SalesOrderHeader", "CustomerID"),
-                    operator="eq",
-                    value="not-an-integer",
-                    value_type="integer",
-                )
-            ]
-        }
-    )
-    result = asyncio.run(
-        generate_semantic_layer(
-            graph=adventureworks_graph(),
-            seed=semantic_seed(),
-            gateway=FakeGateway(proposal.model_copy(update={"metrics": metrics})),
-            generated_at=GENERATED_AT,
-        )
-    )
-    codes = {
-        issue.code
-        for issue in result.semantic_layer.validation_report.blocking_errors
-    }
-    assert "METRIC_FILTER_VALUE_TYPE_MISMATCH" in codes
-
     compiled = compile_semantic_proposal(
         graph=adventureworks_graph(),
         seed=semantic_seed(),
@@ -1394,34 +1454,9 @@ def test_validator_blocks_ai_self_promotion_and_invalid_filter_typing() -> None:
     }
 
 
-def test_ai_filter_values_require_confirmation_without_data_profiling() -> None:
-    proposal = proposal_from_fixture()
-    metrics = list(proposal.metrics)
-    metrics[0] = metrics[0].model_copy(
-        update={
-            "filters": [
-                SemanticFilter(
-                    column_key=column_key("SalesOrderHeader", "CustomerID"),
-                    operator="eq",
-                    value=42,
-                    value_type="integer",
-                )
-            ]
-        }
-    )
-    result = asyncio.run(
-        generate_semantic_layer(
-            graph=adventureworks_graph(),
-            seed=semantic_seed(),
-            gateway=FakeGateway(proposal.model_copy(update={"metrics": metrics})),
-            generated_at=GENERATED_AT,
-        )
-    )
-    filtered_metric = next(
-        metric
-        for metric in result.semantic_layer.metrics
-        if metric.metric_variant == "net_header"
-    )
+def test_ai_candidate_contract_rejects_structured_filters() -> None:
+    payload = proposal_from_fixture().model_dump(mode="json")
+    payload["metrics"][0]["filters"] = []
 
-    assert filtered_metric.compiler_eligibility == "clarification_required"
-    assert "AI_FILTER_VALUE_UNVERIFIED" in filtered_metric.validation_warnings
+    with pytest.raises(ValidationError):
+        AISemanticDraftProposal.model_validate(payload)

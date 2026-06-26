@@ -14,10 +14,12 @@ import {
   disableSemanticMetricAction,
   generateSemanticDraftAction,
   rebaseSemanticVersionAction,
+  updateSemanticCurrencyAction,
   validateSemanticDraftAction
 } from "./actions";
 import {
   listSemanticVersions,
+  readConnectionSemanticPolicy,
   readSemanticLayerVersion,
   type SemanticVersionSummary
 } from "../../lib/semantic-layer/service";
@@ -61,9 +63,12 @@ const MESSAGE_COPY: Record<string, string> = {
   invalid_semantic_draft: "Richiesta di creazione proposta non valida.",
   invalid_semantic_generation: "Richiesta di generazione non valida.",
   invalid_semantic_metric_update: "Aggiornamento metrica non valido.",
+  invalid_semantic_policy: "Valuta semantica non valida.",
   invalid_semantic_rebase: "Richiesta di rebase non valida.",
   invalid_semantic_validation: "Richiesta di validazione non valida.",
   semantic_activation_failed: "Attivazione Semantic Layer fallita.",
+  semantic_activation_failed_after_persistence:
+    "Proposta salvata e validata, ma attivazione automatica fallita.",
   semantic_ai_not_configured:
     "La generazione AI non e configurata nel query-engine.",
   semantic_ai_credentials_rejected:
@@ -86,8 +91,21 @@ const MESSAGE_COPY: Record<string, string> = {
   semantic_metric_confirmed: "Metrica confermata e proposta rivalidata.",
   semantic_metric_corrected: "Metrica corretta e proposta rivalidata.",
   semantic_metric_disabled: "Metrica disabilitata e proposta rivalidata.",
-  semantic_proposal_generated: "Proposta semantica generata e validata.",
+  semantic_proposal_activated: "Proposta semantica validata e attivata.",
+  semantic_proposal_activated_with_warnings:
+    "Proposta semantica attivata con warning.",
+  semantic_proposal_generated_blocked:
+    "Proposta generata ma bloccata dalla validazione.",
+  semantic_proposal_generated_with_warnings:
+    "Proposta generata e validata con warning, ma non attivata.",
+  semantic_proposal_validated_not_activated:
+    "Proposta generata e validata, ma non attivata.",
   semantic_proposal_invalid: "La proposta AI non rispetta i vincoli tecnici.",
+  semantic_policy_not_found: "Policy semantica della connessione non trovata.",
+  semantic_policy_read_failed: "Lettura policy semantica fallita.",
+  semantic_policy_save_failed: "Salvataggio policy semantica fallito.",
+  semantic_policy_saved:
+    "Policy semantica aggiornata. Le versioni precedenti possono risultare stale.",
   semantic_proposal_validated: "Proposta semantica validata.",
   semantic_rebase_failed: "Rebase Semantic Layer fallito.",
   semantic_review_failed: "Correzione Semantic Layer non salvata.",
@@ -125,12 +143,18 @@ export async function SemanticWorkspace({
     connections.find((connection) => connection.id === searchParams.connection) ??
     connections[0] ??
     null;
-  const versions = selectedConnection
-    ? await listSemanticVersions({
-        connectionId: selectedConnection.id,
-        context
-      })
-    : [];
+  const [versions, currentPolicy] = selectedConnection
+    ? await Promise.all([
+        listSemanticVersions({
+          connectionId: selectedConnection.id,
+          context
+        }),
+        readConnectionSemanticPolicy({
+          connectionId: selectedConnection.id,
+          context
+        })
+      ])
+    : [[], null];
   const selectedSummary = selectVersion(versions, searchParams.semantic);
   const selected = selectedSummary
     ? await readSemanticLayerVersion({
@@ -197,6 +221,7 @@ export async function SemanticWorkspace({
             <VersionToolbar
               canManage={canManage}
               connection={selectedConnection}
+              defaultCurrency={currentPolicy?.default_currency ?? ""}
               selected={selected?.summary ?? null}
               tenantId={context.tenantId}
               versions={versions}
@@ -339,12 +364,14 @@ function ConnectionSelector({
 function VersionToolbar({
   canManage,
   connection,
+  defaultCurrency,
   selected,
   tenantId,
   versions
 }: {
   canManage: boolean;
   connection: ConnectionRow;
+  defaultCurrency: string;
   selected: SemanticVersionSummary | null;
   tenantId: string;
   versions: SemanticVersionSummary[];
@@ -377,15 +404,40 @@ function VersionToolbar({
           </div>
         </div>
         {canManage ? (
-          <form action={createAndGenerateSemanticDraftAction}>
-            <input name="tenant_id" type="hidden" value={tenantId} />
-            <input name="connection_id" type="hidden" value={connection.id} />
-            <SubmitButton
-              className="border border-[color:var(--accent)] px-4 py-2 text-sm font-medium disabled:cursor-wait disabled:opacity-60"
-              idleLabel="Nuova proposta AI"
-              pendingLabel="Generazione..."
-            />
-          </form>
+          <div className="flex flex-wrap items-end gap-3">
+            <form
+              action={updateSemanticCurrencyAction}
+              className="flex items-end gap-2"
+            >
+              <input name="tenant_id" type="hidden" value={tenantId} />
+              <input name="connection_id" type="hidden" value={connection.id} />
+              <label className="text-xs text-[color:var(--muted)]">
+                Valuta predefinita
+                <input
+                  className="mt-1 block w-24 border border-[color:var(--border)] bg-transparent px-2 py-2 uppercase text-[color:var(--foreground)]"
+                  defaultValue={defaultCurrency}
+                  maxLength={3}
+                  name="default_currency"
+                  pattern="[A-Za-z]{3}"
+                  placeholder="EUR"
+                />
+              </label>
+              <SubmitButton
+                className="border border-[color:var(--border)] px-3 py-2 text-sm disabled:cursor-wait disabled:opacity-60"
+                idleLabel="Salva valuta"
+                pendingLabel="Salvataggio..."
+              />
+            </form>
+            <form action={createAndGenerateSemanticDraftAction}>
+              <input name="tenant_id" type="hidden" value={tenantId} />
+              <input name="connection_id" type="hidden" value={connection.id} />
+              <SubmitButton
+                className="border border-[color:var(--accent)] px-4 py-2 text-sm font-medium disabled:cursor-wait disabled:opacity-60"
+                idleLabel="Nuova proposta AI"
+                pendingLabel="Generazione..."
+              />
+            </form>
+          </div>
         ) : null}
       </div>
     </section>
@@ -497,6 +549,10 @@ function SemanticLayerDetail({
             <dt className="font-medium">Base graph hash</dt>
             <dd className="break-all">{layer.base_graph_hash}</dd>
           </div>
+          <div>
+            <dt className="font-medium">Base policy hash</dt>
+            <dd className="break-all">{layer.base_policy_hash}</dd>
+          </div>
         </dl>
       </section>
 
@@ -511,6 +567,8 @@ function SemanticLayerDetail({
           <Stat label="Ambiguità aperte" value={String(counts.ambiguitiesOpen)} />
         </div>
       </section>
+
+      <QualityGateSection layer={layer} />
 
       <MetricTable
         canManage={canManage && mutable}
@@ -543,6 +601,78 @@ function SemanticLayerDetail({
         searchParams={searchParams}
       />
     </>
+  );
+}
+
+function QualityGateSection({ layer }: { layer: SemanticLayer }) {
+  const report = layer.quality_report;
+  return (
+    <section className="border-t border-[color:var(--border)] pt-6">
+      <h2 className="text-base font-semibold">Quality gate</h2>
+      <div className="mt-4 grid gap-4 sm:grid-cols-4">
+        <Stat label="Stato" value={report.status} />
+        <Stat
+          label="Spec soddisfatte"
+          value={`${report.satisfied_specs_count}/${report.required_specs_count}`}
+        />
+        <Stat
+          label="Required eligible"
+          value={String(report.compiler_eligible_required_count)}
+        />
+        <Stat
+          label="Candidate rifiutate"
+          value={String(report.rejected_candidates.length)}
+        />
+      </div>
+      {report.issues.length > 0 ? (
+        <div className="mt-4 space-y-2 text-sm">
+          {report.issues.map((issue, index) => (
+            <div
+              className="border-l-2 border-[color:var(--border)] pl-3"
+              key={`${issue.code}-${issue.spec_key ?? "global"}-${index}`}
+            >
+              <span className="font-medium">{issue.code}</span>
+              <span className="ml-2 text-[color:var(--muted)]">
+                {issue.message}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {report.rejected_candidates.length > 0 ? (
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full min-w-[680px] border-collapse text-left text-xs">
+            <thead className="text-[color:var(--muted)]">
+              <tr>
+                {["Candidate", "Concept / variant", "Motivo"].map((label) => (
+                  <th
+                    className="border-b border-[color:var(--border)] py-2 pr-4 font-medium"
+                    key={label}
+                  >
+                    {label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {report.rejected_candidates.map((candidate, index) => (
+                <tr key={`${candidate.canonical_name}-${index}`}>
+                  <td className="border-b border-[color:var(--border)] py-3 pr-4">
+                    {candidate.canonical_name}
+                  </td>
+                  <td className="border-b border-[color:var(--border)] py-3 pr-4">
+                    {candidate.business_concept_ref} / {candidate.metric_variant}
+                  </td>
+                  <td className="border-b border-[color:var(--border)] py-3">
+                    {candidate.reason_code}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -654,7 +784,11 @@ function MetricTable({
                     {confidenceLabel(metric)}
                   </td>
                   <td className="border-b border-[color:var(--border)] py-3 pr-4 align-top">
-                    {metric.status}
+                    <div>{metric.status}</div>
+                    <div className="mt-1 text-[color:var(--muted)]">
+                      {metric.provenance_detail}
+                      {metric.source_spec_key ? ` · ${metric.source_spec_key}` : ""}
+                    </div>
                     {!metric.enabled ? " · disabled" : ""}
                   </td>
                   <td className="border-b border-[color:var(--border)] py-3 align-top">

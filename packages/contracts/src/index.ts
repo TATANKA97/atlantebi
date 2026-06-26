@@ -648,6 +648,147 @@ export type CompilerEligibility = z.infer<
   typeof CompilerEligibilitySchema
 >;
 
+export const SemanticAmbiguitySeveritySchema = z.enum([
+  "material_ambiguity",
+  "minor_ambiguity",
+  "info"
+]);
+
+export const SemanticConceptPolicySchema = z.strictObject({
+  concept_ref: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
+  preferred_variants: z
+    .array(z.string().regex(/^[a-z][a-z0-9_]{1,99}$/))
+    .max(100)
+    .default([]),
+  required: z.boolean().default(false),
+  required_for_activation: z.boolean().default(false)
+});
+
+export const SemanticDimensionExpectationSchema = z.strictObject({
+  dimension_column_key: Sha256Schema,
+  expected_safety: z.enum(["safe", "forbidden"])
+});
+
+export const SemanticRequiredMetricSpecSchema = z.strictObject({
+  spec_key: z.string().regex(/^[a-z][a-z0-9_.-]{1,99}$/),
+  intent_key: z.string().regex(/^[a-z][a-z0-9_.-]{1,99}$/),
+  business_concept_ref: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
+  expected_variant: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
+  canonical_name: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
+  name: z.string().min(1).max(255),
+  description: z.string().min(1).max(2_000).nullish(),
+  source_table_key: Sha256Schema,
+  aggregation: z.enum(["count", "count_distinct", "sum", "avg", "min", "max"]),
+  measure_column_key: Sha256Schema.nullable(),
+  grain_column_keys: z.array(Sha256Schema).min(1).max(100),
+  default_date_column_key: Sha256Schema.nullable(),
+  value_type: z.enum(["currency", "number", "percentage", "count", "duration"]),
+  default_for_concept: z.boolean().default(false),
+  required_for_activation: z.boolean().default(false),
+  allowed_eligibility: z.array(CompilerEligibilitySchema).min(1).max(4),
+  dimension_expectations: z
+    .array(SemanticDimensionExpectationSchema)
+    .max(100)
+    .default([]),
+  synonyms: z.array(z.string().min(1).max(255)).max(100).default([])
+});
+
+export const SemanticPolicySnapshotSchema = z
+  .strictObject({
+    policy_version: z.string().min(1).max(100),
+    policy_hash: Sha256Schema,
+    default_currency: z.string().regex(/^[A-Z]{3}$/).nullable(),
+    missing_currency_behavior: z.enum(["clarification_required", "blocked"]),
+    activation_policy: z.enum(["auto_validated", "manual_review"]),
+    minimum_eligible_metrics: z.number().int().min(0).max(100_000).default(1),
+    required_concepts: z.array(SemanticConceptPolicySchema).max(1_000),
+    required_metric_specs: z
+      .array(SemanticRequiredMetricSpecSchema)
+      .max(10_000)
+      .default([])
+  })
+  .superRefine((policy, context) => {
+    const concepts = new Map(
+      policy.required_concepts.map((concept) => [concept.concept_ref, concept])
+    );
+    if (concepts.size !== policy.required_concepts.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["required_concepts"],
+        message: "semantic policy concept_ref values must be unique"
+      });
+    }
+    const specKeys = new Set<string>();
+    const defaultConcepts = new Set<string>();
+    policy.required_metric_specs.forEach((spec, index) => {
+      if (specKeys.has(spec.spec_key)) {
+        context.addIssue({
+          code: "custom",
+          path: ["required_metric_specs", index, "spec_key"],
+          message: "semantic quality spec_key values must be unique"
+        });
+      }
+      specKeys.add(spec.spec_key);
+      const concept = concepts.get(spec.business_concept_ref);
+      if (!concept) {
+        context.addIssue({
+          code: "custom",
+          path: ["required_metric_specs", index, "business_concept_ref"],
+          message: "quality spec references a concept outside the allowlist"
+        });
+      } else if (
+        concept.preferred_variants.length > 0 &&
+        !concept.preferred_variants.includes(spec.expected_variant)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["required_metric_specs", index, "expected_variant"],
+          message: "quality spec variant is not allowed by its concept"
+        });
+      }
+      if (spec.default_for_concept) {
+        if (defaultConcepts.has(spec.business_concept_ref)) {
+          context.addIssue({
+            code: "custom",
+            path: ["required_metric_specs", index, "default_for_concept"],
+            message: "semantic concept has multiple default metric specs"
+          });
+        }
+        defaultConcepts.add(spec.business_concept_ref);
+      }
+    });
+  });
+export type SemanticPolicySnapshot = z.infer<typeof SemanticPolicySnapshotSchema>;
+
+export const SemanticQualityIssueSchema = z.strictObject({
+  code: z.string().regex(/^[A-Z][A-Z0-9_]{1,99}$/),
+  severity: z.enum(["blocking", "warning", "info"]),
+  message: z.string().min(1).max(500),
+  spec_key: z.string().min(1).max(100).nullish(),
+  metric_key: z.string().uuid().nullish()
+});
+
+export const SemanticRejectedCandidateSchema = z.strictObject({
+  canonical_name: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
+  business_concept_ref: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
+  metric_variant: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
+  source_table_key: Sha256Schema,
+  measure_column_key: Sha256Schema.nullable(),
+  reason_code: z.string().regex(/^[A-Z][A-Z0-9_]{1,99}$/)
+});
+
+export const SemanticQualityReportSchema = z.strictObject({
+  status: z.enum(["not_evaluated", "passed", "blocked"]),
+  issues: z.array(SemanticQualityIssueSchema).max(10_000).default([]),
+  required_specs_count: z.number().int().nonnegative().default(0),
+  satisfied_specs_count: z.number().int().nonnegative().default(0),
+  compiler_eligible_required_count: z.number().int().nonnegative().default(0),
+  rejected_candidates: z
+    .array(SemanticRejectedCandidateSchema)
+    .max(10_000)
+    .default([])
+});
+
 export const SemanticTableSchema = z.strictObject({
   node_key: Sha256Schema,
   schema_name: z.string().min(1).max(255),
@@ -719,7 +860,8 @@ export const SemanticBusinessConceptSchema = z.strictObject({
   description: z.string().min(1).max(2_000).nullish(),
   synonyms: z.array(z.string().min(1).max(255)).max(100).default([]),
   status: SemanticElementStatusSchema,
-  provenance: z.enum(["system", "ai", "human"])
+  provenance: z.enum(["system", "ai", "human"]),
+  default_metric_key: z.string().uuid().nullish()
 });
 export type SemanticBusinessConcept = z.infer<
   typeof SemanticBusinessConceptSchema
@@ -738,7 +880,8 @@ export const SemanticAmbiguitySchema = z.strictObject({
   summary: z.string().min(1).max(500),
   clarification_question: z.string().min(1).max(500),
   status: z.enum(["open", "resolved"]),
-  provenance: z.enum(["ai", "human"])
+  provenance: z.enum(["system", "ai", "human"]),
+  severity: SemanticAmbiguitySeveritySchema
 });
 export type SemanticAmbiguity = z.infer<typeof SemanticAmbiguitySchema>;
 
@@ -863,7 +1006,59 @@ export const SemanticMetricSchema = z.strictObject({
     .max(100)
     .default([]),
   provenance: z.enum(["system", "ai", "human"]),
+  provenance_detail: z.enum([
+    "system_seed",
+    "ai_generation",
+    "quality_profile",
+    "human_override"
+  ]),
+  source_spec_key: z.string().min(1).max(100).nullish(),
   enabled: z.boolean()
+}).superRefine((metric, context) => {
+  if (
+    metric.provenance_detail === "quality_profile" &&
+    (metric.provenance !== "system" || !metric.source_spec_key)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["source_spec_key"],
+      message: "quality-profile metrics require system provenance and source_spec_key"
+    });
+  }
+  if (
+    metric.provenance_detail !== "quality_profile" &&
+    metric.source_spec_key != null
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["source_spec_key"],
+      message: "source_spec_key is only valid for quality-profile metrics"
+    });
+  }
+  if (metric.provenance === "ai" && metric.provenance_detail !== "ai_generation") {
+    context.addIssue({
+      code: "custom",
+      path: ["provenance_detail"],
+      message: "AI metrics require ai_generation provenance detail"
+    });
+  }
+  if (metric.provenance === "human" && metric.provenance_detail !== "human_override") {
+    context.addIssue({
+      code: "custom",
+      path: ["provenance_detail"],
+      message: "human metrics require human_override provenance detail"
+    });
+  }
+  if (
+    metric.provenance === "system" &&
+    !["system_seed", "quality_profile"].includes(metric.provenance_detail)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["provenance_detail"],
+      message: "system metrics require system provenance detail"
+    });
+  }
 });
 export type SemanticMetric = z.infer<typeof SemanticMetricSchema>;
 
@@ -926,6 +1121,8 @@ export const SemanticLayerSchema = z.strictObject({
   semantic_version_id: z.string().uuid(),
   queryability_graph_version_id: z.string().uuid(),
   base_graph_hash: Sha256Schema,
+  base_policy_hash: Sha256Schema,
+  semantic_policy_snapshot: SemanticPolicySnapshotSchema,
   version: z.number().int().positive(),
   status: z.enum(["draft", "proposed", "active", "archived"]),
   freshness: z.enum(["fresh", "stale"]),
@@ -942,6 +1139,7 @@ export const SemanticLayerSchema = z.strictObject({
   business_concepts: z.array(SemanticBusinessConceptSchema).max(10_000),
   ambiguities: z.array(SemanticAmbiguitySchema).max(10_000),
   metrics: z.array(SemanticMetricSchema).max(100_000),
+  quality_report: SemanticQualityReportSchema,
   validation_report: SemanticValidationReportSchema
 });
 export type SemanticLayer = z.infer<typeof SemanticLayerSchema>;
@@ -951,7 +1149,8 @@ export const SemanticSeedRequestSchema = z
     graph: QueryabilityGraphArtifactSchema,
     semantic_version_id: z.string().uuid(),
     queryability_graph_version_id: z.string().uuid(),
-    version: z.number().int().positive()
+    version: z.number().int().positive(),
+    semantic_policy: SemanticPolicySnapshotSchema
   })
   .superRefine((request, context) => {
     if (request.graph.status === "blocked") {
@@ -970,7 +1169,8 @@ export const SemanticRebaseRequestSchema = z
     target_graph: QueryabilityGraphArtifactSchema,
     semantic_version_id: z.string().uuid(),
     queryability_graph_version_id: z.string().uuid(),
-    version: z.number().int().positive()
+    version: z.number().int().positive(),
+    semantic_policy: SemanticPolicySnapshotSchema
   })
   .superRefine((request, context) => {
     if (
@@ -1301,7 +1501,8 @@ export const SemanticGenerationRequestSchema = z
   .strictObject({
     graph: QueryabilityGraphArtifactSchema,
     seed: SemanticLayerSchema,
-    provider_config: AISemanticProviderConfigSchema
+    provider_config: AISemanticProviderConfigSchema,
+    semantic_policy: SemanticPolicySnapshotSchema
   })
   .superRefine((request, context) => {
     if (request.graph.status === "blocked") {
@@ -1326,6 +1527,17 @@ export const SemanticGenerationRequestSchema = z
         code: "custom",
         path: ["seed", "base_graph_hash"],
         message: "seed must be based on the supplied graph"
+      });
+    }
+    if (
+      request.seed.base_policy_hash !== request.semantic_policy.policy_hash ||
+      JSON.stringify(request.seed.semantic_policy_snapshot) !==
+        JSON.stringify(request.semantic_policy)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["semantic_policy"],
+        message: "seed must be based on the supplied semantic policy"
       });
     }
     if (request.seed.status !== "draft" || request.seed.freshness !== "fresh") {
@@ -1409,6 +1621,11 @@ export type AISemanticDimensionProposal = z.infer<
   typeof AISemanticDimensionProposalSchema
 >;
 
+export const AISemanticMetricFormatHintSchema = z.strictObject({
+  value_type: z.enum(["currency", "number", "percentage", "count", "duration"]),
+  decimals: z.number().int().min(0).max(6).nullish()
+});
+
 export const AISemanticMetricProposalSchema = z.strictObject({
   canonical_name: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
   business_concept_ref: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
@@ -1425,17 +1642,8 @@ export const AISemanticMetricProposalSchema = z.strictObject({
     "max"
   ]),
   measure_column_key: Sha256Schema.nullable(),
-  grain_table_key: Sha256Schema,
-  grain_column_keys: z.array(Sha256Schema).min(1).max(100),
-  aggregation_level: z.enum(["row", "entity", "period"]),
-  additivity: z.enum(["additive", "semi_additive", "non_additive"]),
   default_date_column_key: Sha256Schema.nullable(),
-  required_join_edge_keys: z.array(Sha256Schema).max(4),
-  common_dimensions: z.array(AISemanticDimensionProposalSchema).max(100),
-  preferred_for_grains: z.array(z.string().min(1).max(100)).max(100),
-  preferred_for_dimensions: z.array(Sha256Schema).max(100),
-  filters: z.array(SemanticFilterSchema).max(100),
-  format: SemanticMetricFormatSchema,
+  format_hint: AISemanticMetricFormatHintSchema,
   synonyms: z.array(z.string().min(1).max(255)).max(100),
   reasoning_summary: z.string().min(1).max(1_000)
 });
@@ -1453,7 +1661,8 @@ export const AISemanticAmbiguitySchema = z.strictObject({
   ]),
   target_ref: z.string().min(1).max(255),
   summary: z.string().min(1).max(500),
-  clarification_question: z.string().min(1).max(500)
+  clarification_question: z.string().min(1).max(500),
+  severity: SemanticAmbiguitySeveritySchema
 });
 export type AISemanticAmbiguity = z.infer<
   typeof AISemanticAmbiguitySchema
