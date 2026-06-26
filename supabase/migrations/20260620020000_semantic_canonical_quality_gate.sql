@@ -36,6 +36,8 @@ alter table public.semantic_layer_ambiguities
 
 -- Existing test-era artifacts are deliberately made stale. The product does
 -- not support them; they remain readable only until the tenant-scoped purge.
+select set_config('app.semantic_layer_rpc', 'on', true);
+
 update public.semantic_layer_versions
 set
   base_policy_hash = repeat('0', 64),
@@ -110,6 +112,8 @@ set
 
 update public.semantic_layer_ambiguities
 set severity = coalesce(payload->>'severity', 'material_ambiguity');
+
+select set_config('app.semantic_layer_rpc', 'off', true);
 
 alter table public.semantic_layer_versions
   alter column base_policy_hash set not null,
