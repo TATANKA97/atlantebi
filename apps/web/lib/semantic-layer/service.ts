@@ -433,6 +433,17 @@ export async function generateSemanticDraft({
     context,
     policy: semanticPolicy
   });
+  if (!versionTargetsCurrentContext(row, graphRow, semanticPolicy)) {
+    const draft = await createSemanticDraft({
+      activationPolicy: row.activation_policy,
+      connectionId: row.connection_id,
+      context
+    });
+    return generateSemanticDraft({
+      context,
+      semanticVersionId: draft.artifact.semantic_version_id
+    });
+  }
   assertVersionTargetsCurrentContext(row, graphRow, semanticPolicy);
   const providerConfig = await readDefaultAIProviderConfig({ context });
   if (!providerConfig) {
@@ -1185,17 +1196,25 @@ function assertVersionTargetsCurrentContext(
   graph: GraphRow,
   policy: SemanticPolicySnapshot
 ) {
-  if (
-    row.queryability_graph_version_id !== graph.id ||
-    row.base_graph_hash !== graph.graph_hash ||
-    row.base_policy_hash !== policy.policy_hash
-  ) {
+  if (!versionTargetsCurrentContext(row, graph, policy)) {
     throw new SemanticLayerServiceError(
       "semantic_version_stale",
       "La versione Semantic Layer è stale e deve essere ribasata.",
       409
     );
   }
+}
+
+function versionTargetsCurrentContext(
+  row: SemanticVersionRow,
+  graph: GraphRow,
+  policy: SemanticPolicySnapshot
+) {
+  return (
+    row.queryability_graph_version_id === graph.id &&
+    row.base_graph_hash === graph.graph_hash &&
+    row.base_policy_hash === policy.policy_hash
+  );
 }
 
 function assertSemanticAdmin(context: ActiveTenantContext) {
