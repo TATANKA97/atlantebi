@@ -265,7 +265,7 @@ export async function listSemanticVersions({
   context: ActiveTenantContext;
 }): Promise<SemanticVersionSummary[]> {
   const [versions, currentGraph, currentPolicy] = await Promise.all([
-    readSemanticVersionRows(context.tenantId, connectionId, false),
+    readSemanticVersionRows(context.tenantId, connectionId, true),
     readCurrentGraph(context.tenantId, connectionId, false),
     readCurrentSemanticPolicy(context.tenantId, connectionId, false).catch(
       (error: unknown) => {
