@@ -1220,7 +1220,12 @@ def test_openai_gateway_uses_structured_output_without_storing_payload() -> None
     assert responses.kwargs["timeout"] == 120
     assert responses.kwargs["reasoning"] == {"effort": "medium"}
     assert responses.kwargs["verbosity"] == "low"
-    assert "Never write SQL" in responses.kwargs["input"][0]["content"]
+    system_prompt = responses.kwargs["input"][0]["content"]
+    assert "Never write SQL" in system_prompt
+    assert "Report only material ambiguities" in system_prompt
+    assert "Do not choose ModifiedDate" in system_prompt
+    assert "tax/freight-inclusive totals as net revenue" in system_prompt
+    assert "resolved/disclosure" in system_prompt
 
 
 def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
@@ -1352,6 +1357,10 @@ def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
     assert annotations_call["timeout"] == 240
     assert metrics_call["timeout"] == 240
     assert "Never write SQL" in annotations_call["system"]
+    assert "Report only material ambiguities" in annotations_call["system"]
+    assert "Do not choose ModifiedDate" in annotations_call["system"]
+    assert "tax/freight-inclusive totals as net revenue" in annotations_call["system"]
+    assert "resolved/disclosure" in annotations_call["system"]
     metrics_input = json.loads(metrics_call["messages"][0]["content"])
     assert metrics_input["proposed_business_concepts"] == [
         concept.model_dump(mode="json", exclude_none=True)

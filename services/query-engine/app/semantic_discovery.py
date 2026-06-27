@@ -106,7 +106,10 @@ Security and authority rules:
   confidence, compiler eligibility, or dimension safety. The server owns them.
 - Keep distinct metric variants distinct when their calculation or grain differs.
 - Header-level metrics cannot be grouped by lower-grain detail dimensions.
-- Prefer conservative ambiguity reporting over unsupported certainty.
+- Report only material ambiguities that can change metric calculation, filter
+  scope, grain, date semantics, or business interpretation. Contextual caveats
+  that do not change the calculation should be marked as minor/info ambiguity
+  and must not make a metric unusable.
 
 Product rules:
 - Propose readable table and column annotations, business concept families, and
@@ -116,6 +119,17 @@ Product rules:
   and concise reasoning. The server derives grain, join paths, dimension safety,
   currency, confidence, and compiler eligibility.
 - Propose only semantics supported by the technical metadata.
+- Do not choose ModifiedDate, UpdatedDate, CreatedAt, rowversion-like, or
+  technical audit dates as default business dates unless no business event date
+  exists on the source table or reachable trusted parent tables. Prefer business
+  event dates such as order date, invoice date, document date, posting date,
+  shipment date, due date, or payment date when semantically supported.
+- For monetary fields, keep net amount, subtotal, line total, tax, freight,
+  discount, and total due as distinct metric variants. Do not label
+  tax/freight-inclusive totals as net revenue. Use explicit variant names such
+  as net revenue, line revenue, document total, tax amount, freight amount.
+- If a semantic policy resolves a known ambiguity, report it as
+  resolved/disclosure rather than an open clarification request.
 """.strip()
 
 
