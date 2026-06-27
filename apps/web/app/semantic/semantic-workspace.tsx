@@ -81,6 +81,8 @@ const MESSAGE_COPY: Record<string, string> = {
     "La configurazione della richiesta AI non e accettata dal provider.",
   semantic_ai_secret_unavailable:
     "Le credenziali del provider AI non sono leggibili dal query-engine.",
+  semantic_artifact_incompatible:
+    "La versione semantica usa un artifact non compatibile con il contratto corrente. Crea una nuova proposta.",
   semantic_archive_failed: "Archiviazione Semantic Layer fallita.",
   semantic_forbidden:
     "Solo owner e admin possono modificare il Semantic Layer.",
@@ -107,6 +109,10 @@ const MESSAGE_COPY: Record<string, string> = {
   semantic_policy_saved:
     "Policy semantica aggiornata. Le versioni precedenti possono risultare stale.",
   semantic_proposal_validated: "Proposta semantica validata.",
+  semantic_selected_artifact_incompatible:
+    "La versione semantica selezionata usa un artifact non compatibile. Crea una nuova proposta sul modello corrente.",
+  semantic_workspace_partial_load:
+    "Il workspace e stato caricato parzialmente: alcune informazioni semantiche non sono leggibili.",
   semantic_rebase_failed: "Rebase Semantic Layer fallito.",
   semantic_review_failed: "Correzione Semantic Layer non salvata.",
   semantic_review_invalid:
@@ -143,27 +149,62 @@ export async function SemanticWorkspace({
     connections.find((connection) => connection.id === searchParams.connection) ??
     connections[0] ??
     null;
-  const [versions, currentPolicy] = selectedConnection
-    ? await Promise.all([
-        listSemanticVersions({
-          connectionId: selectedConnection.id,
-          context
-        }),
-        readConnectionSemanticPolicy({
-          connectionId: selectedConnection.id,
-          context
-        })
-      ])
-    : [[], null];
+  let versions: SemanticVersionSummary[] = [];
+  let currentPolicy: Awaited<
+    ReturnType<typeof readConnectionSemanticPolicy>
+  > | null = null;
+  let loadMessageKey: keyof typeof MESSAGE_COPY | null = null;
+  if (selectedConnection) {
+    versions = await listSemanticVersions({
+      connectionId: selectedConnection.id,
+      context
+    }).catch((error: unknown) => {
+      console.error("Semantic versions could not be listed", {
+        connection_id: selectedConnection.id,
+        error:
+          error instanceof Error
+            ? { message: error.message, name: error.name }
+            : { type: typeof error }
+      });
+      loadMessageKey = "semantic_workspace_partial_load";
+      return [];
+    });
+    currentPolicy = await readConnectionSemanticPolicy({
+      connectionId: selectedConnection.id,
+      context
+    }).catch((error: unknown) => {
+      console.error("Semantic policy could not be read for workspace", {
+        connection_id: selectedConnection.id,
+        error:
+          error instanceof Error
+            ? { message: error.message, name: error.name }
+            : { type: typeof error }
+      });
+      loadMessageKey = "semantic_workspace_partial_load";
+      return null;
+    });
+  }
   const selectedSummary = selectVersion(versions, searchParams.semantic);
   const selected = selectedSummary
     ? await readSemanticLayerVersion({
         context,
         semanticVersionId: selectedSummary.id
+      }).catch((error: unknown) => {
+        console.error("Selected Semantic Layer artifact could not be read", {
+          error:
+            error instanceof Error
+              ? { message: error.message, name: error.name }
+              : { type: typeof error },
+          semantic_version_id: selectedSummary.id
+        });
+        loadMessageKey = "semantic_selected_artifact_incompatible";
+        return null;
       })
     : null;
   const message = searchParams.message
     ? MESSAGE_COPY[searchParams.message] ?? searchParams.message
+    : loadMessageKey
+      ? MESSAGE_COPY[loadMessageKey]
     : null;
 
   return (
@@ -398,6 +439,11 @@ function VersionToolbar({
                   key={version.id}
                 >
                   v{version.version} {version.status}
+                  {version.artifact_status === "incompatible" ? (
+                    <span className="ml-2 text-xs text-[color:var(--muted)]">
+                      incompatible
+                    </span>
+                  ) : null}
                 </Link>
               ))
             )}
@@ -1319,11 +1365,14 @@ function selectVersion(
       return requested;
     }
   }
+  const compatibleVersions = versions.filter(
+    (version) => version.artifact_status === "compatible"
+  );
   return (
-    versions.find((version) => version.status === "active") ??
-    versions.find((version) => version.status === "proposed") ??
-    versions.find((version) => version.status === "draft") ??
-    versions[0] ??
+    compatibleVersions.find((version) => version.status === "active") ??
+    compatibleVersions.find((version) => version.status === "proposed") ??
+    compatibleVersions.find((version) => version.status === "draft") ??
+    compatibleVersions[0] ??
     null
   );
 }
