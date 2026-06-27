@@ -304,7 +304,7 @@ async def queryability_paths(
 @app.post(
     "/semantic/seed",
     response_model=SemanticLayer,
-    response_model_exclude_none=True,
+    response_model_exclude_none=False,
 )
 async def semantic_seed(
     request: SemanticSeedRequest,
@@ -324,6 +324,7 @@ async def semantic_seed(
 @app.post(
     "/semantic/generate",
     response_model=SemanticGenerationResult,
+    response_model_exclude_none=False,
 )
 async def semantic_generate(
     request: SemanticGenerationRequest,
@@ -382,7 +383,7 @@ async def semantic_generate(
 @app.post(
     "/semantic/review",
     response_model=SemanticLayer,
-    response_model_exclude_none=True,
+    response_model_exclude_none=False,
 )
 async def semantic_review(
     request: SemanticReviewRequest,
@@ -405,7 +406,7 @@ async def semantic_review(
 @app.post(
     "/semantic/validate",
     response_model=SemanticLayer,
-    response_model_exclude_none=True,
+    response_model_exclude_none=False,
 )
 async def semantic_validate(
     request: SemanticValidationRequest,
@@ -421,7 +422,7 @@ async def semantic_validate(
 @app.post(
     "/semantic/rebase",
     response_model=SemanticRebaseResult,
-    response_model_exclude_none=True,
+    response_model_exclude_none=False,
 )
 async def semantic_rebase(
     request: SemanticRebaseRequest,

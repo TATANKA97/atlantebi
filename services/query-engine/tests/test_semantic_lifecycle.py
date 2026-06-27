@@ -20,6 +20,7 @@ from tests.test_semantic_builder import (
     GRAPH_VERSION_ID,
     SEMANTIC_VERSION_ID,
     adventureworks_graph,
+    adventureworks_quality_policy,
     column_key,
     edge_key,
     key,
@@ -444,6 +445,26 @@ def test_semantic_seed_and_rebase_endpoints_are_authenticated_and_strict(
     )
     assert seed_response.status_code == 200
     assert seed_response.json()["status"] == "draft"
+
+    quality_policy_payload = adventureworks_quality_policy().model_dump(
+        mode="json"
+    )
+    quality_seed_response = client.post(
+        "/semantic/seed",
+        headers=headers,
+        json={**seed_payload, "semantic_policy": quality_policy_payload},
+    )
+    assert quality_seed_response.status_code == 200
+    quality_seed = quality_seed_response.json()
+    customer_master_spec = next(
+        spec
+        for spec in quality_seed["semantic_policy_snapshot"][
+            "required_metric_specs"
+        ]
+        if spec["spec_key"] == "adventureworks.customers.customer_master"
+    )
+    assert "default_date_column_key" in customer_master_spec
+    assert customer_master_spec["default_date_column_key"] is None
 
     strict_response = client.post(
         "/semantic/seed",
