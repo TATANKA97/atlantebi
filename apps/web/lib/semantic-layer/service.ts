@@ -410,6 +410,123 @@ export async function createSemanticDraft({
   );
 }
 
+export async function createAndGenerateSemanticDraft({
+  activationPolicy,
+  connectionId,
+  context
+}: {
+  activationPolicy: SemanticActivationPolicy;
+  connectionId: string;
+  context: ActiveTenantContext;
+}) {
+  assertSemanticAdmin(context);
+  const providerConfig = await readDefaultAIProviderConfig({ context });
+  if (!providerConfig) {
+    throw new SemanticLayerServiceError(
+      "semantic_ai_provider_not_configured",
+      "Configura un provider AI prima di generare una proposta.",
+      409
+    );
+  }
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const [graphRow, versions, semanticPolicy] = await Promise.all([
+      readCurrentGraph(context.tenantId, connectionId, true),
+      readSemanticVersionRows(context.tenantId, connectionId, false),
+      readCurrentSemanticPolicy(context.tenantId, connectionId, true)
+    ]);
+    const version = Math.max(0, ...versions.map((item) => item.version)) + 1;
+    await synchronizeSemanticPolicy({
+      connectionId,
+      context,
+      policy: semanticPolicy
+    });
+    const seed = await postQueryEngine(
+      "/semantic/seed",
+      {
+        graph: graphRow.graph,
+        queryability_graph_version_id: graphRow.id,
+        semantic_version_id: randomUUID(),
+        version,
+        semantic_policy: semanticPolicy
+      },
+      SemanticLayerSchema,
+      30_000
+    );
+
+    let generated: SemanticGenerationResult;
+    try {
+      generated = await withSecurityOperationLease({
+        actorUserId: context.userId,
+        operation: "semantic_generation",
+        resourceKey: connectionId,
+        tenantId: context.tenantId,
+        run: () =>
+          postQueryEngine(
+            "/semantic/generate",
+            {
+              graph: graphRow.graph,
+              provider_config: providerConfig,
+              seed,
+              semantic_policy: semanticPolicy
+            },
+            SemanticGenerationResultSchema,
+            500_000
+          )
+      });
+    } catch (error) {
+      if (isSecurityOperationLimitError(error)) {
+        throw new SemanticLayerServiceError(
+          "semantic_generation_rate_limited",
+          "Una generazione Semantic Layer e gia in corso o il limite e stato raggiunto.",
+          429
+        );
+      }
+      throw mapQueryEngineError(error, "semantic_generation_failed");
+    }
+
+    try {
+      const persisted = await persistSemanticArtifact({
+        activationPolicy,
+        artifact: generated.semantic_layer,
+        context,
+        generationProvenance: generated.provenance,
+        graphVersionId: graphRow.id
+      });
+      if (
+        activationPolicy === "auto_validated" &&
+        persisted.artifact.status === "proposed"
+      ) {
+        try {
+          return await activateSemanticVersion({
+            context,
+            expectedRevision: persisted.artifact.revision,
+            semanticVersionId: persisted.artifact.semantic_version_id
+          });
+        } catch {
+          throw new SemanticLayerServiceError(
+            "semantic_activation_failed_after_persistence",
+            "La proposta e stata salvata e validata, ma l'attivazione automatica e fallita.",
+            500,
+            persisted.artifact.semantic_version_id
+          );
+        }
+      }
+      return persisted;
+    } catch (error) {
+      if (attempt === 0 && isSemanticRevisionConflict(error)) {
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new SemanticLayerServiceError(
+    "semantic_revision_conflict",
+    "Impossibile allocare una nuova versione Semantic Layer.",
+    409
+  );
+}
+
 export async function generateSemanticDraft({
   context,
   semanticVersionId

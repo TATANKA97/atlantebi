@@ -21,7 +21,7 @@ import {
 import {
   activateSemanticVersion,
   archiveSemanticVersion,
-  createSemanticDraft,
+  createAndGenerateSemanticDraft,
   generateSemanticDraft,
   patchSemanticDraft,
   rebaseSemanticVersion,
@@ -340,14 +340,10 @@ export async function createAndGenerateSemanticDraftAction(formData: FormData) {
   let semanticVersionId: string;
   let message = "semantic_generation_failed";
   try {
-    const draft = await createSemanticDraft({
+    const generated = await createAndGenerateSemanticDraft({
       activationPolicy: "auto_validated",
       connectionId: parsed.data.connection_id,
       context
-    });
-    const generated = await generateSemanticDraft({
-      context,
-      semanticVersionId: draft.artifact.semantic_version_id
     });
     semanticVersionId = generated.artifact.semantic_version_id;
     message = semanticGenerationMessage(generated.artifact);

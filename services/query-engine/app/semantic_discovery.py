@@ -81,6 +81,16 @@ class _MetricCompilation:
     metric: SemanticMetric
     ambiguities: list[SemanticAmbiguity]
 
+
+@dataclass(frozen=True)
+class _ValidatedProposalReferences:
+    tables: list[AISemanticTableProposal]
+    columns: list[AISemanticColumnProposal]
+    business_concepts: list[AISemanticBusinessConceptProposal]
+    metrics: list[AISemanticMetricProposal]
+    rejected_candidates: list[SemanticRejectedCandidate]
+    quality_issues: list[SemanticQualityIssue]
+
 SEMANTIC_DISCOVERY_SYSTEM_PROMPT = """
 You propose business semantics for a deterministic BI semantic layer.
 
@@ -676,34 +686,30 @@ def compile_semantic_proposal(
     allowed_input = build_semantic_discovery_input(graph, current_policy)
     allowed_nodes = {table.node_key for table in allowed_input.tables}
     allowed_columns = {column.column_key for column in allowed_input.columns}
-    (
-        allowed_metric_proposals,
-        reference_rejected_candidates,
-        reference_quality_issues,
-    ) = _validate_proposal_references(
+    validated_proposals = _validate_proposal_references(
         proposal=proposal,
         allowed_nodes=allowed_nodes,
         allowed_columns=allowed_columns,
         semantic_policy=current_policy,
     )
 
-    table_proposals = _unique_by_key(
-        proposal.tables,
+    table_proposals, table_duplicate_issues = _unique_ai_proposals_by_key(
+        validated_proposals.tables,
         lambda item: item.node_key,
         "table proposal",
     )
-    column_proposals = _unique_by_key(
-        proposal.columns,
+    column_proposals, column_duplicate_issues = _unique_ai_proposals_by_key(
+        validated_proposals.columns,
         lambda item: item.column_key,
         "column proposal",
     )
-    concept_proposals = _unique_by_key(
-        proposal.business_concepts,
+    concept_proposals, concept_duplicate_issues = _unique_ai_proposals_by_key(
+        validated_proposals.business_concepts,
         lambda item: item.concept_ref,
         "business concept proposal",
     )
-    _unique_by_key(
-        allowed_metric_proposals,
+    metric_proposals, metric_duplicate_issues = _unique_ai_proposals_by_key(
+        validated_proposals.metrics,
         lambda item: f"{item.business_concept_ref}:{item.metric_variant}",
         "metric variant proposal",
     )
@@ -747,13 +753,19 @@ def compile_semantic_proposal(
         (item.business_concept_ref, item.expected_variant): item
         for item in current_policy.required_metric_specs
     }
-    quality_issues: list[SemanticQualityIssue] = list(reference_quality_issues)
+    quality_issues: list[SemanticQualityIssue] = list(
+        validated_proposals.quality_issues
+    )
+    quality_issues.extend(table_duplicate_issues)
+    quality_issues.extend(column_duplicate_issues)
+    quality_issues.extend(concept_duplicate_issues)
+    quality_issues.extend(metric_duplicate_issues)
     rejected_candidates: list[SemanticRejectedCandidate] = list(
-        reference_rejected_candidates
+        validated_proposals.rejected_candidates
     )
     metrics: list[SemanticMetric] = []
     system_ambiguities: list[SemanticAmbiguity] = []
-    for item in allowed_metric_proposals:
+    for item in metric_proposals.values():
         spec = specs_by_signature.get(
             (item.business_concept_ref, item.metric_variant)
         )
@@ -779,14 +791,38 @@ def compile_semantic_proposal(
                 )
             )
             continue
-        compiled_metric = _compile_metric(
-            graph=graph,
-            connection_id=seed.connection_id,
-            proposal=item,
-            business_concept_key=concept_keys[item.business_concept_ref],
-            semantic_policy=current_policy,
-            quality_spec=spec,
-        )
+        try:
+            compiled_metric = _compile_metric(
+                graph=graph,
+                connection_id=seed.connection_id,
+                proposal=item,
+                business_concept_key=concept_keys[item.business_concept_ref],
+                semantic_policy=current_policy,
+                quality_spec=spec,
+            )
+        except SemanticProposalInvalid:
+            rejected_candidates.append(
+                SemanticRejectedCandidate(
+                    canonical_name=item.canonical_name,
+                    business_concept_ref=item.business_concept_ref,
+                    metric_variant=item.metric_variant,
+                    source_table_key=item.source_table_key,
+                    measure_column_key=item.measure_column_key,
+                    reason_code="AI_METRIC_COMPILATION_FAILED",
+                )
+            )
+            quality_issues.append(
+                SemanticQualityIssue(
+                    code="AI_METRIC_COMPILATION_FAILED",
+                    severity="warning",
+                    message=(
+                        "AI metric candidate could not be compiled from the "
+                        "Queryability Graph and was ignored."
+                    ),
+                    spec_key=spec.spec_key if spec is not None else None,
+                )
+            )
+            continue
         metrics.append(compiled_metric.metric)
         system_ambiguities.extend(compiled_metric.ambiguities)
 
@@ -822,7 +858,7 @@ def compile_semantic_proposal(
         )
         for concept in concepts
     ]
-    ambiguities = _compile_ambiguities(
+    compiled_ambiguities, ambiguity_quality_issues = _compile_ambiguities(
         connection_id=seed.connection_id,
         proposal=proposal,
         concept_keys=concept_keys,
@@ -830,11 +866,12 @@ def compile_semantic_proposal(
         allowed_nodes=allowed_nodes,
         allowed_columns=allowed_columns,
     )
+    quality_issues.extend(ambiguity_quality_issues)
     ambiguities = _compile_system_ambiguities(
         connection_id=seed.connection_id,
         concept_keys=concept_keys,
         metrics=metrics,
-        ambiguities=[*ambiguities, *system_ambiguities],
+        ambiguities=[*compiled_ambiguities, *system_ambiguities],
     )
 
     compiled = seed.model_copy(
@@ -1445,17 +1482,19 @@ def _compile_ambiguities(
     metrics: list[SemanticMetric],
     allowed_nodes: set[str],
     allowed_columns: set[str],
-) -> list[SemanticAmbiguity]:
+) -> tuple[list[SemanticAmbiguity], list[SemanticQualityIssue]]:
+    ai_metrics = [metric for metric in metrics if metric.provenance == "ai"]
     metric_keys = {
         metric.canonical_name: metric.metric_key
-        for metric in metrics
+        for metric in ai_metrics
     }
-    if len(metric_keys) != len(metrics):
+    if len(metric_keys) != len(ai_metrics):
         raise SemanticProposalInvalid(
             "Metric canonical names must be unique to resolve ambiguities."
         )
 
     compiled: list[SemanticAmbiguity] = []
+    quality_issues: list[SemanticQualityIssue] = []
     for item in proposal.ambiguities:
         if item.target_type == "table":
             target_key = item.target_ref
@@ -1472,9 +1511,17 @@ def _compile_ambiguities(
             target_key = str(metric_key) if metric_key is not None else ""
             valid = metric_key is not None
         if not valid:
-            raise SemanticProposalInvalid(
-                f"Unknown ambiguity target {item.target_type}:{item.target_ref}"
+            quality_issues.append(
+                SemanticQualityIssue(
+                    code="AI_AMBIGUITY_TARGET_NOT_RESOLVED",
+                    severity="warning",
+                    message=(
+                        "AI ambiguity target was not present in the accepted "
+                        "semantic proposal and was ignored."
+                    ),
+                )
             )
+            continue
         compiled.append(
             SemanticAmbiguity(
                 ambiguity_key=_stable_uuid(
@@ -1499,7 +1546,7 @@ def _compile_ambiguities(
         lambda ambiguity: str(ambiguity.ambiguity_key),
         "semantic ambiguity",
     )
-    return compiled
+    return compiled, quality_issues
 
 
 def _compile_system_ambiguities(
@@ -1631,30 +1678,58 @@ def _validate_proposal_references(
     allowed_nodes: set[str],
     allowed_columns: set[str],
     semantic_policy: SemanticPolicySnapshot,
-) -> tuple[
-    list[AISemanticMetricProposal],
-    list[SemanticRejectedCandidate],
-    list[SemanticQualityIssue],
-]:
+) -> _ValidatedProposalReferences:
     concept_policy = {
         item.concept_ref: item for item in semantic_policy.required_concepts
     }
-    errors: list[str] = []
-    for concept in proposal.business_concepts:
-        if concept.concept_ref not in concept_policy:
-            errors.append(f"unknown business concept ref {concept.concept_ref}")
-    for table in proposal.tables:
-        if table.node_key not in allowed_nodes:
-            errors.append(f"unknown table node_key {table.node_key}")
-    for column in proposal.columns:
-        if column.column_key not in allowed_columns:
-            errors.append(f"unknown column_key {column.column_key}")
-    if errors:
-        raise SemanticProposalInvalid("; ".join(sorted(set(errors))))
-
+    allowed_tables: list[AISemanticTableProposal] = []
+    allowed_columns_proposals: list[AISemanticColumnProposal] = []
+    allowed_concepts: list[AISemanticBusinessConceptProposal] = []
     allowed_metrics: list[AISemanticMetricProposal] = []
     rejected_candidates: list[SemanticRejectedCandidate] = []
     quality_issues: list[SemanticQualityIssue] = []
+    for concept in proposal.business_concepts:
+        if concept.concept_ref in concept_policy:
+            allowed_concepts.append(concept)
+            continue
+        quality_issues.append(
+            SemanticQualityIssue(
+                code="AI_REFERENCE_NOT_ALLOWLISTED",
+                severity="warning",
+                message=(
+                    "AI business concept proposal referenced a concept outside "
+                    "the semantic policy allowlist."
+                ),
+            )
+        )
+    for table in proposal.tables:
+        if table.node_key in allowed_nodes:
+            allowed_tables.append(table)
+            continue
+        quality_issues.append(
+            SemanticQualityIssue(
+                code="AI_REFERENCE_NOT_ALLOWLISTED",
+                severity="warning",
+                message=(
+                    "AI table proposal referenced a node outside the semantic "
+                    "discovery allowlist."
+                ),
+            )
+        )
+    for column in proposal.columns:
+        if column.column_key in allowed_columns:
+            allowed_columns_proposals.append(column)
+            continue
+        quality_issues.append(
+            SemanticQualityIssue(
+                code="AI_REFERENCE_NOT_ALLOWLISTED",
+                severity="warning",
+                message=(
+                    "AI column proposal referenced a column outside the semantic "
+                    "discovery allowlist."
+                ),
+            )
+        )
     for metric in proposal.metrics:
         reason_code: str | None = None
         policy = concept_policy.get(metric.business_concept_ref)
@@ -1710,7 +1785,14 @@ def _validate_proposal_references(
                 spec_key=spec.spec_key if spec is not None else None,
             )
         )
-    return allowed_metrics, rejected_candidates, quality_issues
+    return _ValidatedProposalReferences(
+        tables=allowed_tables,
+        columns=allowed_columns_proposals,
+        business_concepts=allowed_concepts,
+        metrics=allowed_metrics,
+        rejected_candidates=rejected_candidates,
+        quality_issues=quality_issues,
+    )
 
 
 def _stable_uuid(connection_id: UUID, *parts: str) -> UUID:
@@ -1721,6 +1803,28 @@ def _stable_uuid(connection_id: UUID, *parts: str) -> UUID:
 
 
 _Item = TypeVar("_Item")
+
+
+def _unique_ai_proposals_by_key(
+    items: list[_Item],
+    key: Callable[[_Item], str],
+    label: str,
+) -> tuple[dict[str, _Item], list[SemanticQualityIssue]]:
+    result: dict[str, _Item] = {}
+    issues: list[SemanticQualityIssue] = []
+    for item in items:
+        item_key = key(item)
+        if item_key in result:
+            issues.append(
+                SemanticQualityIssue(
+                    code="AI_DUPLICATE_PROPOSAL_IGNORED",
+                    severity="warning",
+                    message=f"Duplicate AI {label} was ignored.",
+                )
+            )
+            continue
+        result[item_key] = item
+    return result, issues
 
 
 def _unique_by_key(
