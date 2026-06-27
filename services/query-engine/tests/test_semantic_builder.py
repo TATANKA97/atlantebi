@@ -18,6 +18,7 @@ from app.models import (
     QueryabilityForeignKeyEdge,
     QueryabilityGraphArtifact,
     QueryabilityNode,
+    SemanticAmbiguity,
     SemanticBusinessConcept,
     SemanticConceptPolicy,
     SemanticDimensionCompatibility,
@@ -910,6 +911,23 @@ def semantic_draft(graph: QueryabilityGraphArtifact) -> SemanticLayer:
             synonyms=["clienti"],
         ),
     ]
+    ambiguities = [
+        SemanticAmbiguity(
+            ambiguity_key="20000000-0000-4000-8000-000000000001",
+            code="CUSTOMER_POPULATION_AMBIGUOUS",
+            target_type="business_concept",
+            target_key=customers,
+            summary=(
+                "Client count can refer to customers in orders or the customer master."
+            ),
+            clarification_question=(
+                "Use customers with orders or all customers in the master table?"
+            ),
+            status="open",
+            provenance="system",
+            severity="material_ambiguity",
+        )
+    ]
     updated = layer.model_copy(
         update={
             "revision": 2,
@@ -917,6 +935,7 @@ def semantic_draft(graph: QueryabilityGraphArtifact) -> SemanticLayer:
             "ai_prompt_version": "semantic-discovery.v1",
             "business_concepts": concepts,
             "metrics": metrics,
+            "ambiguities": ambiguities,
         }
     )
     return updated.model_copy(
