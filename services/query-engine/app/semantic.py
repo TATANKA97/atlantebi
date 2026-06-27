@@ -55,8 +55,11 @@ _AMBIGUITY_CODES = {
     "AMBIGUOUS_METRIC_VARIANT",
     "DUPLICATE_METRIC_SYNONYM",
     "AI_FILTER_VALUE_UNVERIFIED",
-    "SEMANTIC_AMBIGUITY_DECLARED",
     "METRIC_CURRENCY_UNRESOLVED",
+}
+_DECLARED_AMBIGUITY_CLARIFICATION_CODES = {
+    "CUSTOMER_POPULATION_AMBIGUOUS",
+    "MULTIPLE_SHORTEST_SAFE_PATHS",
 }
 
 
@@ -1970,7 +1973,7 @@ def _apply_metric_eligibility(
     warning_codes = sorted(
         {issue.code for issue in metric_issues if issue.severity == "warning"}
     )
-    ambiguous = any(code in _AMBIGUITY_CODES for code in warning_codes)
+    ambiguous = any(_issue_requires_clarification(issue) for issue in metric_issues)
     if (
         blocking
         or global_blocking_codes
@@ -2018,6 +2021,19 @@ def _apply_metric_eligibility(
             "eligibility_reasons": reasons,
             "validation_warnings": warning_codes,
         }
+    )
+
+
+def _issue_requires_clarification(issue: SemanticValidationIssue) -> bool:
+    if issue.severity != "warning":
+        return False
+    if issue.code in _AMBIGUITY_CODES:
+        return True
+    if issue.code != "SEMANTIC_AMBIGUITY_DECLARED":
+        return False
+    return (
+        issue.evidence.get("ambiguity_code")
+        in _DECLARED_AMBIGUITY_CLARIFICATION_CODES
     )
 
 

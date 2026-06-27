@@ -549,7 +549,7 @@ def test_unknown_ambiguity_target_is_ignored_with_quality_warning() -> None:
         ),
     ],
 )
-def test_table_and_column_ambiguities_propagate_to_metrics(
+def test_table_and_column_revenue_ambiguities_do_not_block_policy_resolved_metric(
     target_type,
     target_ref,
 ) -> None:
@@ -580,7 +580,8 @@ def test_table_and_column_ambiguities_propagate_to_metrics(
         if metric.metric_variant == "net_header"
     )
 
-    assert net_revenue.compiler_eligibility == "clarification_required"
+    assert net_revenue.compiler_eligibility == "eligible_with_disclosure"
+    assert "AI_PROPOSED_DISCLOSURE_REQUIRED" in net_revenue.eligibility_reasons
     assert "SEMANTIC_AMBIGUITY_DECLARED" in net_revenue.validation_warnings
 
 
