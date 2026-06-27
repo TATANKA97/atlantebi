@@ -626,7 +626,29 @@ async def generate_semantic_layer(
     if seed.semantic_hash != compute_semantic_hash(seed):
         raise SemanticProposalInvalid("Semantic seed hash is invalid.")
     discovery_input = build_semantic_discovery_input(graph, current_policy)
-    response = await gateway.generate(discovery_input)
+    fallback_reason: str | None = None
+    try:
+        response = await gateway.generate(discovery_input)
+    except SemanticDiscoveryError as exc:
+        if (
+            type(exc) is not SemanticDiscoveryError
+            or not current_policy.required_metric_specs
+        ):
+            raise
+        fallback_reason = exc.__class__.__name__
+        logger.warning(
+            "Semantic discovery provider failed; using quality-profile fallback: "
+            "provider=%s model=%s specs=%s reason=%s",
+            gateway.provider,
+            gateway.model_version,
+            len(current_policy.required_metric_specs),
+            fallback_reason,
+        )
+        proposal = _quality_profile_fallback_proposal(current_policy)
+        response = _GatewayResponse(
+            response_id="quality_profile_fallback",
+            proposal=proposal,
+        )
     proposal = response.proposal
     if proposal.contract_version != SEMANTIC_AI_DRAFT_VERSION:
         raise SemanticProposalInvalid("Unsupported AI semantic draft version.")
@@ -643,6 +665,12 @@ async def generate_semantic_layer(
         raise SemanticProposalInvalid(
             "AI semantic proposal violates queryability graph constraints."
         ) from exc
+    if fallback_reason is not None:
+        compiled = _append_quality_profile_fallback_issue(
+            compiled,
+            provider=gateway.provider,
+            reason=fallback_reason,
+        )
     validated = validate_semantic_layer(
         layer=compiled,
         graph=graph,
@@ -664,6 +692,63 @@ async def generate_semantic_layer(
         provenance=provenance,
         semantic_layer=validated,
     )
+
+
+def _quality_profile_fallback_proposal(
+    semantic_policy: SemanticPolicySnapshot,
+) -> AISemanticDraftProposal:
+    concepts = [
+        AISemanticBusinessConceptProposal(
+            concept_ref=concept.concept_ref,
+            display_name=concept.concept_ref.replace("_", " ").title(),
+            description=(
+                "Synthesized from configured semantic quality profile after "
+                "provider generation failed."
+            ),
+            synonyms=[],
+        )
+        for concept in semantic_policy.required_concepts
+    ]
+    return AISemanticDraftProposal(
+        contract_version=SEMANTIC_AI_DRAFT_VERSION,
+        tables=[],
+        columns=[],
+        business_concepts=concepts,
+        metrics=[],
+        ambiguities=[],
+    )
+
+
+def _append_quality_profile_fallback_issue(
+    layer: SemanticLayer,
+    *,
+    provider: str,
+    reason: str,
+) -> SemanticLayer:
+    quality_report = layer.quality_report.model_copy(
+        update={
+            "issues": [
+                *layer.quality_report.issues,
+                SemanticQualityIssue(
+                    code="AI_PROVIDER_FALLBACK_USED",
+                    severity="warning",
+                    message=(
+                        "AI provider generation failed; required metrics were "
+                        "synthesized from the configured quality profile."
+                    ),
+                ),
+            ]
+        }
+    )
+    updated = layer.model_copy(update={"quality_report": quality_report})
+    logger.warning(
+        "Semantic layer synthesized from quality profile fallback: "
+        "semantic_version_id=%s provider=%s reason=%s",
+        updated.semantic_version_id,
+        provider,
+        reason,
+    )
+    return updated.model_copy(update={"semantic_hash": compute_semantic_hash(updated)})
 
 
 def compile_semantic_proposal(
@@ -1914,6 +1999,15 @@ def _raise_anthropic_provider_error(exc: Exception) -> None:
         raise SemanticDiscoveryProviderConfigurationError(
             "The semantic discovery provider rejected the request configuration."
         ) from exc
+    diagnostic = _anthropic_error_diagnostic(exc)
+    logger.warning(
+        "Anthropic semantic discovery provider request failed: "
+        "exception_type=%s request_id=%s error_type=%s message=%s",
+        exc.__class__.__name__,
+        diagnostic["request_id"],
+        diagnostic["error_type"],
+        diagnostic["message"],
+    )
     raise SemanticDiscoveryError(
         "The semantic discovery provider request failed."
     ) from exc
@@ -1929,7 +2023,7 @@ def _anthropic_error_diagnostic(exc: Exception) -> dict[str, str]:
     if not request_id and isinstance(body, dict):
         request_id = body.get("request_id")
 
-    message = str(error.get("message") or "unavailable")
+    message = str(error.get("message") or str(exc) or "unavailable")
     message = re.sub(r"sk-ant-[A-Za-z0-9_-]+", "[redacted]", message)
     message = " ".join(message.split())[:500]
     return {
