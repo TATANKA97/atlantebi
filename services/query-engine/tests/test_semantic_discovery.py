@@ -521,21 +521,22 @@ def test_customer_quality_profile_synthesis_declares_system_ambiguity() -> None:
     )
 
 
-def test_unknown_ambiguity_target_is_rejected() -> None:
+def test_unknown_ambiguity_target_is_ignored_with_quality_warning() -> None:
     proposal = proposal_from_fixture()
     invalid_ambiguity = proposal.ambiguities[0].model_copy(
         update={"target_ref": "missing_concept"}
     )
 
-    with pytest.raises(SemanticProposalInvalid, match="Unknown ambiguity target"):
-        compile_semantic_proposal(
-            graph=adventureworks_graph(),
-            seed=semantic_seed(),
-            proposal=proposal.model_copy(
-                update={"ambiguities": [invalid_ambiguity]}
-            ),
-            model_version="fixture-model-v2",
-        )
+    compiled = compile_semantic_proposal(
+        graph=adventureworks_graph(),
+        seed=semantic_seed(),
+        proposal=proposal.model_copy(update={"ambiguities": [invalid_ambiguity]}),
+        model_version="fixture-model-v2",
+    )
+
+    assert "AI_AMBIGUITY_TARGET_NOT_RESOLVED" in {
+        issue.code for issue in compiled.quality_report.issues
+    }
 
 
 @pytest.mark.parametrize(
@@ -725,15 +726,17 @@ def test_proposal_rejects_disallowed_columns_unknown_edges_and_duplicates() -> N
         "AI_METRIC_VARIANT_NOT_ALLOWED"
     )
 
-    with pytest.raises(SemanticProposalInvalid, match="Duplicate metric"):
-        compile_semantic_proposal(
-            graph=adventureworks_graph(),
-            seed=semantic_seed(),
-            proposal=proposal.model_copy(
-                update={"metrics": [*proposal.metrics, proposal.metrics[0]]}
-            ),
-            model_version="fixture-model-v2",
-        )
+    compiled = compile_semantic_proposal(
+        graph=adventureworks_graph(),
+        seed=semantic_seed(),
+        proposal=proposal.model_copy(
+            update={"metrics": [*proposal.metrics, proposal.metrics[0]]}
+        ),
+        model_version="fixture-model-v2",
+    )
+    assert "AI_DUPLICATE_PROPOSAL_IGNORED" in {
+        issue.code for issue in compiled.quality_report.issues
+    }
 
 
 def test_ai_contract_rejects_server_owned_fields() -> None:
@@ -807,13 +810,26 @@ def test_quality_profile_rejects_bad_ai_candidate_and_synthesizes_metric() -> No
             )
         }
     )
+    ambiguity = AISemanticAmbiguity(
+        code="AI_REJECTED_REVENUE_AMBIGUITY",
+        target_type="metric",
+        target_ref=metrics[0].canonical_name,
+        summary="Rejected revenue candidate had ambiguity.",
+        clarification_question="Which rejected revenue candidate should be used?",
+        severity="material_ambiguity",
+    )
 
     result = asyncio.run(
         generate_semantic_layer(
             graph=adventureworks_graph(),
             seed=semantic_seed(),
             gateway=FakeGateway(
-                proposal.model_copy(update={"metrics": metrics})
+                proposal.model_copy(
+                    update={
+                        "ambiguities": [ambiguity],
+                        "metrics": metrics,
+                    }
+                )
             ),
             generated_at=GENERATED_AT,
         )
@@ -831,9 +847,56 @@ def test_quality_profile_rejects_bad_ai_candidate_and_synthesizes_metric() -> No
         "Synthesized from configured quality profile spec "
         "adventureworks.revenue.net_header"
     )
+    assert net_revenue.compiler_eligibility == "eligible_with_disclosure"
+    assert "AI_REJECTED_REVENUE_AMBIGUITY" not in {
+        ambiguity.code for ambiguity in result.semantic_layer.ambiguities
+    }
+    assert "AI_AMBIGUITY_TARGET_NOT_RESOLVED" in {
+        issue.code for issue in result.semantic_layer.quality_report.issues
+    }
     assert result.semantic_layer.quality_report.rejected_candidates[0].reason_code == (
         "AI_REQUIRED_METRIC_MISMATCH"
     )
+
+
+def test_uncompilable_optional_ai_metric_is_rejected_not_global_failure() -> None:
+    graph = adventureworks_graph()
+    policy = semantic_policy()
+    seed = build_semantic_seed(
+        graph=graph,
+        semantic_version_id=SEMANTIC_VERSION_ID,
+        queryability_graph_version_id=GRAPH_VERSION_ID,
+        version=1,
+        semantic_policy=policy,
+    )
+    proposal = proposal_from_fixture()
+    metrics = list(proposal.metrics)
+    metrics[0] = metrics[0].model_copy(
+        update={
+            "default_date_column_key": column_key(
+                "ProductCategory",
+                "ProductCategoryID",
+            )
+        }
+    )
+
+    result = asyncio.run(
+        generate_semantic_layer(
+            graph=graph,
+            seed=seed,
+            gateway=FakeGateway(proposal.model_copy(update={"metrics": metrics})),
+            semantic_policy=policy,
+            generated_at=GENERATED_AT,
+        )
+    )
+
+    assert "AI_METRIC_COMPILATION_FAILED" in {
+        issue.code for issue in result.semantic_layer.quality_report.issues
+    }
+    assert "AI_METRIC_COMPILATION_FAILED" in {
+        item.reason_code
+        for item in result.semantic_layer.quality_report.rejected_candidates
+    }
 
 
 def test_multiple_shortest_safe_paths_become_material_metric_ambiguity() -> None:

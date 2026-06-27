@@ -1054,12 +1054,7 @@ def _evaluate_quality_gate(
     issues: list[SemanticValidationIssue],
 ) -> SemanticQualityReport:
     policy = layer.semantic_policy_snapshot
-    generated_issues = [
-        issue
-        for issue in layer.quality_report.issues
-        if issue.code == "AI_REQUIRED_METRIC_MISMATCH"
-    ]
-    quality_issues = list(generated_issues)
+    quality_issues = list(layer.quality_report.issues)
     concept_keys = {
         concept.canonical_name: concept.business_concept_key
         for concept in layer.business_concepts
