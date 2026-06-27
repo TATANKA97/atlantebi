@@ -585,6 +585,46 @@ def test_table_and_column_revenue_ambiguities_do_not_block_policy_resolved_metri
     assert "SEMANTIC_AMBIGUITY_DECLARED" in net_revenue.validation_warnings
 
 
+def test_duplicate_metric_synonym_warns_without_blocking_required_metric() -> None:
+    proposal = proposal_from_fixture()
+    metrics = [
+        metric.model_copy(
+            update={
+                "synonyms": (
+                    [*metric.synonyms, "Product Revenue"]
+                    if metric.metric_variant in {"net_header", "line_detail"}
+                    else metric.synonyms
+                )
+            }
+        )
+        for metric in proposal.metrics
+    ]
+
+    result = asyncio.run(
+        generate_semantic_layer(
+            graph=adventureworks_graph(),
+            seed=semantic_seed(),
+            gateway=FakeGateway(proposal.model_copy(update={"metrics": metrics})),
+            generated_at=GENERATED_AT,
+        )
+    )
+    net_revenue = next(
+        metric
+        for metric in result.semantic_layer.metrics
+        if metric.metric_variant == "net_header"
+    )
+    line_revenue = next(
+        metric
+        for metric in result.semantic_layer.metrics
+        if metric.metric_variant == "line_detail"
+    )
+
+    assert net_revenue.compiler_eligibility == "eligible_with_disclosure"
+    assert line_revenue.compiler_eligibility == "eligible_with_disclosure"
+    assert "DUPLICATE_METRIC_SYNONYM" in net_revenue.validation_warnings
+    assert "DUPLICATE_METRIC_SYNONYM" in line_revenue.validation_warnings
+
+
 def test_server_computes_dimension_safety_and_blocks_header_detail_fanout() -> None:
     result = asyncio.run(
         generate_semantic_layer(
