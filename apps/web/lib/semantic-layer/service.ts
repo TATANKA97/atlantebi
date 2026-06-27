@@ -223,9 +223,14 @@ export type SemanticVersionSummary = {
   updated_at: string;
   activated_at: string | null;
   archived_at: string | null;
+  artifact_status: "compatible" | "incompatible";
+  artifact_error: string | null;
 };
 
-type SemanticVersionRow = Omit<SemanticVersionSummary, "effective_freshness"> & {
+type SemanticVersionRow = Omit<
+  SemanticVersionSummary,
+  "artifact_error" | "artifact_status" | "effective_freshness"
+> & {
   artifact: unknown;
   base_graph_hash: string;
   base_policy_hash: string;
@@ -262,19 +267,23 @@ export async function listSemanticVersions({
   const [versions, currentGraph, currentPolicy] = await Promise.all([
     readSemanticVersionRows(context.tenantId, connectionId, false),
     readCurrentGraph(context.tenantId, connectionId, false),
-    readCurrentSemanticPolicy(context.tenantId, connectionId, false)
+    readCurrentSemanticPolicy(context.tenantId, connectionId, false).catch(
+      (error: unknown) => {
+        console.error("Semantic policy could not be read while listing versions", {
+          connection_id: connectionId,
+          error:
+            error instanceof Error
+              ? { message: error.message, name: error.name }
+              : { type: typeof error }
+        });
+        return null;
+      }
+    )
   ]);
   const currentGraphHash = currentGraph?.graph_hash;
-  return versions.map((version) => ({
-    ...version,
-    effective_freshness:
-      currentGraphHash &&
-      currentPolicy &&
-      version.base_graph_hash === currentGraphHash &&
-      version.base_policy_hash === currentPolicy.policy_hash
-        ? "fresh"
-        : "stale"
-  }));
+  return versions.map((version) =>
+    toVersionSummary(version, currentGraphHash, currentPolicy?.policy_hash)
+  );
 }
 
 export async function readSemanticLayerVersion({
@@ -293,7 +302,7 @@ export async function readSemanticLayerVersion({
     readCurrentSemanticPolicy(context.tenantId, row.connection_id, false)
   ]);
   return {
-    artifact: SemanticLayerSchema.parse(row.artifact),
+    artifact: parseSemanticLayerArtifact(row.artifact, row.id),
     summary: toVersionSummary(row, graph?.graph_hash, policy?.policy_hash)
   };
 }
@@ -310,10 +319,13 @@ export async function readCurrentSemanticLayer({
     connectionId,
     true
   );
+  const compatibleVersions = versions.filter(
+    (version) => semanticArtifactCompatibility(version.artifact).status === "compatible"
+  );
   const selected =
-    versions.find((version) => version.status === "active") ??
-    versions.find((version) => version.status === "proposed") ??
-    versions.find((version) => version.status === "draft") ??
+    compatibleVersions.find((version) => version.status === "active") ??
+    compatibleVersions.find((version) => version.status === "proposed") ??
+    compatibleVersions.find((version) => version.status === "draft") ??
     null;
   if (!selected) {
     return null;
@@ -323,7 +335,7 @@ export async function readCurrentSemanticLayer({
     readCurrentSemanticPolicy(context.tenantId, connectionId, false)
   ]);
   return {
-    artifact: SemanticLayerSchema.parse(selected.artifact),
+    artifact: parseSemanticLayerArtifact(selected.artifact, selected.id),
     summary: toVersionSummary(
       selected,
       graph?.graph_hash,
@@ -467,7 +479,7 @@ export async function generateSemanticDraft({
           {
             graph: graphRow.graph,
             provider_config: providerConfig,
-            seed: SemanticLayerSchema.parse(row.artifact),
+            seed: parseSemanticLayerArtifact(row.artifact, row.id),
             semantic_policy: semanticPolicy
           },
           SemanticGenerationResultSchema,
@@ -743,7 +755,7 @@ export async function rebaseSemanticVersion({
       {
         queryability_graph_version_id: graphRow.id,
         semantic_version_id: targetVersionId,
-        source_layer: SemanticLayerSchema.parse(source.artifact),
+        source_layer: parseSemanticLayerArtifact(source.artifact, source.id),
         semantic_policy: semanticPolicy,
         target_graph: graphRow.graph,
         version
@@ -807,7 +819,7 @@ async function reviewAndPersist({
         graph: graphRow.graph,
         patch,
         semantic_policy: semanticPolicy,
-        source_layer: SemanticLayerSchema.parse(row.artifact)
+        source_layer: parseSemanticLayerArtifact(row.artifact, row.id)
       },
       SemanticLayerSchema,
       60_000
@@ -1166,6 +1178,7 @@ function toVersionSummary(
   currentGraphHash: string | undefined,
   currentPolicyHash: string | undefined
 ): SemanticVersionSummary {
+  const artifactCompatibility = semanticArtifactCompatibility(row.artifact);
   return {
     id: row.id,
     connection_id: row.connection_id,
@@ -1181,6 +1194,8 @@ function toVersionSummary(
     updated_at: row.updated_at,
     activated_at: row.activated_at,
     archived_at: row.archived_at,
+    artifact_status: artifactCompatibility.status,
+    artifact_error: artifactCompatibility.error,
     effective_freshness:
       currentGraphHash &&
       currentPolicyHash &&
@@ -1188,6 +1203,43 @@ function toVersionSummary(
       row.base_policy_hash === currentPolicyHash
         ? "fresh"
         : "stale"
+  };
+}
+
+function parseSemanticLayerArtifact(
+  artifact: unknown,
+  semanticVersionId?: string
+): SemanticLayer {
+  const parsed = SemanticLayerSchema.safeParse(artifact);
+  if (!parsed.success) {
+    const firstIssue = parsed.error.issues[0];
+    const detail = firstIssue
+      ? `${firstIssue.path.join(".") || "<root>"}: ${firstIssue.message}`
+      : "unknown schema mismatch";
+    throw new SemanticLayerServiceError(
+      "semantic_artifact_incompatible",
+      `Semantic Layer artifact incompatible: ${detail}`,
+      422,
+      semanticVersionId
+    );
+  }
+  return parsed.data;
+}
+
+function semanticArtifactCompatibility(artifact: unknown): {
+  status: "compatible" | "incompatible";
+  error: string | null;
+} {
+  const parsed = SemanticLayerSchema.safeParse(artifact);
+  if (parsed.success) {
+    return { status: "compatible", error: null };
+  }
+  const firstIssue = parsed.error.issues[0];
+  return {
+    status: "incompatible",
+    error: firstIssue
+      ? `${firstIssue.path.join(".") || "<root>"}: ${firstIssue.message}`
+      : "unknown schema mismatch"
   };
 }
 
