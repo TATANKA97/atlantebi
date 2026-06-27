@@ -34,6 +34,7 @@ from app.semantic_discovery import (
     SemanticDiscoveryError,
     SemanticDiscoveryInputTooLarge,
     SemanticDiscoveryProviderConfigurationError,
+    SemanticDiscoveryProviderRateLimited,
     SemanticDiscoveryRefused,
     SemanticProposalInvalid,
     _compile_anthropic_concepts,
@@ -267,6 +268,16 @@ class FakeGateway:
         )
 
 
+class FailingGateway(FakeGateway):
+    def __init__(self, error: SemanticDiscoveryError) -> None:
+        self.error = error
+        self.received = None
+
+    async def generate(self, discovery_input):
+        self.received = discovery_input
+        raise self.error
+
+
 def test_discovery_input_is_allowlisted_and_omits_excluded_sensitive_metadata() -> None:
     discovery_input = build_semantic_discovery_input(
         adventureworks_graph(), semantic_policy()
@@ -311,6 +322,47 @@ def test_discovery_input_is_invariant_to_graph_collection_order() -> None:
     ).model_dump(mode="json") == build_semantic_discovery_input(
         reordered_graph, semantic_policy()
     ).model_dump(mode="json")
+
+
+def test_provider_failure_uses_quality_profile_fallback_for_required_specs() -> None:
+    result = asyncio.run(
+        generate_semantic_layer(
+            graph=adventureworks_graph(),
+            seed=semantic_seed(),
+            gateway=FailingGateway(SemanticDiscoveryError("provider stream failed")),
+            generated_at=GENERATED_AT,
+        )
+    )
+    metrics = {
+        metric.metric_variant: metric for metric in result.semantic_layer.metrics
+    }
+    issue_codes = {
+        issue.code for issue in result.semantic_layer.quality_report.issues
+    }
+
+    assert result.proposal.metrics == []
+    assert result.provenance.response_id == "quality_profile_fallback"
+    assert result.semantic_layer.quality_report.status == "passed"
+    assert "AI_PROVIDER_FALLBACK_USED" in issue_codes
+    assert metrics["net_header"].provenance_detail == "quality_profile"
+    assert metrics["net_header"].compiler_eligibility == "eligible_with_disclosure"
+    assert metrics["line_quantity"].default_date_column_key == column_key(
+        "SalesOrderHeader", "OrderDate"
+    )
+
+
+def test_provider_rate_limit_does_not_use_quality_profile_fallback() -> None:
+    with pytest.raises(SemanticDiscoveryProviderRateLimited):
+        asyncio.run(
+            generate_semantic_layer(
+                graph=adventureworks_graph(),
+                seed=semantic_seed(),
+                gateway=FailingGateway(
+                    SemanticDiscoveryProviderRateLimited("provider rate limit")
+                ),
+                generated_at=GENERATED_AT,
+            )
+        )
 
 
 def test_discovery_input_never_truncates_silently(monkeypatch) -> None:
