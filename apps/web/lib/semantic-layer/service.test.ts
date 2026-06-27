@@ -51,9 +51,11 @@ vi.mock("../tenant", () => ({
   canManageSemanticLayer: mocks.canManageSemanticLayer
 }));
 
-const { createAndGenerateSemanticDraft, SemanticDraftPatchSchema } = await import(
-  "./service"
-);
+const {
+  createAndGenerateSemanticDraft,
+  listSemanticVersions,
+  SemanticDraftPatchSchema
+} = await import("./service");
 
 const tenantId = "20000000-0000-4000-8000-000000000001";
 const userId = "10000000-0000-4000-8000-000000000001";
@@ -102,6 +104,7 @@ function semanticTableRows() {
 
 function createSupabaseMock() {
   const tableRows = semanticTableRows();
+  const selectedFields: Record<string, string[]> = {};
   const from = vi.fn((table: keyof ReturnType<typeof semanticTableRows>) => {
     const response = tableRows[table] ?? { data: null, single: true };
     const chain = {
@@ -112,7 +115,12 @@ function createSupabaseMock() {
         error: null
       })),
       order: vi.fn(() => chain),
-      select: vi.fn(() => chain),
+      select: vi.fn((fields: string) => {
+        const tableName = String(table);
+        selectedFields[tableName] ??= [];
+        selectedFields[tableName].push(fields);
+        return chain;
+      }),
       then: (
         resolve: (value: { data: unknown; error: null }) => unknown,
         reject?: (reason: unknown) => unknown
@@ -126,6 +134,7 @@ function createSupabaseMock() {
   });
   return {
     from,
+    selectedFields,
     rpc: mocks.rpc
   };
 }
@@ -243,6 +252,27 @@ describe("createAndGenerateSemanticDraft", () => {
     expect(mocks.rpc).not.toHaveBeenCalledWith(
       "persist_semantic_layer_version",
       expect.any(Object)
+    );
+  });
+});
+
+describe("listSemanticVersions", () => {
+  it("loads artifacts before computing compatibility badges", async () => {
+    const client = createSupabaseMock();
+    mocks.createSupabaseAdminClient.mockReturnValue(client);
+
+    await listSemanticVersions({
+      connectionId,
+      context: {
+        role: "owner",
+        supabase: {} as never,
+        tenantId,
+        userId
+      }
+    });
+
+    expect(client.selectedFields.semantic_layer_versions).toEqual(
+      expect.arrayContaining([expect.stringContaining("artifact")])
     );
   });
 });
