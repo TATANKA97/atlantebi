@@ -60,6 +60,7 @@ _DECLARED_AMBIGUITY_CLARIFICATION_CODES = {
     "CUSTOMER_POPULATION_AMBIGUOUS",
     "MULTIPLE_SHORTEST_SAFE_PATHS",
 }
+_CUSTOMER_EXPLICIT_VARIANTS = {"order_customers", "customer_master"}
 
 
 def build_semantic_seed(
@@ -2295,6 +2296,11 @@ def _validate_declared_ambiguities(
         if ambiguity.target_type == "business_concept":
             for metric in metrics:
                 if str(metric.business_concept_key) == ambiguity.target_key:
+                    if _concept_ambiguity_is_resolved_for_metric(
+                        ambiguity,
+                        metric,
+                    ):
+                        continue
                     _issue_once(
                         issues,
                         issue_code,
@@ -2346,6 +2352,16 @@ def _validate_declared_ambiguities(
                         ambiguity.summary,
                         evidence={"ambiguity_code": ambiguity.code},
                     )
+
+
+def _concept_ambiguity_is_resolved_for_metric(
+    ambiguity: SemanticAmbiguity,
+    metric: SemanticMetric,
+) -> bool:
+    return (
+        ambiguity.code == "CUSTOMER_POPULATION_AMBIGUOUS"
+        and metric.metric_variant in _CUSTOMER_EXPLICIT_VARIANTS
+    )
 
 
 def _validate_graph_coverage(

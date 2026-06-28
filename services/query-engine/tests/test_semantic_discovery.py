@@ -475,14 +475,14 @@ def test_adventureworks_proposal_compiles_and_validates_with_expected_metrics() 
     assert result.semantic_layer.quality_report.satisfied_specs_count == 7
     assert result.semantic_layer.quality_report.compiler_eligible_required_count == 4
     assert all(
-        metric.compiler_eligibility == "clarification_required"
+        metric.compiler_eligibility == "eligible_with_disclosure"
         for metric in customer_metrics
     )
     assert result.provenance.response_id == "resp_fixture"
     assert result.provenance.generated_at == "2026-06-14T10:00:00Z"
 
 
-def test_declared_ambiguity_drives_clarification_without_synonym_collision() -> None:
+def test_declared_customer_ambiguity_does_not_block_specific_metrics() -> None:
     proposal = proposal_from_fixture()
     metrics = [
         metric.model_copy(
@@ -513,11 +513,11 @@ def test_declared_ambiguity_drives_clarification_without_synonym_collision() -> 
     ]
 
     assert all(
-        metric.compiler_eligibility == "clarification_required"
+        metric.compiler_eligibility == "eligible_with_disclosure"
         for metric in customer_metrics
     )
     assert all(
-        "SEMANTIC_AMBIGUITY_DECLARED" in metric.validation_warnings
+        "SEMANTIC_AMBIGUITY_DECLARED" not in metric.validation_warnings
         for metric in customer_metrics
     )
 
@@ -568,7 +568,7 @@ def test_customer_quality_profile_synthesis_declares_system_ambiguity() -> None:
         for metric in customer_metrics
     )
     assert all(
-        metric.compiler_eligibility == "clarification_required"
+        metric.compiler_eligibility == "eligible_with_disclosure"
         for metric in customer_metrics
     )
 
@@ -713,6 +713,135 @@ def test_server_computes_dimension_safety_and_blocks_header_detail_fanout() -> N
     assert header_category.reason_code == "CHILD_ONE_TO_MANY"
     assert detail_category.safety == "safe"
     assert detail_category.reason_code == "TRUSTED_PARENT_PATH"
+
+
+def test_intent_readiness_uses_safe_metric_variants_and_business_dates() -> None:
+    result = asyncio.run(
+        generate_semantic_layer(
+            graph=adventureworks_graph(),
+            seed=semantic_seed(),
+            gateway=FakeGateway(proposal_from_fixture()),
+            generated_at=GENERATED_AT,
+        )
+    )
+    metrics = {
+        metric.canonical_name: metric for metric in result.semantic_layer.metrics
+    }
+
+    net_revenue = metrics["fatturato_netto"]
+    document_total = metrics["totale_documento"]
+    line_revenue = metrics["fatturato_righe"]
+    quantity = metrics["quantita_venduta"]
+    order_customers = metrics["clienti_ordini"]
+    master_customers = metrics["clienti_anagrafica"]
+
+    assert net_revenue.measure_column_key == column_key(
+        "SalesOrderHeader", "SubTotal"
+    )
+    assert net_revenue.default_date_column_key == column_key(
+        "SalesOrderHeader", "OrderDate"
+    )
+    assert document_total.measure_column_key == column_key(
+        "SalesOrderHeader", "TotalDue"
+    )
+    assert document_total.default_date_column_key == column_key(
+        "SalesOrderHeader", "OrderDate"
+    )
+    assert quantity.measure_column_key == column_key("SalesOrderDetail", "OrderQty")
+    assert quantity.default_date_column_key == column_key(
+        "SalesOrderHeader", "OrderDate"
+    )
+    assert edge_key("FK_Detail_Header") in quantity.required_join_edge_keys
+
+    header_category = next(
+        item
+        for item in net_revenue.common_dimension_compatibility
+        if item.dimension_column_key
+        == column_key("ProductCategory", "ProductCategoryID")
+    )
+    line_category = next(
+        item
+        for item in line_revenue.common_dimension_compatibility
+        if item.dimension_column_key
+        == column_key("ProductCategory", "ProductCategoryID")
+    )
+    quantity_category = next(
+        item
+        for item in quantity.common_dimension_compatibility
+        if item.dimension_column_key
+        == column_key("ProductCategory", "ProductCategoryID")
+    )
+
+    assert header_category.safety == "forbidden"
+    assert line_category.safety == "safe"
+    assert quantity_category.safety == "safe"
+    assert order_customers.compiler_eligibility == "eligible_with_disclosure"
+    assert master_customers.compiler_eligibility == "eligible_with_disclosure"
+    assert any(
+        ambiguity.code == "CUSTOMER_POPULATION_AMBIGUOUS"
+        and ambiguity.status == "open"
+        for ambiguity in result.semantic_layer.ambiguities
+    )
+
+
+def test_policy_and_graph_resolved_ambiguities_are_not_left_open() -> None:
+    proposal = proposal_from_fixture()
+    ambiguities = [
+        AISemanticAmbiguity(
+            code="REVENUE_GRAIN_SELECTION",
+            target_type="business_concept",
+            target_ref="revenue",
+            summary="Revenue grain must be selected.",
+            clarification_question="Which revenue grain should be used?",
+            severity="material_ambiguity",
+        ),
+        AISemanticAmbiguity(
+            code="LINE_DATE_FROM_PARENT",
+            target_type="metric",
+            target_ref="quantita_venduta",
+            summary="Line metric needs a parent business date.",
+            clarification_question="Which date should be used for line metrics?",
+            severity="material_ambiguity",
+        ),
+    ]
+
+    compiled = compile_semantic_proposal(
+        graph=adventureworks_graph(),
+        seed=semantic_seed(),
+        proposal=proposal.model_copy(update={"ambiguities": ambiguities}),
+        model_version="fixture-model-v2",
+    )
+    by_code = {ambiguity.code: ambiguity for ambiguity in compiled.ambiguities}
+
+    assert by_code["REVENUE_GRAIN_SELECTION"].status == "resolved"
+    assert by_code["REVENUE_GRAIN_SELECTION"].severity == "info"
+    assert by_code["LINE_DATE_FROM_PARENT"].status == "resolved"
+    assert by_code["LINE_DATE_FROM_PARENT"].severity == "info"
+
+
+def test_document_total_name_is_normalized_from_quality_spec() -> None:
+    proposal = proposal_from_fixture()
+    metrics = [
+        metric.model_copy(update={"name": "Document Total Revenue"})
+        if metric.metric_variant == "document_total"
+        else metric
+        for metric in proposal.metrics
+    ]
+
+    compiled = compile_semantic_proposal(
+        graph=adventureworks_graph(),
+        seed=semantic_seed(),
+        proposal=proposal.model_copy(update={"metrics": metrics}),
+        model_version="fixture-model-v2",
+    )
+    document_total = next(
+        metric
+        for metric in compiled.metrics
+        if metric.metric_variant == "document_total"
+    )
+
+    assert document_total.name != "Document Total Revenue"
+    assert document_total.name == "Totale Documento"
 
 
 def test_compilation_is_canonical_and_assigns_stable_server_ids() -> None:
