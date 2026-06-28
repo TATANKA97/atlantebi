@@ -66,8 +66,13 @@ ANTHROPIC_ANNOTATION_OUTPUT_TOKENS = 8_000
 ANTHROPIC_METRIC_OUTPUT_TOKENS = 12_000
 ANTHROPIC_SEMANTIC_PHASE_TIMEOUT_SECONDS = 240
 ANTHROPIC_SEMANTIC_TOTAL_TIMEOUT_SECONDS = 450
+ANTHROPIC_ANNOTATION_TABLE_RECOMMENDED_COUNT = 20
+ANTHROPIC_ANNOTATION_COLUMN_RECOMMENDED_COUNT = 32
+ANTHROPIC_ANNOTATION_CONCEPT_RECOMMENDED_COUNT = 12
 
 logger = logging.getLogger(__name__)
+
+_Item = TypeVar("_Item")
 
 
 @dataclass(frozen=True)
@@ -280,13 +285,20 @@ class AnthropicSemanticDiscoveryGateway:
             effort="low",
             phase_instruction=(
                 "Propose table and column annotations plus business concepts. "
-                "Keep the proposal sparse and business-relevant: at most 20 "
-                "tables, 32 columns, and 12 business concepts. Omit low-value "
-                "technical identifiers unless a metric needs them. Report "
-                "business concept uncertainty inside the ambiguities list of "
-                "the concept it affects. Do not propose metrics in this phase."
+                "Keep the proposal business-relevant: annotate only tables and "
+                "columns where a readable label, description, role, synonym, or "
+                "format hint adds real semantic value. For small schemas, a "
+                f"compact proposal around {ANTHROPIC_ANNOTATION_TABLE_RECOMMENDED_COUNT} "
+                f"tables, {ANTHROPIC_ANNOTATION_COLUMN_RECOMMENDED_COUNT} columns, "
+                f"and {ANTHROPIC_ANNOTATION_CONCEPT_RECOMMENDED_COUNT} business "
+                "concepts is usually enough; for larger schemas, include every "
+                "additional annotation that is materially useful. Omit low-value "
+                "technical identifiers unless a metric needs them. Report business "
+                "concept uncertainty inside the ambiguities list of the concept it "
+                "affects. Do not propose metrics in this phase."
             ),
         )
+        annotations = _normalize_anthropic_annotations_output(annotations)
         concept_proposals, concept_ambiguities = _compile_anthropic_concepts(
             annotations.business_concepts
         )
@@ -432,6 +444,63 @@ class AnthropicSemanticDiscoveryGateway:
             getattr(usage, "output_tokens", "unavailable"),
         )
         return response, parsed_output
+
+
+def _normalize_anthropic_annotations_output(
+    output: AnthropicSemanticAnnotationsOutput,
+) -> AnthropicSemanticAnnotationsOutput:
+    return output.model_copy(
+        update={
+            "tables": _dedupe_anthropic_annotations(
+                output.tables,
+                key=lambda item: str(item.node_key),
+                field_name="tables",
+                recommended_count=ANTHROPIC_ANNOTATION_TABLE_RECOMMENDED_COUNT,
+            ),
+            "columns": _dedupe_anthropic_annotations(
+                output.columns,
+                key=lambda item: str(item.column_key),
+                field_name="columns",
+                recommended_count=ANTHROPIC_ANNOTATION_COLUMN_RECOMMENDED_COUNT,
+            ),
+            "business_concepts": _dedupe_anthropic_annotations(
+                output.business_concepts,
+                key=lambda item: item.concept_ref,
+                field_name="business_concepts",
+                recommended_count=ANTHROPIC_ANNOTATION_CONCEPT_RECOMMENDED_COUNT,
+            ),
+        }
+    )
+
+
+def _dedupe_anthropic_annotations(
+    items: list[_Item],
+    *,
+    key: Callable[[_Item], str],
+    field_name: str,
+    recommended_count: int,
+) -> list[_Item]:
+    deduped: list[_Item] = []
+    seen: set[str] = set()
+    for item in items:
+        item_key = key(item)
+        if item_key in seen:
+            continue
+        seen.add(item_key)
+        deduped.append(item)
+
+    duplicates = len(items) - len(deduped)
+    if duplicates or len(deduped) > recommended_count:
+        logger.warning(
+            "Anthropic semantic annotations normalized: field=%s received=%s "
+            "unique=%s recommended=%s duplicates_ignored=%s",
+            field_name,
+            len(items),
+            len(deduped),
+            recommended_count,
+            duplicates,
+        )
+    return deduped
 
 
 def _compile_anthropic_concepts(
@@ -1899,9 +1968,6 @@ def _stable_uuid(connection_id: UUID, *parts: str) -> UUID:
         NAMESPACE_URL,
         ":".join(["atlante", str(connection_id), *parts]),
     )
-
-
-_Item = TypeVar("_Item")
 
 
 def _unique_ai_proposals_by_key(

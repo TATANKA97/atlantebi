@@ -1380,10 +1380,10 @@ class AnthropicSemanticBusinessConceptProposal(
 
 class AnthropicSemanticAnnotationsOutput(StrictModel):
     contract_version: Literal["semantic_ai_draft.v1"]
-    tables: list[AISemanticTableProposal] = Field(max_length=20)
-    columns: list[AISemanticColumnProposal] = Field(max_length=32)
+    tables: list[AISemanticTableProposal] = Field(max_length=5_000)
+    columns: list[AISemanticColumnProposal] = Field(max_length=250_000)
     business_concepts: list[AnthropicSemanticBusinessConceptProposal] = Field(
-        max_length=12
+        max_length=10_000
     )
 
 
