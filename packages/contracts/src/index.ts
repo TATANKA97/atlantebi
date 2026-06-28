@@ -2046,6 +2046,186 @@ export const QueryPermissionSchema = z.strictObject({
 });
 export type QueryPermission = z.infer<typeof QueryPermissionSchema>;
 
+export const QueryIntentUnsupportedReasonSchema = z.enum([
+  "multi_metric_not_supported",
+  "unsafe_dimension_for_metric",
+  "semantic_layer_stale",
+  "metric_not_eligible",
+  "sensitive_filter_not_allowed",
+  "unsupported_time_expression",
+  "unsupported_calculated_metric",
+  "unsupported_comparison"
+]);
+export type QueryIntentUnsupportedReason = z.infer<
+  typeof QueryIntentUnsupportedReasonSchema
+>;
+
+export const QueryIntentPolicySchema = z.strictObject({
+  order_status_scope: z
+    .enum(["all_statuses_with_disclosure", "clarification_required"])
+    .default("all_statuses_with_disclosure")
+});
+export type QueryIntentPolicy = z.infer<typeof QueryIntentPolicySchema>;
+
+export const QueryIntentAICandidateSchema = z.strictObject({
+  primary_metric_key: z.string().uuid().nullable().default(null),
+  dimension_column_key: Sha256Schema.nullable().default(null),
+  filter_column_keys: z.array(Sha256Schema).max(10).default([])
+});
+export type QueryIntentAICandidate = z.infer<typeof QueryIntentAICandidateSchema>;
+
+export const QueryIntentRequestSchema = z
+  .strictObject({
+    tenant_id: z.string().uuid(),
+    connection_id: z.string().uuid(),
+    user_id: z.string().uuid(),
+    question: z.string().min(1).max(1000),
+    semantic_layer: SemanticLayerSchema,
+    graph: QueryabilityGraphArtifactSchema,
+    policy: QueryIntentPolicySchema.default({
+      order_status_scope: "all_statuses_with_disclosure"
+    }),
+    ai_enabled: z.boolean().default(false),
+    ai_candidate: QueryIntentAICandidateSchema.nullish()
+  })
+  .superRefine((request, context) => {
+    if (
+      request.semantic_layer.tenant_id !== request.tenant_id ||
+      request.semantic_layer.connection_id !== request.connection_id ||
+      request.graph.tenant_id !== request.tenant_id ||
+      request.graph.connection_id !== request.connection_id
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["semantic_layer"],
+        message:
+          "semantic_layer and graph tenant/connection must match the request"
+      });
+    }
+  });
+export type QueryIntentRequest = z.infer<typeof QueryIntentRequestSchema>;
+
+export const QueryIntentTimeRangeSchema = z.strictObject({
+  kind: z.enum(["year", "month", "custom"]),
+  start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  label: z.string().min(1).max(100)
+});
+export type QueryIntentTimeRange = z.infer<typeof QueryIntentTimeRangeSchema>;
+
+export const QueryIntentGroupByDimensionSchema = z.strictObject({
+  column_key: Sha256Schema,
+  edge_path: z.array(Sha256Schema).max(4).default([]),
+  safety: z.literal("safe")
+});
+export type QueryIntentGroupByDimension = z.infer<
+  typeof QueryIntentGroupByDimensionSchema
+>;
+
+export const QueryIntentRejectedAlternativeSchema = z.strictObject({
+  reason: QueryIntentUnsupportedReasonSchema,
+  metric_key: z.string().uuid().nullish(),
+  dimension_column_key: Sha256Schema.nullish(),
+  message: z.string().min(1).max(500)
+});
+export type QueryIntentRejectedAlternative = z.infer<
+  typeof QueryIntentRejectedAlternativeSchema
+>;
+
+export const QueryIntentAuditEventSchema = z.strictObject({
+  code: z.string().regex(/^[A-Z][A-Z0-9_]{1,99}$/),
+  message: z.string().min(1).max(500),
+  metadata: z
+    .record(z.string().min(1).max(100), z.union([z.string(), z.number(), z.boolean()]))
+    .default({})
+});
+export type QueryIntentAuditEvent = z.infer<typeof QueryIntentAuditEventSchema>;
+
+export const QueryIntentClarificationOptionSchema = z.strictObject({
+  label: z.string().min(1).max(255),
+  value: z.string().min(1).max(100),
+  metric_key: z.string().uuid().nullish(),
+  business_concept_ref: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/).nullish(),
+  metric_variant: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/).nullish()
+});
+export type QueryIntentClarificationOption = z.infer<
+  typeof QueryIntentClarificationOptionSchema
+>;
+
+export const QueryIntentClarificationSchema = z.strictObject({
+  reason_code: z.string().regex(/^[A-Z][A-Z0-9_]{1,99}$/),
+  question: z.string().min(1).max(500),
+  options: z.array(QueryIntentClarificationOptionSchema).min(1).max(10)
+});
+export type QueryIntentClarification = z.infer<
+  typeof QueryIntentClarificationSchema
+>;
+
+export const QueryIntentPlanSchema = z.strictObject({
+  primary_metric_key: z.string().uuid(),
+  requested_concept_ref: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
+  selected_variant: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
+  effective_date_column_key: Sha256Schema.nullish(),
+  time_range: QueryIntentTimeRangeSchema.nullish(),
+  group_by_dimensions: z.array(QueryIntentGroupByDimensionSchema).max(1).default([]),
+  required_edge_path_keys: z.array(Sha256Schema).max(4).default([]),
+  grain_safety_decision: z.literal("safe"),
+  filters: z.array(SemanticFilterSchema).max(10).default([]),
+  rejected_alternatives: z
+    .array(QueryIntentRejectedAlternativeSchema)
+    .max(20)
+    .default([]),
+  disclosures: z.array(z.string().min(1).max(500)).max(20).default([]),
+  audit_trail: z.array(QueryIntentAuditEventSchema).max(100).default([])
+});
+export type QueryIntentPlan = z.infer<typeof QueryIntentPlanSchema>;
+
+export const QueryIntentResultSchema = z
+  .strictObject({
+    status: z.enum(["ready", "needs_clarification", "blocked"]),
+    unsupported_reason: QueryIntentUnsupportedReasonSchema.nullish(),
+    plan: QueryIntentPlanSchema.nullish(),
+    clarification: QueryIntentClarificationSchema.nullish(),
+    audit_trail: z.array(QueryIntentAuditEventSchema).max(100).default([]),
+    message: z.string().min(1).max(500)
+  })
+  .superRefine((result, context) => {
+    if (
+      result.status === "ready" &&
+      (result.plan == null ||
+        result.clarification != null ||
+        result.unsupported_reason != null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "ready intent results require only a plan"
+      });
+    }
+    if (
+      result.status === "needs_clarification" &&
+      (result.clarification == null ||
+        result.plan != null ||
+        result.unsupported_reason != null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "needs_clarification intent results require only clarification"
+      });
+    }
+    if (
+      result.status === "blocked" &&
+      (result.plan != null ||
+        result.clarification != null ||
+        result.unsupported_reason == null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "blocked intent results require unsupported_reason only"
+      });
+    }
+  });
+export type QueryIntentResult = z.infer<typeof QueryIntentResultSchema>;
+
 export const QueryRequestSchema = z
   .strictObject({
     tenant_id: z.string().uuid(),

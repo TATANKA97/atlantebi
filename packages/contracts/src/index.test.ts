@@ -8,6 +8,8 @@ import {
   ConnectionTestResponseSchema,
   DatabaseCredentialsSchema,
   EngineSchema,
+  QueryIntentRequestSchema,
+  QueryIntentResultSchema,
   QueryResponseSchema,
   QueryRequestSchema,
   SemanticRelationshipSchema,
@@ -491,6 +493,121 @@ describe("contracts", () => {
           ...semanticLayerFixture,
           revision: semanticLayerFixture.revision + 1
         }
+      })
+    ).toThrow();
+  });
+
+  const queryabilityGraphFixture = {
+    contract_version: "queryability_graph.v1",
+    tenant_id: semanticLayerFixture.tenant_id,
+    connection_id: semanticLayerFixture.connection_id,
+    schema_snapshot_id: "33333333-3333-4333-8333-333333333333",
+    engine: "sqlserver",
+    schema_hash: "a".repeat(64),
+    snapshot_hash: "b".repeat(64),
+    graph_input_hash: "c".repeat(64),
+    derivation_key: "d".repeat(64),
+    graph_hash: semanticLayerFixture.base_graph_hash,
+    builder_version: "1.0.0",
+    policy_version: "1.0.0",
+    status: "complete",
+    status_reasons: [],
+    semantic_status: "not_initialized",
+    nodes: semanticLayerFixture.tables.map((table) => ({
+      node_key: table.node_key,
+      database_name: "AdventureWorksLT",
+      schema_name: table.schema_name,
+      object_name: table.object_name,
+      object_type: table.object_type,
+      queryability_status: table.queryability_status,
+      reason_codes: [],
+      bridge_candidate: false,
+      candidate_keys: [],
+      columns: semanticLayerFixture.columns
+        .filter((column) => column.node_key === table.node_key)
+        .map((column, index) => ({
+          column_key: column.column_key,
+          name: column.physical_name,
+          ordinal_position: index + 1,
+          native_type: column.native_type,
+          normalized_type: column.normalized_type,
+          technical_role: column.technical_role,
+          nullable: column.nullable,
+          queryability_status: column.queryability_status,
+          sensitivity: column.sensitivity,
+          reason_codes: []
+        }))
+    })),
+    edges: []
+  };
+
+  it("validates query intent requests with semantic layer and graph context", () => {
+    const parsed = QueryIntentRequestSchema.parse({
+      tenant_id: semanticLayerFixture.tenant_id,
+      connection_id: semanticLayerFixture.connection_id,
+      user_id: userId,
+      question: "fatturato 2008",
+      semantic_layer: semanticLayerFixture,
+      graph: queryabilityGraphFixture,
+      ai_enabled: false
+    });
+
+    expect(parsed.policy.order_status_scope).toBe("all_statuses_with_disclosure");
+  });
+
+  it("keeps query intent plans strict and SQL-free", () => {
+    const metric = semanticLayerFixture.metrics[0];
+    if (!metric) {
+      throw new Error("semantic fixture must include at least one metric");
+    }
+    const parsed = QueryIntentResultSchema.parse({
+      status: "ready",
+      plan: {
+        primary_metric_key: metric.metric_key,
+        requested_concept_ref: "records",
+        selected_variant: metric.metric_variant,
+        time_range: {
+          kind: "year",
+          start_date: "2008-01-01",
+          end_date: "2008-12-31",
+          label: "2008"
+        },
+        group_by_dimensions: [],
+        required_edge_path_keys: [],
+        grain_safety_decision: "safe",
+        filters: [],
+        rejected_alternatives: [],
+        disclosures: ["Order status scope defaults to all statuses in V1."],
+        audit_trail: []
+      },
+      audit_trail: [],
+      message: "Query intent resolved without SQL generation."
+    });
+
+    expect(parsed.plan?.selected_variant).toBe(metric.metric_variant);
+    expect(() =>
+      QueryIntentResultSchema.parse({
+        ...parsed,
+        sql: "select 1"
+      })
+    ).toThrow();
+  });
+
+  it("requires structured unsupported reasons for blocked query intents", () => {
+    expect(
+      QueryIntentResultSchema.parse({
+        status: "blocked",
+        unsupported_reason: "multi_metric_not_supported",
+        audit_trail: [],
+        message: "Query Intent Resolver V1 supports one primary metric per request."
+      }).unsupported_reason
+    ).toBe("multi_metric_not_supported");
+
+    expect(() =>
+      QueryIntentResultSchema.parse({
+        status: "blocked",
+        audit_trail: [],
+        message: "Missing reason."
       })
     ).toThrow();
   });

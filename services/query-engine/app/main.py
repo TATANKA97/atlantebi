@@ -19,6 +19,8 @@ from app.models import (
     ConnectionTestRequest,
     ConnectionTestResponse,
     HealthResponse,
+    QueryIntentRequest,
+    QueryIntentResult,
     QueryRequest,
     QueryResponse,
     QueryabilityCompileRequest,
@@ -37,6 +39,7 @@ from app.models import (
     SemanticValidationRequest,
 )
 from app.queryability import build_queryability_graph, find_queryability_paths
+from app.query_intent import resolve_query_intent
 from app.semantic import (
     build_semantic_seed,
     rebase_semantic_layer,
@@ -561,3 +564,15 @@ async def run_query(
             f"Validated request for tenant {request.tenant_id}."
         ),
     )
+
+
+@app.post(
+    "/query/intent/resolve",
+    response_model=QueryIntentResult,
+    response_model_exclude_none=True,
+)
+async def resolve_query_intent_endpoint(
+    request: QueryIntentRequest,
+    _: None = Depends(require_internal_auth),
+) -> QueryIntentResult:
+    return resolve_query_intent(request)
