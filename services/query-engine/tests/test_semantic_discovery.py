@@ -1368,6 +1368,124 @@ def test_anthropic_gateway_uses_structured_output_and_adaptive_effort() -> None:
     ]
 
 
+def test_anthropic_gateway_preserves_oversized_valid_annotations_before_metrics(
+    caplog,
+) -> None:
+    proposal = proposal_from_fixture()
+    discovery_input = build_semantic_discovery_input(
+        adventureworks_graph(),
+        semantic_policy(),
+    )
+
+    class FakeMessages:
+        def __init__(self) -> None:
+            self.calls = []
+            self.annotation_column_keys: list[str] = []
+
+        def stream(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs["output_format"] is AnthropicSemanticAnnotationsOutput:
+                input_payload = json.loads(kwargs["messages"][0]["content"])
+                self.annotation_column_keys = [
+                    item["column_key"] for item in input_payload["columns"][:33]
+                ]
+                output_column_keys = [
+                    *self.annotation_column_keys,
+                    self.annotation_column_keys[0],
+                ]
+                parsed_output = AnthropicSemanticAnnotationsOutput(
+                    contract_version=proposal.contract_version,
+                    tables=[],
+                    columns=[
+                        {
+                            "column_key": column_key_value,
+                            "display_name": f"Column {index}",
+                            "description": f"Column annotation {index}.",
+                            "synonyms": [],
+                            "semantic_role": "attribute",
+                            "format_hint": "text",
+                        }
+                        for index, column_key_value in enumerate(
+                            output_column_keys,
+                            start=1,
+                        )
+                    ],
+                    business_concepts=[
+                        AnthropicSemanticBusinessConceptProposal(
+                            **concept.model_dump(mode="json"),
+                            ambiguities=[],
+                        )
+                        for concept in proposal.business_concepts
+                    ],
+                )
+                response_id = "msg_anthropic_annotations"
+            else:
+                parsed_output = AnthropicSemanticMetricsOutput(
+                    metrics=[
+                        anthropic_metric_payload(metric)
+                        for metric in proposal.metrics
+                    ],
+                )
+                response_id = "msg_anthropic_metrics"
+            return FakeStreamManager(
+                SimpleNamespace(
+                    id=response_id,
+                    parsed_output=parsed_output,
+                )
+            )
+
+    class FakeStreamManager:
+        def __init__(self, response) -> None:
+            self.response = response
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback) -> None:
+            return None
+
+        async def get_final_message(self):
+            return self.response
+
+    messages = FakeMessages()
+    gateway = AnthropicSemanticDiscoveryGateway(
+        client=SimpleNamespace(messages=messages),
+        config=AnthropicProviderConfig.model_validate(
+            {
+                "provider": "anthropic",
+                "setting_id": "00000000-0000-4000-8000-000000000001",
+                "model_id": "claude-sonnet-4-6",
+                "thinking": {
+                    "type": "anthropic_adaptive",
+                    "enabled": True,
+                    "effort": "medium",
+                },
+                "secret_ref": (
+                    "gcp-secret-manager://projects/demo/secrets/"
+                    "atlantebi-tenant-setting-anthropic-ai-key"
+                ),
+            }
+        ),
+    )
+
+    with caplog.at_level("WARNING"):
+        response = asyncio.run(gateway.generate(discovery_input))
+
+    assert len(messages.calls) == 2
+    assert response.response_id == (
+        "msg_anthropic_annotations,msg_anthropic_metrics"
+    )
+    assert len(messages.annotation_column_keys) == 33
+    assert len(response.proposal.columns) == 33
+    assert [
+        column.column_key for column in response.proposal.columns
+    ] == messages.annotation_column_keys
+    assert (
+        "Anthropic semantic annotations normalized: field=columns "
+        "received=34 unique=33 recommended=32 duplicates_ignored=1"
+    ) in caplog.text
+
+
 def test_anthropic_gateway_enforces_total_phase_deadline(
     monkeypatch,
     caplog,
