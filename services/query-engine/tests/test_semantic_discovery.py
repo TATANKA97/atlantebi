@@ -17,6 +17,7 @@ from app.models import (
     AnthropicSemanticBusinessConceptProposal,
     AnthropicSemanticMetricsOutput,
     SemanticDimensionCompatibility,
+    SemanticQualityIssue,
 )
 from app.semantic import (
     build_semantic_seed,
@@ -788,15 +789,15 @@ def test_policy_and_graph_resolved_ambiguities_are_not_left_open() -> None:
     proposal = proposal_from_fixture()
     ambiguities = [
         AISemanticAmbiguity(
-            code="REVENUE_GRAIN_SELECTION",
+            code="REVENUE_VARIANT_SELECTION",
             target_type="business_concept",
             target_ref="revenue",
-            summary="Revenue grain must be selected.",
-            clarification_question="Which revenue grain should be used?",
+            summary="Revenue variant must be selected.",
+            clarification_question="Which revenue variant should be used?",
             severity="material_ambiguity",
         ),
         AISemanticAmbiguity(
-            code="LINE_DATE_FROM_PARENT",
+            code="NO_DIRECT_DATE_ON_DETAIL",
             target_type="metric",
             target_ref="quantita_venduta",
             summary="Line metric needs a parent business date.",
@@ -813,17 +814,23 @@ def test_policy_and_graph_resolved_ambiguities_are_not_left_open() -> None:
     )
     by_code = {ambiguity.code: ambiguity for ambiguity in compiled.ambiguities}
 
-    assert by_code["REVENUE_GRAIN_SELECTION"].status == "resolved"
-    assert by_code["REVENUE_GRAIN_SELECTION"].severity == "info"
-    assert by_code["LINE_DATE_FROM_PARENT"].status == "resolved"
-    assert by_code["LINE_DATE_FROM_PARENT"].severity == "info"
+    assert by_code["REVENUE_VARIANT_SELECTION"].status == "resolved"
+    assert by_code["REVENUE_VARIANT_SELECTION"].severity == "info"
+    assert by_code["NO_DIRECT_DATE_ON_DETAIL"].status == "resolved"
+    assert by_code["NO_DIRECT_DATE_ON_DETAIL"].severity == "info"
 
 
-def test_document_total_name_is_normalized_from_quality_spec() -> None:
+def test_required_metric_names_are_normalized_from_quality_specs() -> None:
     proposal = proposal_from_fixture()
+    noisy_names = {
+        "net_header": "Order Subtotal",
+        "document_total": "Document Total Revenue",
+        "line_detail": "Order Line Amount",
+        "line_quantity": "Units",
+    }
     metrics = [
-        metric.model_copy(update={"name": "Document Total Revenue"})
-        if metric.metric_variant == "document_total"
+        metric.model_copy(update={"name": noisy_names[metric.metric_variant]})
+        if metric.metric_variant in noisy_names
         else metric
         for metric in proposal.metrics
     ]
@@ -834,14 +841,122 @@ def test_document_total_name_is_normalized_from_quality_spec() -> None:
         proposal=proposal.model_copy(update={"metrics": metrics}),
         model_version="fixture-model-v2",
     )
-    document_total = next(
-        metric
-        for metric in compiled.metrics
-        if metric.metric_variant == "document_total"
+    by_variant = {metric.metric_variant: metric for metric in compiled.metrics}
+
+    assert by_variant["net_header"].name == "Fatturato Netto"
+    assert by_variant["document_total"].name == "Totale Documento"
+    assert by_variant["line_detail"].name == "Fatturato Righe"
+    assert by_variant["line_quantity"].name == "Quantita Venduta"
+
+
+def test_validation_report_groups_equivalent_concept_metric_ambiguities() -> None:
+    proposal = proposal_from_fixture()
+    ambiguity = AISemanticAmbiguity(
+        code="ORDER_STATUS_SCOPE",
+        target_type="business_concept",
+        target_ref="orders",
+        summary="Order status scope may affect the order count.",
+        clarification_question="Which order statuses should be included?",
+        severity="minor_ambiguity",
     )
 
-    assert document_total.name != "Document Total Revenue"
-    assert document_total.name == "Totale Documento"
+    result = asyncio.run(
+        generate_semantic_layer(
+            graph=adventureworks_graph(),
+            seed=semantic_seed(),
+            gateway=FakeGateway(
+                proposal.model_copy(update={"ambiguities": [ambiguity]})
+            ),
+            generated_at=GENERATED_AT,
+        )
+    )
+    matching = [
+        issue
+        for issue in result.semantic_layer.validation_report.warnings
+        if issue.evidence.get("ambiguity_code") == "ORDER_STATUS_SCOPE"
+    ]
+
+    assert len(matching) == 1
+    assert matching[0].target_type == "business_concept"
+
+
+def test_validation_keeps_distinct_ambiguity_codes_on_same_metric() -> None:
+    proposal = proposal_from_fixture()
+    ambiguities = [
+        AISemanticAmbiguity(
+            code="ORDER_STATUS_SCOPE",
+            target_type="metric",
+            target_ref="ordini",
+            summary="Order status scope may affect the order count.",
+            clarification_question="Which order statuses should be included?",
+            severity="minor_ambiguity",
+        ),
+        AISemanticAmbiguity(
+            code="ORDER_CHANNEL_SCOPE",
+            target_type="metric",
+            target_ref="ordini",
+            summary="Order channel scope may affect the order count.",
+            clarification_question="Which order channels should be included?",
+            severity="minor_ambiguity",
+        ),
+    ]
+
+    result = asyncio.run(
+        generate_semantic_layer(
+            graph=adventureworks_graph(),
+            seed=semantic_seed(),
+            gateway=FakeGateway(
+                proposal.model_copy(update={"ambiguities": ambiguities})
+            ),
+            generated_at=GENERATED_AT,
+        )
+    )
+    ambiguity_codes = {
+        issue.evidence.get("ambiguity_code")
+        for issue in result.semantic_layer.validation_report.warnings
+        if issue.code == "SEMANTIC_MINOR_AMBIGUITY"
+    }
+
+    assert {"ORDER_STATUS_SCOPE", "ORDER_CHANNEL_SCOPE"} <= ambiguity_codes
+
+
+def test_quality_gate_revalidation_drops_stale_gate_issues() -> None:
+    result = asyncio.run(
+        generate_semantic_layer(
+            graph=adventureworks_graph(),
+            seed=semantic_seed(),
+            gateway=FakeGateway(proposal_from_fixture()),
+            generated_at=GENERATED_AT,
+        )
+    )
+    layer = result.semantic_layer
+    stale_quality_report = layer.quality_report.model_copy(
+        update={
+            "issues": [
+                *layer.quality_report.issues,
+                SemanticQualityIssue(
+                    code="REQUIRED_METRIC_SPEC_UNSATISFIED",
+                    severity="blocking",
+                    message="Stale gate issue from a previous validation.",
+                    spec_key="adventureworks.revenue.net_header",
+                ),
+            ],
+        }
+    )
+    stale_layer = layer.model_copy(update={"quality_report": stale_quality_report})
+    stale_layer = stale_layer.model_copy(
+        update={"semantic_hash": compute_semantic_hash(stale_layer)}
+    )
+
+    revalidated = validate_semantic_layer(
+        layer=stale_layer,
+        graph=adventureworks_graph(),
+        validated_at=GENERATED_AT,
+    )
+
+    assert "REQUIRED_METRIC_SPEC_UNSATISFIED" not in {
+        issue.code for issue in revalidated.quality_report.issues
+    }
 
 
 def test_compilation_is_canonical_and_assigns_stable_server_ids() -> None:

@@ -61,6 +61,19 @@ _DECLARED_AMBIGUITY_CLARIFICATION_CODES = {
     "MULTIPLE_SHORTEST_SAFE_PATHS",
 }
 _CUSTOMER_EXPLICIT_VARIANTS = {"order_customers", "customer_master"}
+_QUALITY_GATE_ISSUE_CODES = {
+    "ACTIVATION_CONCEPT_NOT_ELIGIBLE",
+    "MINIMUM_ELIGIBLE_METRICS_UNSATISFIED",
+    "REQUIRED_CONCEPT_UNSATISFIED",
+    "REQUIRED_METRIC_DIMENSION_POLICY_UNSATISFIED",
+    "REQUIRED_METRIC_ELIGIBILITY_UNSATISFIED",
+    "REQUIRED_METRIC_SPEC_UNSATISFIED",
+}
+_SEMANTIC_AMBIGUITY_ISSUE_CODES = {
+    "SEMANTIC_AMBIGUITY_DECLARED",
+    "SEMANTIC_AMBIGUITY_INFO",
+    "SEMANTIC_MINOR_AMBIGUITY",
+}
 
 
 def build_semantic_seed(
@@ -999,16 +1012,17 @@ def validate_semantic_layer(
         issues=issues,
     )
 
+    report_issues = _dedupe_validation_report_issues(issues, metrics)
     blocking = sorted(
-        [issue for issue in issues if issue.severity == "blocking"],
+        [issue for issue in report_issues if issue.severity == "blocking"],
         key=_issue_sort_key,
     )
     warnings = sorted(
-        [issue for issue in issues if issue.severity == "warning"],
+        [issue for issue in report_issues if issue.severity == "warning"],
         key=_issue_sort_key,
     )
     info = sorted(
-        [issue for issue in issues if issue.severity == "info"],
+        [issue for issue in report_issues if issue.severity == "info"],
         key=_issue_sort_key,
     )
     report_status: Literal["valid", "valid_with_warnings", "blocked"]
@@ -1057,7 +1071,11 @@ def _evaluate_quality_gate(
     issues: list[SemanticValidationIssue],
 ) -> SemanticQualityReport:
     policy = layer.semantic_policy_snapshot
-    quality_issues = list(layer.quality_report.issues)
+    quality_issues = [
+        issue
+        for issue in layer.quality_report.issues
+        if issue.code not in _QUALITY_GATE_ISSUE_CODES
+    ]
     concept_keys = {
         concept.canonical_name: concept.business_concept_key
         for concept in layer.business_concepts
@@ -1201,6 +1219,49 @@ def _evaluate_quality_gate(
         satisfied_specs_count=satisfied_specs,
         compiler_eligible_required_count=compiler_eligible_required,
         rejected_candidates=layer.quality_report.rejected_candidates,
+    )
+
+
+def _dedupe_validation_report_issues(
+    issues: list[SemanticValidationIssue],
+    metrics: list[SemanticMetric],
+) -> list[SemanticValidationIssue]:
+    metric_families = {
+        str(metric.metric_key): str(metric.business_concept_key)
+        for metric in metrics
+    }
+    seen: set[tuple[str, str, str, str, str]] = set()
+    result: list[SemanticValidationIssue] = []
+    for issue in issues:
+        group_key = _validation_report_issue_group_key(issue, metric_families)
+        if group_key is not None:
+            if group_key in seen:
+                continue
+            seen.add(group_key)
+        result.append(issue)
+    return result
+
+
+def _validation_report_issue_group_key(
+    issue: SemanticValidationIssue,
+    metric_families: dict[str, str],
+) -> tuple[str, str, str, str, str] | None:
+    if issue.severity == "blocking":
+        return None
+    ambiguity_code = issue.evidence.get("ambiguity_code")
+    if not isinstance(ambiguity_code, str):
+        return None
+    target_family = (
+        metric_families.get(issue.target_key, issue.target_key)
+        if issue.target_type == "metric"
+        else issue.target_key
+    )
+    return (
+        issue.severity,
+        issue.code,
+        issue.message,
+        ambiguity_code,
+        target_family,
     )
 
 
@@ -2860,9 +2921,14 @@ def _issue_once(
     evidence: dict[str, str | int | float | bool] | None = None,
 ) -> None:
     if any(
-        issue.code == code
-        and issue.target_type == target_type
-        and issue.target_key == target_key
+        _same_validation_issue(
+            issue,
+            code=code,
+            target_type=target_type,
+            target_key=target_key,
+            message=message,
+            evidence=evidence or {},
+        )
         for issue in issues
     ):
         return
@@ -2875,6 +2941,30 @@ def _issue_once(
         message,
         evidence,
     )
+
+
+def _same_validation_issue(
+    issue: SemanticValidationIssue,
+    *,
+    code: str,
+    target_type: str,
+    target_key: str,
+    message: str,
+    evidence: dict[str, str | int | float | bool],
+) -> bool:
+    if (
+        issue.code != code
+        or issue.target_type != target_type
+        or issue.target_key != target_key
+    ):
+        return False
+    if code in _SEMANTIC_AMBIGUITY_ISSUE_CODES:
+        return (
+            issue.message == message
+            and issue.evidence.get("ambiguity_code")
+            == evidence.get("ambiguity_code")
+        )
+    return True
 
 
 def _issue_sort_key(issue: SemanticValidationIssue) -> tuple[str, str, str]:
