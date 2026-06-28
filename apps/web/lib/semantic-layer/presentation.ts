@@ -13,6 +13,11 @@ type SemanticIndexes = {
   tables: Map<string, SemanticTable>;
 };
 
+const GENERATION_AUDIT_CODES = new Set([
+  "AI_AMBIGUITY_TARGET_NOT_RESOLVED",
+  "AI_REQUIRED_METRIC_MISMATCH"
+]);
+
 export function buildSemanticIndexes(layer: SemanticLayer): SemanticIndexes {
   return {
     columns: new Map(layer.columns.map((column) => [column.column_key, column])),
@@ -23,6 +28,33 @@ export function buildSemanticIndexes(layer: SemanticLayer): SemanticIndexes {
       ])
     ),
     tables: new Map(layer.tables.map((table) => [table.node_key, table]))
+  };
+}
+
+export function splitSemanticQualityGateReport(
+  report: SemanticLayer["quality_report"]
+) {
+  if (report.status !== "passed") {
+    return {
+      auditIssues: [],
+      auditRejectedCandidates: [],
+      mainIssues: report.issues,
+      mainRejectedCandidates: report.rejected_candidates
+    };
+  }
+  return {
+    auditIssues: report.issues.filter((issue) =>
+      GENERATION_AUDIT_CODES.has(issue.code)
+    ),
+    auditRejectedCandidates: report.rejected_candidates.filter((candidate) =>
+      GENERATION_AUDIT_CODES.has(candidate.reason_code)
+    ),
+    mainIssues: report.issues.filter(
+      (issue) => !GENERATION_AUDIT_CODES.has(issue.code)
+    ),
+    mainRejectedCandidates: report.rejected_candidates.filter(
+      (candidate) => !GENERATION_AUDIT_CODES.has(candidate.reason_code)
+    )
   };
 }
 

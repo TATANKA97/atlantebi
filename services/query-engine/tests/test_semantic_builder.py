@@ -1134,7 +1134,7 @@ def test_validator_accepts_safe_variants_and_marks_customer_ambiguity() -> None:
         "eligible_with_disclosure"
     )
     assert metrics["clienti_ordini"].compiler_eligibility == (
-        "clarification_required"
+        "eligible_with_disclosure"
     )
     assert "DUPLICATE_METRIC_SYNONYM" in (
         metrics["clienti_ordini"].validation_warnings

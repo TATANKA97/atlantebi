@@ -1031,6 +1031,7 @@ def compile_semantic_proposal(
         proposal=proposal,
         concept_keys=concept_keys,
         metrics=metrics,
+        semantic_policy=current_policy,
         allowed_nodes=allowed_nodes,
         allowed_columns=allowed_columns,
     )
@@ -1170,7 +1171,7 @@ def _compile_metric(
         metric_definition_hash="0" * 64,
         business_concept_key=business_concept_key,
         metric_variant=proposal.metric_variant,
-        name=proposal.name,
+        name=_metric_display_name(proposal, quality_spec),
         description=proposal.description,
         status="ai_proposed",
         source_table_key=proposal.source_table_key,
@@ -1648,10 +1649,15 @@ def _compile_ambiguities(
     proposal: AISemanticDraftProposal,
     concept_keys: dict[str, UUID],
     metrics: list[SemanticMetric],
+    semantic_policy: SemanticPolicySnapshot,
     allowed_nodes: set[str],
     allowed_columns: set[str],
 ) -> tuple[list[SemanticAmbiguity], list[SemanticQualityIssue]]:
     ai_metrics = [metric for metric in metrics if metric.provenance == "ai"]
+    metrics_by_canonical_name = {
+        metric.canonical_name: metric
+        for metric in ai_metrics
+    }
     metric_keys = {
         metric.canonical_name: metric.metric_key
         for metric in ai_metrics
@@ -1664,6 +1670,7 @@ def _compile_ambiguities(
     compiled: list[SemanticAmbiguity] = []
     quality_issues: list[SemanticQualityIssue] = []
     for item in proposal.ambiguities:
+        target_metric: SemanticMetric | None = None
         if item.target_type == "table":
             target_key = item.target_ref
             valid = target_key in allowed_nodes
@@ -1675,7 +1682,10 @@ def _compile_ambiguities(
             target_key = str(concept_key) if concept_key is not None else ""
             valid = concept_key is not None
         else:
-            metric_key = metric_keys.get(item.target_ref)
+            target_metric = metrics_by_canonical_name.get(item.target_ref)
+            metric_key = (
+                target_metric.metric_key if target_metric is not None else None
+            )
             target_key = str(metric_key) if metric_key is not None else ""
             valid = metric_key is not None
         if not valid:
@@ -1690,6 +1700,11 @@ def _compile_ambiguities(
                 )
             )
             continue
+        resolution = _resolved_ai_ambiguity(
+            item=item,
+            target_metric=target_metric,
+            semantic_policy=semantic_policy,
+        )
         compiled.append(
             SemanticAmbiguity(
                 ambiguity_key=_stable_uuid(
@@ -1702,11 +1717,11 @@ def _compile_ambiguities(
                 code=item.code,
                 target_type=item.target_type,
                 target_key=target_key,
-                summary=item.summary,
-                clarification_question=item.clarification_question,
-                status="open",
+                summary=resolution["summary"],
+                clarification_question=resolution["clarification_question"],
+                status=resolution["status"],
                 provenance="ai",
-                severity=item.severity,
+                severity=resolution["severity"],
             )
         )
     _unique_by_key(
@@ -1715,6 +1730,82 @@ def _compile_ambiguities(
         "semantic ambiguity",
     )
     return compiled, quality_issues
+
+
+def _metric_display_name(
+    proposal: AISemanticMetricProposal,
+    quality_spec: SemanticRequiredMetricSpec | None,
+) -> str:
+    if proposal.metric_variant == "document_total":
+        return quality_spec.name if quality_spec is not None else "Document Total"
+    return proposal.name
+
+
+def _resolved_ai_ambiguity(
+    *,
+    item: AISemanticAmbiguity,
+    target_metric: SemanticMetric | None,
+    semantic_policy: SemanticPolicySnapshot,
+) -> dict[str, str]:
+    if (
+        item.code == "REVENUE_GRAIN_SELECTION"
+        and _policy_resolves_revenue_variants(semantic_policy)
+    ):
+        return {
+            "status": "resolved",
+            "severity": "info",
+            "summary": (
+                "Revenue metric variant selection is resolved by semantic policy."
+            ),
+            "clarification_question": "Resolved by semantic policy.",
+        }
+    if (
+        item.code == "LINE_DATE_FROM_PARENT"
+        and target_metric is not None
+        and target_metric.default_date_column_key is not None
+        and target_metric.required_join_edge_keys
+    ):
+        return {
+            "status": "resolved",
+            "severity": "info",
+            "summary": (
+                "Line metric default date is resolved from a trusted parent path."
+            ),
+            "clarification_question": "Resolved by the Queryability Graph.",
+        }
+    if (
+        item.code == "CUSTOMER_POPULATION_AMBIGUOUS"
+        and target_metric is not None
+        and target_metric.metric_variant in {"order_customers", "customer_master"}
+    ):
+        return {
+            "status": "resolved",
+            "severity": "info",
+            "summary": (
+                "Customer population is resolved by the explicit metric variant."
+            ),
+            "clarification_question": "Resolved by the selected metric variant.",
+        }
+    return {
+        "status": "open",
+        "severity": item.severity,
+        "summary": item.summary,
+        "clarification_question": item.clarification_question,
+    }
+
+
+def _policy_resolves_revenue_variants(
+    semantic_policy: SemanticPolicySnapshot,
+) -> bool:
+    revenue_specs = {
+        spec.expected_variant: spec
+        for spec in semantic_policy.required_metric_specs
+        if spec.business_concept_ref == "revenue"
+    }
+    return (
+        {"net_header", "document_total", "line_detail"} <= set(revenue_specs)
+        and revenue_specs["net_header"].default_for_concept
+    )
 
 
 def _compile_system_ambiguities(

@@ -15,6 +15,7 @@ import {
   metricGrainLabel,
   paginateItems,
   semanticLayerCounts,
+  splitSemanticQualityGateReport,
   validationIssueCounts
 } from "./presentation";
 
@@ -174,6 +175,62 @@ describe("semantic workspace presentation", () => {
       warnings: 1
     });
     expect(confidenceLabel(METRIC)).toBe("high (93%)");
+  });
+
+  it("moves passed quality-gate technical audit details out of the main recap", () => {
+    const split = splitSemanticQualityGateReport({
+      status: "passed",
+      issues: [
+        {
+          code: "AI_REQUIRED_METRIC_MISMATCH",
+          severity: "warning",
+          message: "Candidate did not match the quality profile.",
+          spec_key: "adventureworks.revenue.net_header",
+          metric_key: null
+        },
+        {
+          code: "AI_PROVIDER_FALLBACK_USED",
+          severity: "warning",
+          message: "Provider fallback was used.",
+          spec_key: null,
+          metric_key: null
+        }
+      ],
+      required_specs_count: 7,
+      satisfied_specs_count: 7,
+      compiler_eligible_required_count: 5,
+      rejected_candidates: [
+        {
+          canonical_name: "fatturato_netto",
+          business_concept_ref: "revenue",
+          metric_variant: "net_header",
+          source_table_key: HASH_A,
+          measure_column_key: HASH_B,
+          reason_code: "AI_REQUIRED_METRIC_MISMATCH"
+        },
+        {
+          canonical_name: "ordini",
+          business_concept_ref: "orders",
+          metric_variant: "header_count",
+          source_table_key: HASH_A,
+          measure_column_key: HASH_B,
+          reason_code: "AI_METRIC_COMPILATION_FAILED"
+        }
+      ]
+    });
+
+    expect(split.mainIssues.map((issue) => issue.code)).toEqual([
+      "AI_PROVIDER_FALLBACK_USED"
+    ]);
+    expect(split.auditIssues.map((issue) => issue.code)).toEqual([
+      "AI_REQUIRED_METRIC_MISMATCH"
+    ]);
+    expect(
+      split.mainRejectedCandidates.map((candidate) => candidate.reason_code)
+    ).toEqual(["AI_METRIC_COMPILATION_FAILED"]);
+    expect(
+      split.auditRejectedCandidates.map((candidate) => candidate.reason_code)
+    ).toEqual(["AI_REQUIRED_METRIC_MISMATCH"]);
   });
 
   it("paginates deterministically and clamps invalid pages", () => {

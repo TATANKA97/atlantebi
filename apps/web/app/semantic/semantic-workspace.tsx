@@ -31,6 +31,7 @@ import {
   metricGrainLabel,
   paginateItems,
   semanticLayerCounts,
+  splitSemanticQualityGateReport,
   validationIssueCounts
 } from "../../lib/semantic-layer/presentation";
 import {
@@ -652,6 +653,12 @@ function SemanticLayerDetail({
 
 function QualityGateSection({ layer }: { layer: SemanticLayer }) {
   const report = layer.quality_report;
+  const {
+    auditIssues,
+    auditRejectedCandidates,
+    mainIssues,
+    mainRejectedCandidates
+  } = splitSemanticQualityGateReport(report);
   return (
     <section className="border-t border-[color:var(--border)] pt-6">
       <h2 className="text-base font-semibold">Quality gate</h2>
@@ -667,12 +674,12 @@ function QualityGateSection({ layer }: { layer: SemanticLayer }) {
         />
         <Stat
           label="Candidate rifiutate"
-          value={String(report.rejected_candidates.length)}
+          value={String(mainRejectedCandidates.length)}
         />
       </div>
-      {report.issues.length > 0 ? (
+      {mainIssues.length > 0 ? (
         <div className="mt-4 space-y-2 text-sm">
-          {report.issues.map((issue, index) => (
+          {mainIssues.map((issue, index) => (
             <div
               className="border-l-2 border-[color:var(--border)] pl-3"
               key={`${issue.code}-${issue.spec_key ?? "global"}-${index}`}
@@ -685,7 +692,7 @@ function QualityGateSection({ layer }: { layer: SemanticLayer }) {
           ))}
         </div>
       ) : null}
-      {report.rejected_candidates.length > 0 ? (
+      {mainRejectedCandidates.length > 0 ? (
         <div className="mt-4 overflow-x-auto">
           <table className="w-full min-w-[680px] border-collapse text-left text-xs">
             <thead className="text-[color:var(--muted)]">
@@ -701,7 +708,7 @@ function QualityGateSection({ layer }: { layer: SemanticLayer }) {
               </tr>
             </thead>
             <tbody>
-              {report.rejected_candidates.map((candidate, index) => (
+              {mainRejectedCandidates.map((candidate, index) => (
                 <tr key={`${candidate.canonical_name}-${index}`}>
                   <td className="border-b border-[color:var(--border)] py-3 pr-4">
                     {candidate.canonical_name}
@@ -717,6 +724,64 @@ function QualityGateSection({ layer }: { layer: SemanticLayer }) {
             </tbody>
           </table>
         </div>
+      ) : null}
+      {auditIssues.length > 0 || auditRejectedCandidates.length > 0 ? (
+        <details className="mt-4 text-sm">
+          <summary className="cursor-pointer font-medium">
+            Generation audit / dettagli tecnici
+          </summary>
+          {auditIssues.length > 0 ? (
+            <div className="mt-3 space-y-2">
+              {auditIssues.map((issue, index) => (
+                <div
+                  className="border-l-2 border-[color:var(--border)] pl-3"
+                  key={`audit-${issue.code}-${issue.spec_key ?? "global"}-${index}`}
+                >
+                  <span className="font-medium">{issue.code}</span>
+                  <span className="ml-2 text-[color:var(--muted)]">
+                    {issue.message}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {auditRejectedCandidates.length > 0 ? (
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[680px] border-collapse text-left text-xs">
+                <thead className="text-[color:var(--muted)]">
+                  <tr>
+                    {["Candidate", "Concept / variant", "Motivo"].map(
+                      (label) => (
+                        <th
+                          className="border-b border-[color:var(--border)] py-2 pr-4 font-medium"
+                          key={label}
+                        >
+                          {label}
+                        </th>
+                      )
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {auditRejectedCandidates.map((candidate, index) => (
+                    <tr key={`audit-${candidate.canonical_name}-${index}`}>
+                      <td className="border-b border-[color:var(--border)] py-3 pr-4">
+                        {candidate.canonical_name}
+                      </td>
+                      <td className="border-b border-[color:var(--border)] py-3 pr-4">
+                        {candidate.business_concept_ref} /{" "}
+                        {candidate.metric_variant}
+                      </td>
+                      <td className="border-b border-[color:var(--border)] py-3">
+                        {candidate.reason_code}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </details>
       ) : null}
     </section>
   );
