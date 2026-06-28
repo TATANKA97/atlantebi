@@ -1746,13 +1746,34 @@ def _metric_display_name(
 _POLICY_RESOLVED_REVENUE_AMBIGUITY_CODES = {
     "REVENUE_GRAIN_SELECTION",
     "REVENUE_VARIANT_AMBIGUOUS",
+    "REVENUE_VARIANT_SCOPE",
     "REVENUE_VARIANT_SELECTION",
 }
 
+_POLICY_DISCLOSED_REVENUE_AMBIGUITY_CODES = {
+    "TAX_FREIGHT_INCLUSIVE_DISCLOSURE",
+}
+
 _GRAPH_RESOLVED_DETAIL_DATE_AMBIGUITY_CODES = {
+    "DATE_FROM_PARENT_HEADER",
     "LINE_DATE_FROM_PARENT",
     "NO_DIRECT_DATE_ON_DETAIL",
 }
+
+_REVENUE_AMBIGUITY_HINT_RE = re.compile(
+    r"\b(revenue|subtotal|total\s*due|document\s*total|line\s*total|"
+    r"net|gross|tax|freight|inclusive|variant)\b",
+    re.IGNORECASE,
+)
+_DATE_AMBIGUITY_HINT_RE = re.compile(
+    r"\b(date|order\s*date|document\s*date|business\s*date|event\s*date|"
+    r"parent|header|modifieddate|updateddate|createdat)\b",
+    re.IGNORECASE,
+)
+_TAX_FREIGHT_DISCLOSURE_HINT_RE = re.compile(
+    r"\b(tax|freight|inclusive)\b",
+    re.IGNORECASE,
+)
 
 
 def _resolved_ai_ambiguity(
@@ -1761,9 +1782,10 @@ def _resolved_ai_ambiguity(
     target_metric: SemanticMetric | None,
     semantic_policy: SemanticPolicySnapshot,
 ) -> dict[str, str]:
-    if (
-        item.code in _POLICY_RESOLVED_REVENUE_AMBIGUITY_CODES
-        and _policy_resolves_revenue_variants(semantic_policy)
+    if _policy_resolves_revenue_ambiguity(
+        item=item,
+        target_metric=target_metric,
+        semantic_policy=semantic_policy,
     ):
         return {
             "status": "resolved",
@@ -1773,12 +1795,7 @@ def _resolved_ai_ambiguity(
             ),
             "clarification_question": "Resolved by semantic policy.",
         }
-    if (
-        item.code in _GRAPH_RESOLVED_DETAIL_DATE_AMBIGUITY_CODES
-        and target_metric is not None
-        and target_metric.default_date_column_key is not None
-        and target_metric.required_join_edge_keys
-    ):
+    if _graph_resolves_detail_date_ambiguity(item=item, target_metric=target_metric):
         return {
             "status": "resolved",
             "severity": "info",
@@ -1808,18 +1825,121 @@ def _resolved_ai_ambiguity(
     }
 
 
+def _policy_resolves_revenue_ambiguity(
+    *,
+    item: AISemanticAmbiguity,
+    target_metric: SemanticMetric | None,
+    semantic_policy: SemanticPolicySnapshot,
+) -> bool:
+    if _policy_discloses_document_total(semantic_policy) and (
+        item.code in _POLICY_DISCLOSED_REVENUE_AMBIGUITY_CODES
+        or _item_text_matches(item, _TAX_FREIGHT_DISCLOSURE_HINT_RE)
+    ):
+        return _item_targets_revenue_policy(item, target_metric, semantic_policy)
+    if not _policy_resolves_revenue_variants(semantic_policy):
+        return False
+    if item.code in _POLICY_RESOLVED_REVENUE_AMBIGUITY_CODES:
+        return _item_targets_revenue_policy(item, target_metric, semantic_policy)
+    return _item_targets_revenue_policy(
+        item,
+        target_metric,
+        semantic_policy,
+    ) and _item_text_matches(item, _REVENUE_AMBIGUITY_HINT_RE)
+
+
+def _item_targets_revenue_policy(
+    item: AISemanticAmbiguity,
+    target_metric: SemanticMetric | None,
+    semantic_policy: SemanticPolicySnapshot,
+) -> bool:
+    revenue_specs = _revenue_specs_by_variant(semantic_policy)
+    if item.target_type == "business_concept":
+        return item.target_ref == "revenue"
+    if item.target_type == "column":
+        revenue_measure_columns = {
+            spec.measure_column_key
+            for spec in revenue_specs.values()
+            if spec.measure_column_key is not None
+        }
+        return item.target_ref in revenue_measure_columns
+    if target_metric is None:
+        return False
+    spec = revenue_specs.get(target_metric.metric_variant)
+    if spec is None:
+        return False
+    return (
+        target_metric.source_table_key == spec.source_table_key
+        and target_metric.aggregation == spec.aggregation
+        and target_metric.measure_column_key == spec.measure_column_key
+    )
+
+
+def _graph_resolves_detail_date_ambiguity(
+    *,
+    item: AISemanticAmbiguity,
+    target_metric: SemanticMetric | None,
+) -> bool:
+    if target_metric is None:
+        return False
+    if (
+        target_metric.default_date_column_key is None
+        or not target_metric.required_join_edge_keys
+    ):
+        return False
+    return (
+        item.code in _GRAPH_RESOLVED_DETAIL_DATE_AMBIGUITY_CODES
+        or _item_text_matches(item, _DATE_AMBIGUITY_HINT_RE)
+    )
+
+
+def _item_text_matches(item: AISemanticAmbiguity, pattern: re.Pattern[str]) -> bool:
+    return bool(
+        pattern.search(
+            " ".join(
+                [
+                    item.code,
+                    item.summary,
+                    item.clarification_question,
+                ]
+            )
+        )
+    )
+
+
 def _policy_resolves_revenue_variants(
     semantic_policy: SemanticPolicySnapshot,
 ) -> bool:
-    revenue_specs = {
-        spec.expected_variant: spec
-        for spec in semantic_policy.required_metric_specs
-        if spec.business_concept_ref == "revenue"
-    }
+    revenue_specs = _revenue_specs_by_variant(semantic_policy)
     return (
         {"net_header", "document_total", "line_detail"} <= set(revenue_specs)
         and revenue_specs["net_header"].default_for_concept
     )
+
+
+def _policy_discloses_document_total(
+    semantic_policy: SemanticPolicySnapshot,
+) -> bool:
+    revenue_specs = _revenue_specs_by_variant(semantic_policy)
+    net_header = revenue_specs.get("net_header")
+    document_total = revenue_specs.get("document_total")
+    return (
+        net_header is not None
+        and document_total is not None
+        and net_header.default_for_concept
+        and net_header.measure_column_key is not None
+        and document_total.measure_column_key is not None
+        and net_header.measure_column_key != document_total.measure_column_key
+    )
+
+
+def _revenue_specs_by_variant(
+    semantic_policy: SemanticPolicySnapshot,
+) -> dict[str, SemanticRequiredMetricSpec]:
+    return {
+        spec.expected_variant: spec
+        for spec in semantic_policy.required_metric_specs
+        if spec.business_concept_ref == "revenue"
+    }
 
 
 def _compile_system_ambiguities(

@@ -593,18 +593,20 @@ def test_unknown_ambiguity_target_is_ignored_with_quality_warning() -> None:
 
 
 @pytest.mark.parametrize(
-    ("target_type", "target_ref"),
+    ("target_type", "target_ref", "expects_metric_warning"),
     [
-        ("table", lambda: node_key("SalesOrderHeader")),
+        ("table", lambda: node_key("SalesOrderHeader"), True),
         (
             "column",
             lambda: column_key("SalesOrderHeader", "SubTotal"),
+            False,
         ),
     ],
 )
 def test_table_and_column_revenue_ambiguities_do_not_block_policy_resolved_metric(
     target_type,
     target_ref,
+    expects_metric_warning,
 ) -> None:
     proposal = proposal_from_fixture()
     ambiguity = AISemanticAmbiguity(
@@ -635,7 +637,9 @@ def test_table_and_column_revenue_ambiguities_do_not_block_policy_resolved_metri
 
     assert net_revenue.compiler_eligibility == "eligible_with_disclosure"
     assert "AI_PROPOSED_DISCLOSURE_REQUIRED" in net_revenue.eligibility_reasons
-    assert "SEMANTIC_AMBIGUITY_DECLARED" in net_revenue.validation_warnings
+    assert (
+        "SEMANTIC_AMBIGUITY_DECLARED" in net_revenue.validation_warnings
+    ) is expects_metric_warning
 
 
 def test_duplicate_metric_synonym_warns_without_blocking_required_metric() -> None:
@@ -789,7 +793,7 @@ def test_policy_and_graph_resolved_ambiguities_are_not_left_open() -> None:
     proposal = proposal_from_fixture()
     ambiguities = [
         AISemanticAmbiguity(
-            code="REVENUE_VARIANT_SELECTION",
+            code="REVENUE_VARIANT_SCOPE",
             target_type="business_concept",
             target_ref="revenue",
             summary="Revenue variant must be selected.",
@@ -797,11 +801,35 @@ def test_policy_and_graph_resolved_ambiguities_are_not_left_open() -> None:
             severity="material_ambiguity",
         ),
         AISemanticAmbiguity(
-            code="NO_DIRECT_DATE_ON_DETAIL",
+            code="CUSTOM_REVENUE_SCOPE",
+            target_type="metric",
+            target_ref="fatturato_netto",
+            summary="Revenue variant scope depends on net or document total.",
+            clarification_question="Should revenue use subtotal or total due?",
+            severity="material_ambiguity",
+        ),
+        AISemanticAmbiguity(
+            code="TAX_FREIGHT_INCLUSIVE_DISCLOSURE",
+            target_type="business_concept",
+            target_ref="revenue",
+            summary="Document total includes tax and freight.",
+            clarification_question="Should tax and freight be included?",
+            severity="material_ambiguity",
+        ),
+        AISemanticAmbiguity(
+            code="DATE_FROM_PARENT_HEADER",
             target_type="metric",
             target_ref="quantita_venduta",
             summary="Line metric needs a parent business date.",
             clarification_question="Which date should be used for line metrics?",
+            severity="material_ambiguity",
+        ),
+        AISemanticAmbiguity(
+            code="CUSTOM_DATE_SCOPE",
+            target_type="metric",
+            target_ref="quantita_venduta",
+            summary="Default business date is inherited from the order header.",
+            clarification_question="Should the parent order date be used?",
             severity="material_ambiguity",
         ),
     ]
@@ -814,10 +842,15 @@ def test_policy_and_graph_resolved_ambiguities_are_not_left_open() -> None:
     )
     by_code = {ambiguity.code: ambiguity for ambiguity in compiled.ambiguities}
 
-    assert by_code["REVENUE_VARIANT_SELECTION"].status == "resolved"
-    assert by_code["REVENUE_VARIANT_SELECTION"].severity == "info"
-    assert by_code["NO_DIRECT_DATE_ON_DETAIL"].status == "resolved"
-    assert by_code["NO_DIRECT_DATE_ON_DETAIL"].severity == "info"
+    for code in {
+        "CUSTOM_DATE_SCOPE",
+        "CUSTOM_REVENUE_SCOPE",
+        "DATE_FROM_PARENT_HEADER",
+        "REVENUE_VARIANT_SCOPE",
+        "TAX_FREIGHT_INCLUSIVE_DISCLOSURE",
+    }:
+        assert by_code[code].status == "resolved"
+        assert by_code[code].severity == "info"
 
 
 def test_required_metric_names_are_normalized_from_quality_specs() -> None:
