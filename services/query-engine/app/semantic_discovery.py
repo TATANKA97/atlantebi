@@ -1736,9 +1736,23 @@ def _metric_display_name(
     proposal: AISemanticMetricProposal,
     quality_spec: SemanticRequiredMetricSpec | None,
 ) -> str:
+    if quality_spec is not None:
+        return quality_spec.name
     if proposal.metric_variant == "document_total":
-        return quality_spec.name if quality_spec is not None else "Document Total"
+        return "Document Total"
     return proposal.name
+
+
+_POLICY_RESOLVED_REVENUE_AMBIGUITY_CODES = {
+    "REVENUE_GRAIN_SELECTION",
+    "REVENUE_VARIANT_AMBIGUOUS",
+    "REVENUE_VARIANT_SELECTION",
+}
+
+_GRAPH_RESOLVED_DETAIL_DATE_AMBIGUITY_CODES = {
+    "LINE_DATE_FROM_PARENT",
+    "NO_DIRECT_DATE_ON_DETAIL",
+}
 
 
 def _resolved_ai_ambiguity(
@@ -1748,7 +1762,7 @@ def _resolved_ai_ambiguity(
     semantic_policy: SemanticPolicySnapshot,
 ) -> dict[str, str]:
     if (
-        item.code == "REVENUE_GRAIN_SELECTION"
+        item.code in _POLICY_RESOLVED_REVENUE_AMBIGUITY_CODES
         and _policy_resolves_revenue_variants(semantic_policy)
     ):
         return {
@@ -1760,7 +1774,7 @@ def _resolved_ai_ambiguity(
             "clarification_question": "Resolved by semantic policy.",
         }
     if (
-        item.code == "LINE_DATE_FROM_PARENT"
+        item.code in _GRAPH_RESOLVED_DETAIL_DATE_AMBIGUITY_CODES
         and target_metric is not None
         and target_metric.default_date_column_key is not None
         and target_metric.required_join_edge_keys

@@ -29,6 +29,7 @@ import {
   metricConceptLabel,
   metricFormulaLabel,
   metricGrainLabel,
+  groupSemanticValidationIssues,
   paginateItems,
   semanticLayerCounts,
   splitSemanticQualityGateReport,
@@ -637,6 +638,7 @@ function SemanticLayerDetail({
 
       <ValidationSection
         counts={issueCounts}
+        metrics={layer.metrics}
         requestedPage={searchParams.issues_page}
         report={layer.validation_report}
         searchParams={searchParams}
@@ -1013,11 +1015,13 @@ function AmbiguitySection({
 
 function ValidationSection({
   counts,
+  metrics,
   requestedPage,
   searchParams,
   report
 }: {
   counts: ReturnType<typeof validationIssueCounts>;
+  metrics: SemanticMetric[];
   requestedPage: string | undefined;
   searchParams: SemanticWorkspaceParams;
   report: SemanticLayer["validation_report"];
@@ -1027,8 +1031,9 @@ function ValidationSection({
     ...report.warnings,
     ...report.info
   ];
+  const groupedIssues = groupSemanticValidationIssues(issues, metrics);
   const pagination = paginateItems(
-    issues,
+    groupedIssues,
     requestedPage,
     VALIDATION_ISSUES_PAGE_SIZE
   );
@@ -1067,10 +1072,11 @@ function ValidationSection({
               </tr>
             </thead>
               <tbody>
-                {pagination.items.map((issue, index) => (
+                {pagination.items.map((item, index) => (
                 <ValidationIssueRow
-                  issue={issue}
-                  key={`${issue.code}-${issue.target_key}-${index}`}
+                  count={item.count}
+                  issue={item.issue}
+                  key={`${item.issue.code}-${item.issue.target_key}-${index}`}
                 />
                 ))}
               </tbody>
@@ -1086,7 +1092,13 @@ function ValidationSection({
   );
 }
 
-function ValidationIssueRow({ issue }: { issue: SemanticValidationIssue }) {
+function ValidationIssueRow({
+  count,
+  issue
+}: {
+  count: number;
+  issue: SemanticValidationIssue;
+}) {
   return (
     <tr>
       <td className="border-b border-[color:var(--border)] py-3 pr-4">
@@ -1100,6 +1112,9 @@ function ValidationIssueRow({ issue }: { issue: SemanticValidationIssue }) {
       </td>
       <td className="border-b border-[color:var(--border)] py-3">
         {issue.message}
+        {count > 1 ? (
+          <span className="ml-2 text-[color:var(--muted)]">x{count}</span>
+        ) : null}
       </td>
     </tr>
   );

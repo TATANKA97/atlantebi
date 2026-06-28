@@ -13,6 +13,7 @@ import {
   metricConceptLabel,
   metricFormulaLabel,
   metricGrainLabel,
+  groupSemanticValidationIssues,
   paginateItems,
   semanticLayerCounts,
   splitSemanticQualityGateReport,
@@ -231,6 +232,33 @@ describe("semantic workspace presentation", () => {
     expect(
       split.auditRejectedCandidates.map((candidate) => candidate.reason_code)
     ).toEqual(["AI_REQUIRED_METRIC_MISMATCH"]);
+  });
+
+  it("groups equivalent validation warnings by target family", () => {
+    const grouped = groupSemanticValidationIssues(
+      [
+        {
+          code: "SEMANTIC_MINOR_AMBIGUITY",
+          severity: "warning",
+          target_type: "business_concept",
+          target_key: CONCEPT.business_concept_key,
+          message: "Order status scope may affect the metric.",
+          evidence: { ambiguity_code: "ORDER_STATUS_SCOPE" }
+        },
+        {
+          code: "SEMANTIC_MINOR_AMBIGUITY",
+          severity: "warning",
+          target_type: "metric",
+          target_key: METRIC.metric_key,
+          message: "Order status scope may affect the metric.",
+          evidence: { ambiguity_code: "ORDER_STATUS_SCOPE" }
+        }
+      ],
+      [METRIC]
+    );
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]).toMatchObject({ count: 2 });
   });
 
   it("paginates deterministically and clamps invalid pages", () => {

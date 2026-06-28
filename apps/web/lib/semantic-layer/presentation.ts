@@ -4,6 +4,7 @@ import type {
   SemanticLayer,
   SemanticMetric,
   SemanticTable,
+  SemanticValidationIssue,
   SemanticValidationReport
 } from "@atlantebi/contracts";
 
@@ -138,6 +139,55 @@ export function validationIssueCounts(report: SemanticValidationReport) {
       report.blocking_errors.length + report.warnings.length + report.info.length,
     warnings: report.warnings.length
   };
+}
+
+export function groupSemanticValidationIssues(
+  issues: SemanticValidationIssue[],
+  metrics: SemanticMetric[]
+) {
+  const metricFamilies = new Map(
+    metrics.map((metric) => [metric.metric_key, metric.business_concept_key])
+  );
+  const groups = new Map<
+    string,
+    { count: number; issue: SemanticValidationIssue }
+  >();
+
+  issues.forEach((issue, index) => {
+    const groupKey =
+      issue.severity === "blocking"
+        ? `blocking:${index}`
+        : semanticValidationIssueGroupKey(issue, metricFamilies);
+    const existing = groups.get(groupKey);
+    if (existing) {
+      existing.count += 1;
+      return;
+    }
+    groups.set(groupKey, { count: 1, issue });
+  });
+
+  return [...groups.values()];
+}
+
+function semanticValidationIssueGroupKey(
+  issue: SemanticValidationIssue,
+  metricFamilies: Map<string, string>
+) {
+  const targetFamily =
+    issue.target_type === "metric"
+      ? metricFamilies.get(issue.target_key) ?? issue.target_key
+      : issue.target_key;
+  const ambiguityCode =
+    typeof issue.evidence.ambiguity_code === "string"
+      ? issue.evidence.ambiguity_code
+      : "";
+  return [
+    issue.severity,
+    issue.code,
+    issue.message,
+    ambiguityCode,
+    targetFamily
+  ].join("|");
 }
 
 export function confidenceLabel(metric: SemanticMetric) {
