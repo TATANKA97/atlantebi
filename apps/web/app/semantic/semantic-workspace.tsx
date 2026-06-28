@@ -32,6 +32,7 @@ import {
   groupSemanticValidationIssues,
   paginateItems,
   semanticLayerCounts,
+  semanticOpenAmbiguities,
   splitSemanticQualityGateReport,
   validationIssueCounts
 } from "../../lib/semantic-layer/presentation";
@@ -664,7 +665,7 @@ function QualityGateSection({ layer }: { layer: SemanticLayer }) {
   return (
     <section className="border-t border-[color:var(--border)] pt-6">
       <h2 className="text-base font-semibold">Quality gate</h2>
-      <div className="mt-4 grid gap-4 sm:grid-cols-4">
+      <div className="mt-4 grid gap-4 sm:grid-cols-5">
         <Stat label="Stato" value={report.status} />
         <Stat
           label="Spec soddisfatte"
@@ -675,8 +676,12 @@ function QualityGateSection({ layer }: { layer: SemanticLayer }) {
           value={String(report.compiler_eligible_required_count)}
         />
         <Stat
-          label="Candidate rifiutate"
+          label="Candidate bloccanti"
           value={String(mainRejectedCandidates.length)}
+        />
+        <Stat
+          label="Audit mismatch"
+          value={String(auditRejectedCandidates.length)}
         />
       </div>
       {mainIssues.length > 0 ? (
@@ -966,8 +971,9 @@ function AmbiguitySection({
   requestedPage: string | undefined;
   searchParams: SemanticWorkspaceParams;
 }) {
+  const openAmbiguities = semanticOpenAmbiguities(layer);
   const pagination = paginateItems(
-    layer.ambiguities,
+    openAmbiguities,
     requestedPage,
     AMBIGUITIES_PAGE_SIZE
   );
@@ -977,9 +983,9 @@ function AmbiguitySection({
       id="ambiguities"
     >
       <h2 className="text-base font-semibold">Ambiguità</h2>
-      {layer.ambiguities.length === 0 ? (
+      {openAmbiguities.length === 0 ? (
         <p className="mt-3 text-sm text-[color:var(--muted)]">
-          Nessuna ambiguità registrata.
+          Nessuna ambiguita materiale aperta.
         </p>
       ) : (
         <>

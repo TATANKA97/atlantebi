@@ -1,5 +1,6 @@
 import type {
   SemanticBusinessConcept,
+  SemanticAmbiguity,
   SemanticColumn,
   SemanticLayer,
   SemanticMetric,
@@ -116,9 +117,7 @@ export function metricConceptLabel(
 
 export function semanticLayerCounts(layer: SemanticLayer) {
   return {
-    ambiguitiesOpen: layer.ambiguities.filter(
-      (ambiguity) => ambiguity.status === "open"
-    ).length,
+    ambiguitiesOpen: semanticOpenAmbiguities(layer).length,
     columns: layer.columns.length,
     concepts: layer.business_concepts.length,
     eligibleMetrics: layer.metrics.filter((metric) =>
@@ -129,6 +128,29 @@ export function semanticLayerCounts(layer: SemanticLayer) {
     metrics: layer.metrics.length,
     tables: layer.tables.length
   };
+}
+
+export function semanticOpenAmbiguities(layer: SemanticLayer) {
+  return layer.ambiguities.filter(isSemanticOpenAmbiguity);
+}
+
+function isSemanticOpenAmbiguity(ambiguity: SemanticAmbiguity) {
+  if (
+    ambiguity.status !== "open" ||
+    ambiguity.severity !== "material_ambiguity"
+  ) {
+    return false;
+  }
+  const text =
+    `${ambiguity.summary} ${ambiguity.clarification_question}`.toLowerCase();
+  return !(
+    ambiguity.code.includes("DISCLOSURE") ||
+    text.includes("resolved by semantic policy") ||
+    text.includes("resolved by the queryability graph") ||
+    text.includes("resolved_by_policy") ||
+    text.includes("resolved_by_graph") ||
+    text.includes("disclosure")
+  );
 }
 
 export function validationIssueCounts(report: SemanticValidationReport) {

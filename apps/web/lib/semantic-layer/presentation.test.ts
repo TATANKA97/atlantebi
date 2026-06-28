@@ -16,6 +16,7 @@ import {
   groupSemanticValidationIssues,
   paginateItems,
   semanticLayerCounts,
+  semanticOpenAmbiguities,
   splitSemanticQualityGateReport,
   validationIssueCounts
 } from "./presentation";
@@ -122,6 +123,39 @@ const LAYER = {
       status: "open",
       provenance: "ai",
       severity: "material_ambiguity"
+    },
+    {
+      ambiguity_key: "33333333-3333-4333-8333-333333333334",
+      code: "TAX_FREIGHT_INCLUSIVE_DISCLOSURE",
+      target_type: "business_concept",
+      target_key: CONCEPT.business_concept_key,
+      summary: "Document total includes tax and freight.",
+      clarification_question: "Disclosure only.",
+      status: "open",
+      provenance: "ai",
+      severity: "material_ambiguity"
+    },
+    {
+      ambiguity_key: "33333333-3333-4333-8333-333333333335",
+      code: "ORDER_STATUS_SCOPE",
+      target_type: "metric",
+      target_key: METRIC.metric_key,
+      summary: "Status scope may affect the metric.",
+      clarification_question: "Review order statuses.",
+      status: "open",
+      provenance: "ai",
+      severity: "minor_ambiguity"
+    },
+    {
+      ambiguity_key: "33333333-3333-4333-8333-333333333336",
+      code: "DATE_FROM_PARENT_HEADER",
+      target_type: "metric",
+      target_key: METRIC.metric_key,
+      summary: "Resolved by the Queryability Graph.",
+      clarification_question: "Resolved by the Queryability Graph.",
+      status: "resolved",
+      provenance: "ai",
+      severity: "info"
     }
   ],
   validation_report: {
@@ -176,6 +210,14 @@ describe("semantic workspace presentation", () => {
       warnings: 1
     });
     expect(confidenceLabel(METRIC)).toBe("high (93%)");
+  });
+
+  it("exposes only material unresolved ambiguities as open", () => {
+    expect(
+      semanticOpenAmbiguities(LAYER as SemanticLayer).map(
+        (ambiguity) => ambiguity.code
+      )
+    ).toEqual(["REVENUE_VARIANT"]);
   });
 
   it("moves passed quality-gate technical audit details out of the main recap", () => {
