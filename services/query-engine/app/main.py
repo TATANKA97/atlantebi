@@ -21,6 +21,8 @@ from app.models import (
     HealthResponse,
     QueryIntentRequest,
     QueryIntentResult,
+    QueryIntentTestSuiteReport,
+    QueryIntentTestSuiteRunRequest,
     QueryRequest,
     QueryResponse,
     QueryabilityCompileRequest,
@@ -40,6 +42,7 @@ from app.models import (
 )
 from app.queryability import build_queryability_graph, find_queryability_paths
 from app.query_intent import resolve_query_intent
+from app.query_intent_suite import run_query_intent_test_suite
 from app.semantic import (
     build_semantic_seed,
     rebase_semantic_layer,
@@ -576,3 +579,15 @@ async def resolve_query_intent_endpoint(
     _: None = Depends(require_internal_auth),
 ) -> QueryIntentResult:
     return resolve_query_intent(request)
+
+
+@app.post(
+    "/query/intent/test-suite/run",
+    response_model=QueryIntentTestSuiteReport,
+    response_model_exclude_none=True,
+)
+async def run_query_intent_test_suite_endpoint(
+    request: QueryIntentTestSuiteRunRequest,
+    _: None = Depends(require_internal_auth),
+) -> QueryIntentTestSuiteReport:
+    return run_query_intent_test_suite(request)

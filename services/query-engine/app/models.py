@@ -1904,6 +1904,103 @@ class QueryIntentResult(StrictModel):
         return self
 
 
+class QueryIntentTestAIMode(StrEnum):
+    disabled = "disabled"
+    advisory = "advisory"
+
+
+class QueryIntentTestSuiteId(StrEnum):
+    adventureworks_v1 = "adventureworks_v1"
+
+
+class QueryIntentTestSuiteRunRequest(StrictModel):
+    tenant_id: JsonUUID
+    connection_id: JsonUUID
+    user_id: JsonUUID
+    connection_name: str | None = Field(default=None, min_length=1, max_length=255)
+    environment: str = Field(default="unknown", min_length=1, max_length=100)
+    suite_id: QueryIntentTestSuiteId = Field(
+        default=QueryIntentTestSuiteId.adventureworks_v1,
+        strict=False,
+    )
+    ai_mode: QueryIntentTestAIMode = Field(
+        default=QueryIntentTestAIMode.disabled,
+        strict=False,
+    )
+    semantic_layer: SemanticLayer
+    graph: QueryabilityGraphArtifact
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "QueryIntentTestSuiteRunRequest":
+        if (
+            self.semantic_layer.tenant_id != self.tenant_id
+            or self.semantic_layer.connection_id != self.connection_id
+            or self.graph.tenant_id != self.tenant_id
+            or self.graph.connection_id != self.connection_id
+        ):
+            raise ValueError(
+                "semantic_layer and graph tenant/connection must match the request"
+            )
+        return self
+
+
+class QueryIntentTestDiff(StrictModel):
+    matcher: str = Field(min_length=1, max_length=100)
+    message: str = Field(min_length=1, max_length=500)
+    expected: Any | None = None
+    actual: Any | None = None
+
+
+class QueryIntentTestResult(StrictModel):
+    id: str = Field(min_length=1, max_length=100)
+    question: str = Field(min_length=1, max_length=1000)
+    passed: bool
+    expected: dict[str, Any]
+    actual: dict[str, Any]
+    diffs: list[QueryIntentTestDiff] = Field(max_length=100)
+    duration_ms: int = Field(ge=0)
+
+
+class QueryIntentTestSuiteSummary(StrictModel):
+    total: int = Field(ge=0)
+    passed: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    skipped: int = Field(ge=0)
+
+
+class QueryIntentTestSuiteConnection(StrictModel):
+    id: JsonUUID
+    name: str = Field(min_length=1, max_length=255)
+
+
+class QueryIntentTestSuiteSemanticLayerSummary(StrictModel):
+    version: str = Field(min_length=1, max_length=40)
+    status: Literal["draft", "proposed", "active", "archived"]
+    freshness: Literal["fresh", "stale"]
+    semantic_hash: Sha256
+    base_graph_hash: Sha256
+    base_policy_hash: Sha256
+
+
+class QueryIntentTestSuiteReport(StrictModel):
+    run_id: CanonicalJsonUUID
+    created_at: str
+    environment: str = Field(min_length=1, max_length=100)
+    suite_id: QueryIntentTestSuiteId = Field(strict=False)
+    ai_mode: QueryIntentTestAIMode = Field(strict=False)
+    connection: QueryIntentTestSuiteConnection
+    semantic_layer: QueryIntentTestSuiteSemanticLayerSummary
+    summary: QueryIntentTestSuiteSummary
+    results: list[QueryIntentTestResult] = Field(max_length=1000)
+
+    @field_validator("created_at")
+    @classmethod
+    def validate_created_at(cls, value: str) -> str:
+        if not _RFC3339_DATETIME_PATTERN.fullmatch(value):
+            raise ValueError("created_at must use RFC 3339 date-time syntax")
+        return value
+
+
 class QueryExecutionOptions(StrictModel):
     mode: Literal["plan_only", "run"]
     row_limit: int = Field(ge=1, le=5000)

@@ -12,6 +12,7 @@ import {
 } from "../../lib/query-intent/service";
 import { getActiveTenantContext } from "../../lib/tenant";
 import { WorkspaceTabs } from "../semantic/semantic-workspace";
+import { QueryIntentTestRunner } from "./test-runner";
 
 type SearchParams = {
   connection?: string;
@@ -133,6 +134,11 @@ export default async function QueryIntentPage({
             Risolvi
           </button>
         </form>
+
+        <QueryIntentTestRunner
+          connectionId={selectedConnectionId}
+          tenantId={context.tenantId}
+        />
 
         {error ? (
           <section className="border border-red-500/40 p-4">

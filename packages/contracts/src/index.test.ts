@@ -10,6 +10,8 @@ import {
   EngineSchema,
   QueryIntentRequestSchema,
   QueryIntentResultSchema,
+  QueryIntentTestSuiteReportSchema,
+  QueryIntentTestSuiteRunRequestSchema,
   QueryResponseSchema,
   QueryRequestSchema,
   SemanticRelationshipSchema,
@@ -610,6 +612,67 @@ describe("contracts", () => {
         message: "Missing reason."
       })
     ).toThrow();
+  });
+
+  it("validates query intent bulk test suite reports", () => {
+    const parsedRequest = QueryIntentTestSuiteRunRequestSchema.parse({
+      tenant_id: semanticLayerFixture.tenant_id,
+      connection_id: semanticLayerFixture.connection_id,
+      user_id: userId,
+      connection_name: "TEST - AdventureWorksLT",
+      environment: "test",
+      suite_id: "adventureworks_v1",
+      ai_mode: "disabled",
+      semantic_layer: semanticLayerFixture,
+      graph: queryabilityGraphFixture
+    });
+
+    expect(parsedRequest.ai_mode).toBe("disabled");
+
+    const parsedReport = QueryIntentTestSuiteReportSchema.parse({
+      run_id: "99999999-9999-4999-8999-999999999999",
+      created_at: "2026-06-29T10:00:00.000Z",
+      environment: "test",
+      suite_id: "adventureworks_v1",
+      ai_mode: "disabled",
+      connection: {
+        id: semanticLayerFixture.connection_id,
+        name: "TEST - AdventureWorksLT"
+      },
+      semantic_layer: {
+        version: `v${semanticLayerFixture.version}`,
+        status: semanticLayerFixture.status,
+        freshness: semanticLayerFixture.freshness,
+        semantic_hash: semanticLayerFixture.semantic_hash,
+        base_graph_hash: semanticLayerFixture.base_graph_hash,
+        base_policy_hash: semanticLayerFixture.base_policy_hash
+      },
+      summary: {
+        total: 1,
+        passed: 1,
+        failed: 0,
+        skipped: 0
+      },
+      results: [
+        {
+          id: "core_fatturato_2008",
+          question: "fatturato 2008",
+          passed: true,
+          expected: {
+            description: {
+              result_status_equals: "ready"
+            }
+          },
+          actual: {
+            status: "ready"
+          },
+          diffs: [],
+          duration_ms: 1
+        }
+      ]
+    });
+
+    expect(parsedReport.results[0]?.passed).toBe(true);
   });
 
   it("rejects null for optional query response fields", () => {

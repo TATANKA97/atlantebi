@@ -2226,6 +2226,82 @@ export const QueryIntentResultSchema = z
   });
 export type QueryIntentResult = z.infer<typeof QueryIntentResultSchema>;
 
+export const QueryIntentTestSuiteIdSchema = z.enum(["adventureworks_v1"]);
+export type QueryIntentTestSuiteId = z.infer<
+  typeof QueryIntentTestSuiteIdSchema
+>;
+
+export const QueryIntentTestAIModeSchema = z.enum(["disabled", "advisory"]);
+export type QueryIntentTestAIMode = z.infer<
+  typeof QueryIntentTestAIModeSchema
+>;
+
+export const QueryIntentTestSuiteRunRequestSchema = z.strictObject({
+  tenant_id: z.string().uuid(),
+  connection_id: z.string().uuid(),
+  user_id: z.string().uuid(),
+  connection_name: z.string().min(1).max(255).nullable().default(null),
+  environment: z.string().min(1).max(100).default("unknown"),
+  suite_id: QueryIntentTestSuiteIdSchema.default("adventureworks_v1"),
+  ai_mode: QueryIntentTestAIModeSchema.default("disabled"),
+  semantic_layer: SemanticLayerSchema,
+  graph: QueryabilityGraphArtifactSchema
+});
+export type QueryIntentTestSuiteRunRequest = z.infer<
+  typeof QueryIntentTestSuiteRunRequestSchema
+>;
+
+export const QueryIntentTestDiffSchema = z.strictObject({
+  matcher: z.string().min(1).max(100),
+  message: z.string().min(1).max(500),
+  expected: z.unknown().optional(),
+  actual: z.unknown().optional()
+});
+export type QueryIntentTestDiff = z.infer<typeof QueryIntentTestDiffSchema>;
+
+export const QueryIntentTestResultSchema = z.strictObject({
+  id: z.string().min(1).max(100),
+  question: z.string().min(1).max(1000),
+  passed: z.boolean(),
+  expected: z.record(z.string(), z.unknown()),
+  actual: z.record(z.string(), z.unknown()),
+  diffs: z.array(QueryIntentTestDiffSchema).max(100),
+  duration_ms: z.number().int().min(0)
+});
+export type QueryIntentTestResult = z.infer<
+  typeof QueryIntentTestResultSchema
+>;
+
+export const QueryIntentTestSuiteReportSchema = z.strictObject({
+  run_id: z.string().uuid(),
+  created_at: Rfc3339DateTimeSchema,
+  environment: z.string().min(1).max(100),
+  suite_id: QueryIntentTestSuiteIdSchema,
+  ai_mode: QueryIntentTestAIModeSchema,
+  connection: z.strictObject({
+    id: z.string().uuid(),
+    name: z.string().min(1).max(255)
+  }),
+  semantic_layer: z.strictObject({
+    version: z.string().min(1).max(40),
+    status: z.enum(["draft", "proposed", "active", "archived"]),
+    freshness: z.enum(["fresh", "stale"]),
+    semantic_hash: Sha256Schema,
+    base_graph_hash: Sha256Schema,
+    base_policy_hash: Sha256Schema
+  }),
+  summary: z.strictObject({
+    total: z.number().int().min(0),
+    passed: z.number().int().min(0),
+    failed: z.number().int().min(0),
+    skipped: z.number().int().min(0)
+  }),
+  results: z.array(QueryIntentTestResultSchema).max(1000)
+});
+export type QueryIntentTestSuiteReport = z.infer<
+  typeof QueryIntentTestSuiteReportSchema
+>;
+
 export const QueryRequestSchema = z
   .strictObject({
     tenant_id: z.string().uuid(),
