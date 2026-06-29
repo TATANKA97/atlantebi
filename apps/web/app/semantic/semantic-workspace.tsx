@@ -300,7 +300,12 @@ export function WorkspaceTabs({
   active,
   connectionId
 }: {
-  active: "semantic" | "technical" | "north-stars" | "ai-provider";
+  active:
+    | "semantic"
+    | "technical"
+    | "north-stars"
+    | "ai-provider"
+    | "query-intent";
   connectionId?: string;
 }) {
   const semanticHref = connectionId
@@ -315,6 +320,9 @@ export function WorkspaceTabs({
   const aiProviderHref = connectionId
     ? `/semantic?tab=ai-provider&connection=${connectionId}`
     : "/semantic?tab=ai-provider";
+  const queryIntentHref = connectionId
+    ? `/query-intent?connection=${connectionId}`
+    : "/query-intent";
   return (
     <nav
       aria-label="Workspace schema"
@@ -363,6 +371,17 @@ export function WorkspaceTabs({
         href={aiProviderHref}
       >
         AI Provider
+      </Link>
+      <Link
+        className={`pb-3 ${
+          active === "query-intent"
+            ? "border-b-2 border-[color:var(--accent)] font-medium"
+            : "text-[color:var(--muted)]"
+        }`}
+        aria-current={active === "query-intent" ? "page" : undefined}
+        href={queryIntentHref}
+      >
+        Query Intent
       </Link>
     </nav>
   );
@@ -454,6 +473,12 @@ function VersionToolbar({
         </div>
         {canManage ? (
           <div className="flex flex-wrap items-end gap-3">
+            <Link
+              className="border border-[color:var(--border)] px-3 py-2 text-sm font-medium"
+              href={`/query-intent?connection=${connection.id}`}
+            >
+              Testa intent
+            </Link>
             <form
               action={updateSemanticCurrencyAction}
               className="flex items-end gap-2"
