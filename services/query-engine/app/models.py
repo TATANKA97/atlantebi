@@ -1740,6 +1740,170 @@ class QueryPermission(StrictModel):
     can_save_widget: bool
 
 
+QueryIntentUnsupportedReason = Literal[
+    "multi_metric_not_supported",
+    "unsafe_dimension_for_metric",
+    "semantic_layer_stale",
+    "metric_not_eligible",
+    "sensitive_filter_not_allowed",
+    "unsupported_time_expression",
+    "unsupported_calculated_metric",
+    "unsupported_comparison",
+]
+
+
+class QueryIntentPolicy(StrictModel):
+    order_status_scope: Literal[
+        "all_statuses_with_disclosure",
+        "clarification_required",
+    ] = "all_statuses_with_disclosure"
+
+
+class QueryIntentAICandidate(StrictModel):
+    primary_metric_key: CanonicalJsonUUID | None = None
+    dimension_column_key: Sha256 | None = None
+    filter_column_keys: list[Sha256] = Field(default_factory=list, max_length=10)
+
+
+class QueryIntentRequest(StrictModel):
+    tenant_id: JsonUUID
+    connection_id: JsonUUID
+    user_id: JsonUUID
+    question: str = Field(min_length=1, max_length=1000)
+    semantic_layer: SemanticLayer
+    graph: QueryabilityGraphArtifact
+    policy: QueryIntentPolicy = Field(default_factory=QueryIntentPolicy)
+    ai_enabled: bool = False
+    ai_candidate: QueryIntentAICandidate | None = None
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "QueryIntentRequest":
+        if (
+            self.semantic_layer.tenant_id != self.tenant_id
+            or self.semantic_layer.connection_id != self.connection_id
+            or self.graph.tenant_id != self.tenant_id
+            or self.graph.connection_id != self.connection_id
+        ):
+            raise ValueError(
+                "semantic_layer and graph tenant/connection must match the request"
+            )
+        return self
+
+
+class QueryIntentTimeRange(StrictModel):
+    kind: Literal["year", "month", "custom"]
+    start_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    label: str = Field(min_length=1, max_length=100)
+
+
+class QueryIntentGroupByDimension(StrictModel):
+    column_key: Sha256
+    edge_path: list[Sha256] = Field(default_factory=list, max_length=4)
+    safety: Literal["safe"]
+
+
+class QueryIntentRejectedAlternative(StrictModel):
+    reason: QueryIntentUnsupportedReason
+    metric_key: CanonicalJsonUUID | None = None
+    dimension_column_key: Sha256 | None = None
+    message: str = Field(min_length=1, max_length=500)
+
+
+class QueryIntentAuditEvent(StrictModel):
+    code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,99}$")
+    message: str = Field(min_length=1, max_length=500)
+    metadata: dict[NonEmptyString, str | int | FiniteFloat | bool] = Field(
+        default_factory=dict,
+        max_length=100,
+    )
+
+
+class QueryIntentClarificationOption(StrictModel):
+    label: str = Field(min_length=1, max_length=255)
+    value: str = Field(min_length=1, max_length=100)
+    metric_key: CanonicalJsonUUID | None = None
+    business_concept_ref: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_]{1,99}$",
+    )
+    metric_variant: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_]{1,99}$",
+    )
+
+
+class QueryIntentClarification(StrictModel):
+    reason_code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,99}$")
+    question: str = Field(min_length=1, max_length=500)
+    options: list[QueryIntentClarificationOption] = Field(min_length=1, max_length=10)
+
+
+class QueryIntentPlan(StrictModel):
+    primary_metric_key: CanonicalJsonUUID
+    requested_concept_ref: str = Field(pattern=r"^[a-z][a-z0-9_]{1,99}$")
+    selected_variant: str = Field(pattern=r"^[a-z][a-z0-9_]{1,99}$")
+    effective_date_column_key: Sha256 | None = None
+    time_range: QueryIntentTimeRange | None = None
+    group_by_dimensions: list[QueryIntentGroupByDimension] = Field(
+        default_factory=list,
+        max_length=1,
+    )
+    required_edge_path_keys: list[Sha256] = Field(default_factory=list, max_length=4)
+    grain_safety_decision: Literal["safe"]
+    filters: list[SemanticFilter] = Field(default_factory=list, max_length=10)
+    rejected_alternatives: list[QueryIntentRejectedAlternative] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+    disclosures: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+    audit_trail: list[QueryIntentAuditEvent] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+
+
+class QueryIntentResult(StrictModel):
+    status: Literal["ready", "needs_clarification", "blocked"]
+    unsupported_reason: QueryIntentUnsupportedReason | None = None
+    plan: QueryIntentPlan | None = None
+    clarification: QueryIntentClarification | None = None
+    audit_trail: list[QueryIntentAuditEvent] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    message: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_result_shape(self) -> "QueryIntentResult":
+        if self.status == "ready":
+            if (
+                self.plan is None
+                or self.clarification is not None
+                or self.unsupported_reason is not None
+            ):
+                raise ValueError("ready intent results require only a plan")
+        elif self.status == "needs_clarification":
+            if (
+                self.clarification is None
+                or self.plan is not None
+                or self.unsupported_reason is not None
+            ):
+                raise ValueError(
+                    "needs_clarification intent results require only clarification"
+                )
+        elif (
+            self.plan is not None
+            or self.clarification is not None
+            or self.unsupported_reason is None
+        ):
+            raise ValueError("blocked intent results require unsupported_reason only")
+        return self
+
+
 class QueryExecutionOptions(StrictModel):
     mode: Literal["plan_only", "run"]
     row_limit: int = Field(ge=1, le=5000)

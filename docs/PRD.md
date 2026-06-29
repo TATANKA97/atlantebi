@@ -2322,7 +2322,7 @@ Servizi:
 
 ## 31. Milestone MVP
 
-Stato aggiornato al 16 giugno 2026. Le milestone completate restano
+Stato aggiornato al 29 giugno 2026. Le milestone completate restano
 documentate perché definiscono le dipendenze delle fasi successive.
 
 ### Milestone 1 — Fondamenta e sicurezza di base — completata
@@ -2393,25 +2393,58 @@ MySQL è differito. Non deve rallentare il percorso SQL Server end-to-end.
 * tab UI dedicato;
 * nessuna triangolazione o modifica del calcolo metrica.
 
-### Milestone 7 — Semantic End-to-End Gate — in corso
+### Milestone 7 — Semantic End-to-End Gate — completata
 
 * graph -> seed -> AI draft -> validation -> activation;
 * auto-activation e manual review policy;
 * stale e rebase;
 * eval AdventureWorksLT;
 * verifica DB/API/UI e security suite;
-* semantic active pronto come input del compiler.
+* semantic active pronto come input del compiler;
+* v11 AdventureWorksLT considerata baseline valida per procedere:
+  active/fresh, quality gate passed, metriche core compiler-eligible,
+  ambiguita' aperte ridotte a chiarimenti materiali.
 * generazione sincrona mantenuta per il gate; background generation job e UX
   asincrona sono il successivo hardening production.
 
-### Milestone 8 — Query Intent Resolver
+### Milestone 8 — Query Intent Resolver — completata lato plan-only
 
 * intent strutturato;
 * selezione metriche richiesta;
 * business concept e metric variant;
 * clarification flow;
 * disclosure delle interpretazioni;
-* nessun SQL libero.
+* nessun SQL libero;
+* nessuna esecuzione query;
+* nessun Query Compiler in questa milestone.
+
+Stato: implementata come resolver V1 stretto. Una domanda utente diventa un
+`QueryIntentPlan` strutturato e validato contro Semantic Layer active/fresh,
+Queryability Graph e policy. Il resolver supporta una metrica primaria, al
+massimo una dimensione, time range semplice per anno, disclosure e
+clarification materialmente necessarie. L'AI e' advisory: il canonicalizer
+server-side decide la selezione finale. Il payload non contiene SQL e non
+avvia execution.
+
+Acceptance AdventureWorksLT:
+
+* "fatturato 2008" -> `revenue/net_header`, `OrderDate`,
+  disclosure status-scope;
+* "totale documento 2008" -> `revenue/document_total`, `OrderDate`;
+* "quantita' venduta per categoria" -> `quantity_sold/line_quantity`,
+  ProductCategory safe;
+* "fatturato per categoria prodotto" -> `revenue/line_detail`,
+  ProductCategory safe, mai `SubTotal` via detail;
+* "clienti" -> `needs_clarification`;
+* "clienti che hanno ordinato" -> `customers/order_customers`;
+* "clienti in anagrafica" -> `customers/customer_master`;
+* "totale documento per categoria prodotto" -> blocked,
+  `unsafe_dimension_for_metric`;
+* "fatturato e quantita' per categoria" -> blocked,
+  `multi_metric_not_supported`;
+* Semantic Layer stale, metriche `not_eligible`, filtri/dimensioni sensitive
+  o richieste fuori scope devono bloccare il piano con `unsupported_reason`
+  strutturato.
 
 ### Milestone 9 — Query Compiler SQL Server
 
@@ -2571,19 +2604,37 @@ Sistema:
 ## 35. Prossima implementazione
 
 Fondamenta, connessione SQL Server, Technical Snapshot, Queryability Graph,
-North Star Foundation e Semantic Layer fino al workspace API/UI sono
-completati. Il gate corrente è il **Semantic End-to-End Gate**:
+North Star Foundation e Semantic Layer fino al Semantic End-to-End Gate sono
+completati. La v11 AdventureWorksLT e' la baseline di partenza per la query
+pipeline: semantic active/fresh, quality gate passed, metriche core
+compiler-eligible e ambiguita' aperte limitate a chiarimenti materiali.
 
-```txt
-Validare graph -> seed -> AI candidate -> canonical builder -> quality gate ->
-validator -> activation su AdventureWorksLT. Devono risultare compiler-eligible
-almeno fatturato netto, totale documento, quantità venduta e ordini; clienti
-può richiedere chiarimento. Nessuna metrica header può attraversare un fanout
-detail per essere raggruppata per prodotto o categoria.
-```
+La Milestone 8 - Query Intent Resolver e' implementata come gate plan-only.
+Il resolver:
 
-Dopo il gate si introduce la generazione semantica asincrona production e poi
-si implementano Query Intent Resolver e Query Compiler SQL Server.
+* legge domanda utente, Semantic Layer active/fresh, policy utente e graph;
+* seleziona solo metriche richieste o strettamente necessarie;
+* sceglie metric variant coerenti con grain e dimensioni;
+* produce un Query Plan strutturato, non SQL;
+* blocca Semantic Layer stale, metriche non eligible e join/fanout unsafe;
+* chiede chiarimento quando l'intento resta materialmente ambiguo;
+* restituisce disclosure quando usa metriche AI-proposed o policy-resolved;
+* espone un endpoint query-engine `POST /query/intent/resolve` e una pagina
+  debug web `/query-intent`.
+
+Fuori scope Milestone 8:
+
+* Query Compiler SQL Server;
+* esecuzione query;
+* chart/dashboard;
+* Result Validator;
+* triangolazione;
+* generazione semantica asincrona production.
+
+La generazione semantica asincrona resta hardening production successivo, ma
+non deve bloccare il percorso MVP. Prima serve sapere interpretare una domanda
+in un piano sicuro; questo gate ora esiste. Il prossimo passo MVP e' compilare
+quel piano in SQL Server deterministico.
 
 ---
 

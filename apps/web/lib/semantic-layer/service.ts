@@ -237,13 +237,15 @@ type SemanticVersionRow = Omit<
   rebased_from_version_id: string | null;
 };
 
-type GraphRow = {
+export type CurrentQueryabilityGraph = {
   id: string;
   connection_id: string;
   version: number;
   graph_hash: string;
   graph: unknown;
 };
+
+type GraphRow = CurrentQueryabilityGraph;
 
 export class SemanticLayerServiceError extends Error {
   constructor(
@@ -352,6 +354,16 @@ export async function readConnectionSemanticPolicy({
   context: ActiveTenantContext;
 }) {
   return readCurrentSemanticPolicy(context.tenantId, connectionId, true);
+}
+
+export async function readCurrentQueryabilityGraph({
+  connectionId,
+  context
+}: {
+  connectionId: string;
+  context: ActiveTenantContext;
+}) {
+  return readCurrentGraph(context.tenantId, connectionId, true);
 }
 
 export async function createSemanticDraft({
