@@ -2,9 +2,9 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import {
-  readJson,
-  semanticMutationRequestError
-} from "../../../../lib/semantic-layer/api";
+  queryIntentJsonPostRequestError,
+  readQueryIntentJson
+} from "../../../../lib/query-intent/api";
 import {
   QueryIntentServiceError,
   runQueryIntentTestSuite
@@ -23,12 +23,12 @@ const RequestSchema = z.strictObject({
 });
 
 export async function POST(request: Request) {
-  const requestError = semanticMutationRequestError(request);
+  const requestError = queryIntentJsonPostRequestError(request);
   if (requestError) {
     return requestError;
   }
 
-  const parsed = RequestSchema.safeParse(await readJson(request));
+  const parsed = RequestSchema.safeParse(await readQueryIntentJson(request));
   if (!parsed.success) {
     return json({ error: "invalid_query_intent_test_suite_request" }, 400);
   }
