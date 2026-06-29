@@ -1,10 +1,15 @@
 import Link from "next/link";
-import type { QueryIntentResult } from "@atlantebi/contracts";
+import type { QueryIntentResult, SemanticLayer } from "@atlantebi/contracts";
 
 import {
   QueryIntentServiceError,
   resolveQueryIntent
 } from "../../lib/query-intent/service";
+import {
+  buildSemanticIndexes,
+  metricFormulaLabel,
+  semanticColumnLabel
+} from "../../lib/semantic-layer/presentation";
 import { getActiveTenantContext } from "../../lib/tenant";
 import { WorkspaceTabs } from "../semantic/semantic-workspace";
 
@@ -40,15 +45,18 @@ export default async function QueryIntentPage({
   const selectedConnectionId = params.connection ?? connections[0]?.id ?? "";
   const question = params.question?.trim() ?? "";
   let result: QueryIntentResult | null = null;
+  let semanticLayer: SemanticLayer | null = null;
   let error: string | null = null;
 
   if (selectedConnectionId && question) {
     try {
-      result = await resolveQueryIntent({
+      const resolution = await resolveQueryIntent({
         connectionId: selectedConnectionId,
         context,
         question
       });
+      result = resolution.result;
+      semanticLayer = resolution.semanticLayer;
     } catch (caught) {
       error =
         caught instanceof QueryIntentServiceError
@@ -131,13 +139,32 @@ export default async function QueryIntentPage({
           </section>
         ) : null}
 
-        {result ? <IntentResult result={result} /> : null}
+        {result ? (
+          <IntentResult result={result} semanticLayer={semanticLayer} />
+        ) : null}
       </section>
     </main>
   );
 }
 
-function IntentResult({ result }: { result: QueryIntentResult }) {
+function IntentResult({
+  result,
+  semanticLayer
+}: {
+  result: QueryIntentResult;
+  semanticLayer: SemanticLayer | null;
+}) {
+  const indexes = semanticLayer ? buildSemanticIndexes(semanticLayer) : null;
+  const metric = result.plan
+    ? semanticLayer?.metrics.find(
+        (item) => item.metric_key === result.plan?.primary_metric_key
+      )
+    : undefined;
+  const dateColumn =
+    result.plan?.effective_date_column_key && indexes
+      ? indexes.columns.get(result.plan.effective_date_column_key)
+      : undefined;
+
   return (
     <section className="flex flex-col gap-4 border border-[color:var(--border)] p-4">
       <div className="flex flex-wrap items-center gap-3">
@@ -155,13 +182,34 @@ function IntentResult({ result }: { result: QueryIntentResult }) {
 
       {result.plan ? (
         <div className="grid gap-3 md:grid-cols-2">
+          <SummaryRow label="Metric display name" value={metric?.name ?? "-"} />
+          <SummaryRow
+            label="Metric formula"
+            value={metric && indexes ? metricFormulaLabel(metric, indexes) : "-"}
+          />
+          <SummaryRow
+            label="Date display name"
+            value={
+              result.plan.effective_date_column_key && indexes
+                ? semanticColumnLabel(dateColumn, indexes.tables)
+                : "-"
+            }
+          />
+          <SummaryRow
+            label="Time range start"
+            value={result.plan.time_range?.start_date ?? "-"}
+          />
+          <SummaryRow
+            label="Time range end"
+            value={result.plan.time_range?.end_date ?? "-"}
+          />
           <SummaryRow label="Metric key" value={result.plan.primary_metric_key} />
           <SummaryRow
             label="Concept"
             value={`${result.plan.requested_concept_ref}/${result.plan.selected_variant}`}
           />
           <SummaryRow
-            label="Date"
+            label="Date key"
             value={result.plan.effective_date_column_key ?? "-"}
           />
           <SummaryRow
