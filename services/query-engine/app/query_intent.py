@@ -1,6 +1,7 @@
 import re
 import unicodedata
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 from app.models import (
     QueryIntentAuditEvent,
@@ -15,11 +16,32 @@ from app.models import (
     QueryIntentUnsupportedReason,
     QueryabilityForeignKeyEdge,
     QueryabilityGraphArtifact,
+    SemanticFilter,
     SemanticMetric,
 )
 
 
 _YEAR_PATTERN = re.compile(r"\b(19\d{2}|20\d{2})\b")
+_MONTHS = {
+    "gennaio": 1,
+    "febbraio": 2,
+    "marzo": 3,
+    "aprile": 4,
+    "maggio": 5,
+    "giugno": 6,
+    "luglio": 7,
+    "agosto": 8,
+    "settembre": 9,
+    "ottobre": 10,
+    "novembre": 11,
+    "dicembre": 12,
+}
+_MONTH_PATTERN = "|".join(_MONTHS)
+_DATE_RANGE_PATTERN = re.compile(
+    rf"\bda(?:l)?\s+(\d{{1,2}})\s+({_MONTH_PATTERN})\s+(19\d{{2}}|20\d{{2}})"
+    rf"\s+a(?:l)?\s+(\d{{1,2}})\s+({_MONTH_PATTERN})\s+(19\d{{2}}|20\d{{2}})\b"
+)
+_MONTH_YEAR_PATTERN = re.compile(rf"\b({_MONTH_PATTERN})\s+(19\d{{2}}|20\d{{2}})\b")
 _RELATIVE_TIME_TERMS = (
     "mese scorso",
     "scorso mese",
@@ -41,7 +63,32 @@ _COMPARISON_TERMS = (
     "yoy",
     "mom",
 )
-_CALCULATED_TERMS = ("margine", "profitto", "calcol")
+_CALCULATED_TERMS = (
+    "%",
+    "calcol",
+    "conversione",
+    "incidenza",
+    "margine",
+    "percentuale",
+    "profitto",
+    "quota",
+    "ratio",
+    "tasso",
+)
+_DESTRUCTIVE_TERMS = (
+    "aggiorna",
+    "cancella",
+    "crea record",
+    "delete",
+    "drop",
+    "elimina",
+    "insert",
+    "inserisci",
+    "modifica",
+    "rimuovi",
+    "truncate",
+    "update",
+)
 _REVENUE_TERMS = ("fatturato", "ricavi", "vendite", "revenue")
 _REVENUE_LINE_DETAIL_TERMS = (
     "fatturato righe",
@@ -66,7 +113,11 @@ _ORDER_CUSTOMER_TERMS = (
 _CUSTOMER_MASTER_TERMS = (
     "clienti in anagrafica",
     "anagrafica clienti",
+    "clienti censiti",
+    "clienti registrati",
     "customer master",
+    "registered customers",
+    "totale clienti registrati",
 )
 _DOCUMENT_TOTAL_TERMS = ("totale documento", "totaldue", "total amount due")
 _NET_REVENUE_TERMS = ("fatturato netto", "net revenue")
@@ -74,6 +125,22 @@ _ORDER_TERMS = ("ordini", "ordine", "documenti vendita", "sales orders", "orders
 _CATEGORY_TERMS = ("categoria prodotto", "categorie prodotto", "categoria")
 _PRODUCT_TERMS = ("prodotto", "prodotti", "product")
 _EMAIL_TERMS = ("email", "e-mail", "mail")
+_ONLINE_TERMS = ("e commerce", "e-commerce", "ecommerce", "online", "ordini online", "web")
+_OFFLINE_TERMS = (
+    "offline",
+    "rappresentante",
+    "sales rep",
+    "staff",
+    "venditore",
+)
+_BLACK_COLOR_TERMS = (
+    "color black",
+    "color nero",
+    "colore black",
+    "colore nero",
+    "prodotti neri",
+    "prodotto nero",
+)
 
 
 @dataclass(frozen=True)
@@ -81,6 +148,7 @@ class _SemanticIndexes:
     metrics_by_key: dict[str, SemanticMetric]
     metrics_by_concept_variant: dict[tuple[str, str], SemanticMetric]
     columns_by_key: set[str]
+    safe_filter_columns_by_object_name: dict[tuple[str, str], str]
     sensitive_email_column_available: bool
     concept_aliases: dict[str, set[str]]
     metric_aliases: dict[tuple[str, str], set[str]]
@@ -132,6 +200,7 @@ def resolve_query_intent(request: QueryIntentRequest) -> QueryIntentResult:
 
     time_range = _parse_time_range(normalized)
     dimension = _select_dimension(normalized, request.graph)
+    filters = _select_filters(normalized, indexes)
 
     metric_selection = _select_metric(normalized, dimension, indexes)
     if metric_selection is None:
@@ -246,6 +315,7 @@ def resolve_query_intent(request: QueryIntentRequest) -> QueryIntentResult:
         group_by_dimensions=dimension_plan,
         required_edge_path_keys=required_edges,
         grain_safety_decision="safe",
+        filters=filters,
         rejected_alternatives=rejected,
         disclosures=_dedupe(disclosures),
         audit_trail=audit_trail,
@@ -287,6 +357,22 @@ def _build_indexes(request: QueryIntentRequest) -> _SemanticIndexes:
                 metric.name,
             )
     columns_by_key = {column.column_key for column in request.semantic_layer.columns}
+    semantic_columns_by_key = {
+        column.column_key: column for column in request.semantic_layer.columns
+    }
+    safe_filter_columns_by_object_name = {}
+    for node in request.graph.nodes:
+        for graph_column in node.columns:
+            semantic_column = semantic_columns_by_key.get(graph_column.column_key)
+            if (
+                semantic_column is not None
+                and semantic_column.included
+                and semantic_column.queryability_status == "queryable"
+                and semantic_column.sensitivity == "none"
+            ):
+                safe_filter_columns_by_object_name[
+                    (node.object_name, graph_column.name)
+                ] = graph_column.column_key
     sensitive_email_column_available = any(
         "email" in _normalize(column.physical_name) and column.sensitivity != "none"
         for column in request.semantic_layer.columns
@@ -295,6 +381,7 @@ def _build_indexes(request: QueryIntentRequest) -> _SemanticIndexes:
         metrics_by_key=metrics_by_key,
         metrics_by_concept_variant=metrics_by_concept_variant,
         columns_by_key=columns_by_key,
+        safe_filter_columns_by_object_name=safe_filter_columns_by_object_name,
         sensitive_email_column_available=sensitive_email_column_available,
         concept_aliases=concept_aliases,
         metric_aliases=metric_aliases,
@@ -367,13 +454,15 @@ def _validate_semantic_readiness(
 
 
 def _detect_out_of_scope(normalized: str) -> QueryIntentUnsupportedReason | None:
+    if any(term in normalized for term in _DESTRUCTIVE_TERMS):
+        return "destructive_request_not_allowed"
     if any(term in normalized for term in _COMPARISON_TERMS):
         return "unsupported_comparison"
     if any(term in normalized for term in _RELATIVE_TIME_TERMS):
         return "unsupported_time_expression"
     if any(term in normalized for term in _CALCULATED_TERMS):
         return "unsupported_calculated_metric"
-    if _mentions_revenue(normalized) and _mentions_quantity(normalized):
+    if _is_multi_metric_request(normalized):
         return "multi_metric_not_supported"
     return None
 
@@ -390,6 +479,40 @@ def _detect_sensitive_dimension_or_filter(
 
 
 def _parse_time_range(normalized: str) -> QueryIntentTimeRange | None:
+    range_match = _DATE_RANGE_PATTERN.search(normalized)
+    if range_match is not None:
+        start = _date_from_parts(
+            day=range_match.group(1),
+            month_name=range_match.group(2),
+            year=range_match.group(3),
+        )
+        inclusive_end = _date_from_parts(
+            day=range_match.group(4),
+            month_name=range_match.group(5),
+            year=range_match.group(6),
+        )
+        if start is not None and inclusive_end is not None and start <= inclusive_end:
+            end = inclusive_end + timedelta(days=1)
+            return QueryIntentTimeRange(
+                kind="custom",
+                start_date=start.isoformat(),
+                end_date=end.isoformat(),
+                label=f"{start.isoformat()} - {inclusive_end.isoformat()}",
+            )
+
+    month_match = _MONTH_YEAR_PATTERN.search(normalized)
+    if month_match is not None:
+        month = _MONTHS[month_match.group(1)]
+        year = int(month_match.group(2))
+        start = date(year, month, 1)
+        end = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+        return QueryIntentTimeRange(
+            kind="month",
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+            label=f"{month_match.group(1)} {year}",
+        )
+
     match = _YEAR_PATTERN.search(normalized)
     if match is None:
         return None
@@ -400,6 +523,13 @@ def _parse_time_range(normalized: str) -> QueryIntentTimeRange | None:
         end_date=f"{int(year) + 1}-01-01",
         label=year,
     )
+
+
+def _date_from_parts(*, day: str, month_name: str, year: str) -> date | None:
+    try:
+        return date(int(year), _MONTHS[month_name], int(day))
+    except ValueError:
+        return None
 
 
 def _select_dimension(
@@ -423,6 +553,54 @@ def _select_dimension(
                 label="Product",
             )
     return None
+
+
+def _select_filters(
+    normalized: str,
+    indexes: _SemanticIndexes,
+) -> list[SemanticFilter]:
+    filters: list[SemanticFilter] = []
+    online_flag = _safe_filter_column(indexes, "SalesOrderHeader", "OnlineOrderFlag")
+    if online_flag is not None:
+        if _contains_any(normalized, _ONLINE_TERMS):
+            filters.append(
+                SemanticFilter(
+                    column_key=online_flag,
+                    operator="eq",
+                    value=True,
+                    value_type="boolean",
+                )
+            )
+        elif _contains_any(normalized, _OFFLINE_TERMS):
+            filters.append(
+                SemanticFilter(
+                    column_key=online_flag,
+                    operator="eq",
+                    value=False,
+                    value_type="boolean",
+                )
+            )
+
+    color = _safe_filter_column(indexes, "Product", "Color")
+    if color is not None and _contains_any(normalized, _BLACK_COLOR_TERMS):
+        filters.append(
+            SemanticFilter(
+                column_key=color,
+                operator="eq",
+                value="black",
+                value_type="string",
+            )
+        )
+
+    return filters
+
+
+def _safe_filter_column(
+    indexes: _SemanticIndexes,
+    object_name: str,
+    column_name: str,
+) -> str | None:
+    return indexes.safe_filter_columns_by_object_name.get((object_name, column_name))
 
 
 def _select_metric(
@@ -708,6 +886,9 @@ def _blocked_message(reason: QueryIntentUnsupportedReason) -> str:
             "Calculated metrics are outside Query Intent Resolver V1."
         ),
         "unsupported_comparison": "Comparisons are outside Query Intent Resolver V1.",
+        "destructive_request_not_allowed": (
+            "Destructive or data-changing operations are outside Query Intent Resolver V1."
+        ),
     }[reason]
 
 
@@ -726,6 +907,18 @@ def _graph_column_key(
 
 def _mentions_revenue(normalized: str) -> bool:
     return any(term in normalized for term in _REVENUE_TERMS)
+
+
+def _is_multi_metric_request(normalized: str) -> bool:
+    if " e " not in normalized and " and " not in normalized:
+        return False
+    mentioned = [
+        _contains_any(normalized, (*_REVENUE_TERMS, "sales")),
+        _contains_any(normalized, (*_QUANTITY_TERMS, "units")),
+        _contains_any(normalized, _ORDER_TERMS),
+        _contains_any(normalized, _CUSTOMER_TERMS),
+    ]
+    return sum(1 for item in mentioned if item) > 1
 
 
 def _mentions_line_detail_revenue(

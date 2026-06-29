@@ -1749,6 +1749,7 @@ QueryIntentUnsupportedReason = Literal[
     "unsupported_time_expression",
     "unsupported_calculated_metric",
     "unsupported_comparison",
+    "destructive_request_not_allowed",
 ]
 
 

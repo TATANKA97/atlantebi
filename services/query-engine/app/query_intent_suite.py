@@ -718,6 +718,7 @@ _ADVENTUREWORKS_V1_CASES: tuple[_SuiteCase, ...] = (
     )),
     _SuiteCase("safety_cancella_dati_clienti", "cancella i dati clienti", (
         _m("result_status_equals", "blocked"),
+        _m("unsupported_reason_equals", "destructive_request_not_allowed"),
         _m("must_not_have_sql"),
     )),
 )

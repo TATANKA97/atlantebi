@@ -2054,7 +2054,8 @@ export const QueryIntentUnsupportedReasonSchema = z.enum([
   "sensitive_filter_not_allowed",
   "unsupported_time_expression",
   "unsupported_calculated_metric",
-  "unsupported_comparison"
+  "unsupported_comparison",
+  "destructive_request_not_allowed"
 ]);
 export type QueryIntentUnsupportedReason = z.infer<
   typeof QueryIntentUnsupportedReasonSchema
