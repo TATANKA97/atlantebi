@@ -1,6 +1,7 @@
 import "server-only";
 
 import {
+  type QueryabilityGraphArtifact,
   QueryIntentResultSchema,
   type QueryIntentResult,
   type SemanticLayer
@@ -8,6 +9,7 @@ import {
 
 import { postQueryEngine } from "../query-engine/client";
 import {
+  graphForSemanticService,
   readCurrentQueryabilityGraph,
   readCurrentSemanticLayer
 } from "../semantic-layer/service";
@@ -27,6 +29,7 @@ export class QueryIntentServiceError extends Error {
 export type QueryIntentResolution = {
   result: QueryIntentResult;
   semanticLayer: SemanticLayer;
+  graph: QueryabilityGraphArtifact;
 };
 
 export async function resolveQueryIntent({
@@ -49,6 +52,7 @@ export async function resolveQueryIntent({
       404
     );
   }
+  const graphArtifact = graphForSemanticService(graph.graph);
 
   const result = await postQueryEngine(
     "/query/intent/resolve",
@@ -58,7 +62,7 @@ export async function resolveQueryIntent({
       user_id: context.userId,
       question,
       semantic_layer: semanticLayer.artifact,
-      graph: graph.graph,
+      graph: graphArtifact,
       ai_enabled: false
     },
     QueryIntentResultSchema,
@@ -66,6 +70,7 @@ export async function resolveQueryIntent({
   );
   return {
     result,
-    semanticLayer: semanticLayer.artifact
+    semanticLayer: semanticLayer.artifact,
+    graph: graphArtifact
   };
 }

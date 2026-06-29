@@ -1,15 +1,15 @@
 import Link from "next/link";
-import type { QueryIntentResult, SemanticLayer } from "@atlantebi/contracts";
+import type {
+  QueryabilityGraphArtifact,
+  QueryIntentResult,
+  SemanticLayer
+} from "@atlantebi/contracts";
 
+import { buildQueryIntentDebugPresentation } from "../../lib/query-intent/presentation";
 import {
   QueryIntentServiceError,
   resolveQueryIntent
 } from "../../lib/query-intent/service";
-import {
-  buildSemanticIndexes,
-  metricFormulaLabel,
-  semanticColumnLabel
-} from "../../lib/semantic-layer/presentation";
 import { getActiveTenantContext } from "../../lib/tenant";
 import { WorkspaceTabs } from "../semantic/semantic-workspace";
 
@@ -46,6 +46,7 @@ export default async function QueryIntentPage({
   const question = params.question?.trim() ?? "";
   let result: QueryIntentResult | null = null;
   let semanticLayer: SemanticLayer | null = null;
+  let graph: QueryabilityGraphArtifact | null = null;
   let error: string | null = null;
 
   if (selectedConnectionId && question) {
@@ -57,6 +58,7 @@ export default async function QueryIntentPage({
       });
       result = resolution.result;
       semanticLayer = resolution.semanticLayer;
+      graph = resolution.graph;
     } catch (caught) {
       error =
         caught instanceof QueryIntentServiceError
@@ -140,7 +142,11 @@ export default async function QueryIntentPage({
         ) : null}
 
         {result ? (
-          <IntentResult result={result} semanticLayer={semanticLayer} />
+          <IntentResult
+            graph={graph}
+            result={result}
+            semanticLayer={semanticLayer}
+          />
         ) : null}
       </section>
     </main>
@@ -148,22 +154,19 @@ export default async function QueryIntentPage({
 }
 
 function IntentResult({
+  graph,
   result,
   semanticLayer
 }: {
+  graph: QueryabilityGraphArtifact | null;
   result: QueryIntentResult;
   semanticLayer: SemanticLayer | null;
 }) {
-  const indexes = semanticLayer ? buildSemanticIndexes(semanticLayer) : null;
-  const metric = result.plan
-    ? semanticLayer?.metrics.find(
-        (item) => item.metric_key === result.plan?.primary_metric_key
-      )
-    : undefined;
-  const dateColumn =
-    result.plan?.effective_date_column_key && indexes
-      ? indexes.columns.get(result.plan.effective_date_column_key)
-      : undefined;
+  const debug = buildQueryIntentDebugPresentation({
+    graph,
+    result,
+    semanticLayer
+  });
 
   return (
     <section className="flex flex-col gap-4 border border-[color:var(--border)] p-4">
@@ -181,54 +184,30 @@ function IntentResult({
       <p className="text-sm text-[color:var(--muted)]">{result.message}</p>
 
       {result.plan ? (
-        <div className="grid gap-3 md:grid-cols-2">
-          <SummaryRow label="Metric display name" value={metric?.name ?? "-"} />
-          <SummaryRow
-            label="Metric formula"
-            value={metric && indexes ? metricFormulaLabel(metric, indexes) : "-"}
-          />
-          <SummaryRow
-            label="Date display name"
-            value={
-              result.plan.effective_date_column_key && indexes
-                ? semanticColumnLabel(dateColumn, indexes.tables)
-                : "-"
-            }
-          />
-          <SummaryRow
-            label="Time range start"
-            value={result.plan.time_range?.start_date ?? "-"}
-          />
-          <SummaryRow
-            label="Time range end"
-            value={result.plan.time_range?.end_date ?? "-"}
-          />
-          <SummaryRow label="Metric key" value={result.plan.primary_metric_key} />
-          <SummaryRow
-            label="Concept"
-            value={`${result.plan.requested_concept_ref}/${result.plan.selected_variant}`}
-          />
-          <SummaryRow
-            label="Date key"
-            value={result.plan.effective_date_column_key ?? "-"}
-          />
-          <SummaryRow
-            label="Time range"
-            value={result.plan.time_range?.label ?? "-"}
-          />
-          <SummaryRow
-            label="Group by"
-            value={
-              result.plan.group_by_dimensions
-                .map((item) => item.column_key)
-                .join(", ") || "-"
-            }
-          />
-          <SummaryRow
-            label="Edges"
-            value={result.plan.required_edge_path_keys.join(", ") || "-"}
-          />
-        </div>
+        <>
+          <div className="grid gap-3 md:grid-cols-2">
+            <SummaryRow label="Metric" value={debug.metricLabel} />
+            <SummaryRow label="Date" value={debug.dateLabel} />
+            <SummaryRow
+              label="Time range start"
+              value={debug.timeRangeStartLabel}
+            />
+            <SummaryRow
+              label="Time range end"
+              value={debug.timeRangeEndLabel}
+            />
+            <SummaryRow
+              label="Concept"
+              value={`${result.plan.requested_concept_ref}/${result.plan.selected_variant}`}
+            />
+            <SummaryRow
+              label="Time range"
+              value={result.plan.time_range?.label ?? "-"}
+            />
+          </div>
+          <SummaryList label="Group by" values={debug.groupByLabels} />
+          <SummaryList label="Edges" values={debug.edgeLabels} />
+        </>
       ) : null}
 
       {result.clarification ? (
@@ -264,9 +243,22 @@ function IntentResult({
         </div>
       ) : null}
 
+      {debug.auditLabels.length ? (
+        <details className="text-sm">
+          <summary>Audit leggibile</summary>
+          <ul className="mt-3 list-disc pl-5 text-xs text-[color:var(--muted)]">
+            {debug.auditLabels.map((item) => (
+              <li className="break-all" key={item}>
+                {item}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+
       {result.audit_trail.length ? (
         <details className="text-sm">
-          <summary>Audit trail</summary>
+          <summary>Audit trail tecnico</summary>
           <pre className="mt-3 overflow-auto bg-black/20 p-3 text-xs">
             {JSON.stringify(result.audit_trail, null, 2)}
           </pre>
@@ -281,6 +273,25 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
     <div className="border border-[color:var(--border)] p-3">
       <div className="text-xs uppercase text-[color:var(--muted)]">{label}</div>
       <div className="mt-1 break-all text-sm">{value}</div>
+    </div>
+  );
+}
+
+function SummaryList({ label, values }: { label: string; values: string[] }) {
+  return (
+    <div className="border border-[color:var(--border)] p-3">
+      <div className="text-xs uppercase text-[color:var(--muted)]">{label}</div>
+      {values.length > 0 ? (
+        <ul className="mt-2 grid gap-1 text-sm">
+          {values.map((value) => (
+            <li className="break-all" key={value}>
+              {value}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="mt-1 text-sm">-</div>
+      )}
     </div>
   );
 }
