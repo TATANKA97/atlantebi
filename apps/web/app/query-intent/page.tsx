@@ -6,6 +6,7 @@ import {
   resolveQueryIntent
 } from "../../lib/query-intent/service";
 import { getActiveTenantContext } from "../../lib/tenant";
+import { WorkspaceTabs } from "../semantic/semantic-workspace";
 
 type SearchParams = {
   connection?: string;
@@ -79,6 +80,13 @@ export default async function QueryIntentPage({
             Semantic Layer
           </Link>
         </header>
+
+        <WorkspaceTabs
+          active="query-intent"
+          {...(selectedConnectionId
+            ? { connectionId: selectedConnectionId }
+            : {})}
+        />
 
         <form
           className="grid gap-4 border border-[color:var(--border)] p-4 md:grid-cols-[minmax(220px,320px)_1fr_auto]"
