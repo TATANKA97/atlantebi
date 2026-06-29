@@ -1912,6 +1912,8 @@ class QueryIntentTestAIMode(StrEnum):
 
 class QueryIntentTestSuiteId(StrEnum):
     adventureworks_v1 = "adventureworks_v1"
+    adventureworks_v1_ai_advisory = "adventureworks_v1_ai_advisory"
+    adventureworks_v1_concept_invariants = "adventureworks_v1_concept_invariants"
 
 
 class QueryIntentTestSuiteRunRequest(StrictModel):
@@ -1946,10 +1948,21 @@ class QueryIntentTestSuiteRunRequest(StrictModel):
 
 
 class QueryIntentTestDiff(StrictModel):
+    category: Literal["fixture", "invariant", "ai_advisory"] = "fixture"
     matcher: str = Field(min_length=1, max_length=100)
     message: str = Field(min_length=1, max_length=500)
     expected: Any | None = None
     actual: Any | None = None
+
+
+class QueryIntentAICandidateReport(StrictModel):
+    candidate: QueryIntentAICandidate | None = None
+    decision: Literal["not_applicable", "accepted", "rejected", "ignored"]
+    decision_reason: str = Field(min_length=1, max_length=500)
+    audit_codes: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(
+        default_factory=list,
+        max_length=100,
+    )
 
 
 class QueryIntentTestResult(StrictModel):
@@ -1959,7 +1972,38 @@ class QueryIntentTestResult(StrictModel):
     expected: dict[str, Any]
     actual: dict[str, Any]
     diffs: list[QueryIntentTestDiff] = Field(max_length=100)
+    fixture_diffs: list[QueryIntentTestDiff] = Field(default_factory=list, max_length=100)
+    invariant_diffs: list[QueryIntentTestDiff] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    ai_advisory_diffs: list[QueryIntentTestDiff] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    deterministic_result: dict[str, Any] | None = None
+    fake_ai_candidate: QueryIntentAICandidate | None = None
+    final_result: dict[str, Any] | None = None
+    ai_candidate_decision: Literal[
+        "not_applicable",
+        "accepted",
+        "rejected",
+        "ignored",
+    ] = "not_applicable"
+    ai_candidate_decision_reason: str | None = Field(default=None, max_length=500)
+    ai_candidate_summary: QueryIntentAICandidateReport | None = None
     duration_ms: int = Field(ge=0)
+
+
+class QueryIntentTestSuiteAssertionSummary(StrictModel):
+    passed: int = Field(ge=0)
+    failed: int = Field(ge=0)
+
+
+class QueryIntentTestSuiteAdvisorySummary(StrictModel):
+    enabled: bool = False
+    regressions: int = Field(default=0, ge=0)
+    candidate_rejections: int = Field(default=0, ge=0)
 
 
 class QueryIntentTestSuiteSummary(StrictModel):
@@ -1967,6 +2011,21 @@ class QueryIntentTestSuiteSummary(StrictModel):
     passed: int = Field(ge=0)
     failed: int = Field(ge=0)
     skipped: int = Field(ge=0)
+    fixture_assertions: QueryIntentTestSuiteAssertionSummary = Field(
+        default_factory=lambda: QueryIntentTestSuiteAssertionSummary(
+            passed=0,
+            failed=0,
+        )
+    )
+    invariants: QueryIntentTestSuiteAssertionSummary = Field(
+        default_factory=lambda: QueryIntentTestSuiteAssertionSummary(
+            passed=0,
+            failed=0,
+        )
+    )
+    ai_advisory: QueryIntentTestSuiteAdvisorySummary = Field(
+        default_factory=QueryIntentTestSuiteAdvisorySummary
+    )
 
 
 class QueryIntentTestSuiteConnection(StrictModel):

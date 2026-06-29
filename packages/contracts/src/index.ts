@@ -2227,7 +2227,11 @@ export const QueryIntentResultSchema = z
   });
 export type QueryIntentResult = z.infer<typeof QueryIntentResultSchema>;
 
-export const QueryIntentTestSuiteIdSchema = z.enum(["adventureworks_v1"]);
+export const QueryIntentTestSuiteIdSchema = z.enum([
+  "adventureworks_v1",
+  "adventureworks_v1_ai_advisory",
+  "adventureworks_v1_concept_invariants"
+]);
 export type QueryIntentTestSuiteId = z.infer<
   typeof QueryIntentTestSuiteIdSchema
 >;
@@ -2253,12 +2257,35 @@ export type QueryIntentTestSuiteRunRequest = z.infer<
 >;
 
 export const QueryIntentTestDiffSchema = z.strictObject({
+  category: z
+    .enum(["fixture", "invariant", "ai_advisory"])
+    .default("fixture"),
   matcher: z.string().min(1).max(100),
   message: z.string().min(1).max(500),
   expected: z.unknown().optional(),
   actual: z.unknown().optional()
 });
 export type QueryIntentTestDiff = z.infer<typeof QueryIntentTestDiffSchema>;
+
+export const QueryIntentAICandidateDecisionSchema = z.enum([
+  "not_applicable",
+  "accepted",
+  "rejected",
+  "ignored"
+]);
+export type QueryIntentAICandidateDecision = z.infer<
+  typeof QueryIntentAICandidateDecisionSchema
+>;
+
+export const QueryIntentAICandidateReportSchema = z.strictObject({
+  candidate: QueryIntentAICandidateSchema.nullable().default(null),
+  decision: QueryIntentAICandidateDecisionSchema,
+  decision_reason: z.string().min(1).max(500),
+  audit_codes: z.array(z.string().min(1).max(100)).max(100).default([])
+});
+export type QueryIntentAICandidateReport = z.infer<
+  typeof QueryIntentAICandidateReportSchema
+>;
 
 export const QueryIntentTestResultSchema = z.strictObject({
   id: z.string().min(1).max(100),
@@ -2267,10 +2294,38 @@ export const QueryIntentTestResultSchema = z.strictObject({
   expected: z.record(z.string(), z.unknown()),
   actual: z.record(z.string(), z.unknown()),
   diffs: z.array(QueryIntentTestDiffSchema).max(100),
+  fixture_diffs: z.array(QueryIntentTestDiffSchema).max(100).default([]),
+  invariant_diffs: z.array(QueryIntentTestDiffSchema).max(100).default([]),
+  ai_advisory_diffs: z.array(QueryIntentTestDiffSchema).max(100).default([]),
+  deterministic_result: z.record(z.string(), z.unknown()).nullable().default(null),
+  fake_ai_candidate: QueryIntentAICandidateSchema.nullable().default(null),
+  final_result: z.record(z.string(), z.unknown()).nullable().default(null),
+  ai_candidate_decision: QueryIntentAICandidateDecisionSchema.default(
+    "not_applicable"
+  ),
+  ai_candidate_decision_reason: z.string().max(500).nullable().default(null),
+  ai_candidate_summary: QueryIntentAICandidateReportSchema.nullable().default(null),
   duration_ms: z.number().int().min(0)
 });
 export type QueryIntentTestResult = z.infer<
   typeof QueryIntentTestResultSchema
+>;
+
+export const QueryIntentTestSuiteAssertionSummarySchema = z.strictObject({
+  passed: z.number().int().min(0),
+  failed: z.number().int().min(0)
+});
+export type QueryIntentTestSuiteAssertionSummary = z.infer<
+  typeof QueryIntentTestSuiteAssertionSummarySchema
+>;
+
+export const QueryIntentTestSuiteAdvisorySummarySchema = z.strictObject({
+  enabled: z.boolean().default(false),
+  regressions: z.number().int().min(0).default(0),
+  candidate_rejections: z.number().int().min(0).default(0)
+});
+export type QueryIntentTestSuiteAdvisorySummary = z.infer<
+  typeof QueryIntentTestSuiteAdvisorySummarySchema
 >;
 
 export const QueryIntentTestSuiteReportSchema = z.strictObject({
@@ -2295,7 +2350,20 @@ export const QueryIntentTestSuiteReportSchema = z.strictObject({
     total: z.number().int().min(0),
     passed: z.number().int().min(0),
     failed: z.number().int().min(0),
-    skipped: z.number().int().min(0)
+    skipped: z.number().int().min(0),
+    fixture_assertions: QueryIntentTestSuiteAssertionSummarySchema.default({
+      passed: 0,
+      failed: 0
+    }),
+    invariants: QueryIntentTestSuiteAssertionSummarySchema.default({
+      passed: 0,
+      failed: 0
+    }),
+    ai_advisory: QueryIntentTestSuiteAdvisorySummarySchema.default({
+      enabled: false,
+      regressions: 0,
+      candidate_rejections: 0
+    })
   }),
   results: z.array(QueryIntentTestResultSchema).max(1000)
 });

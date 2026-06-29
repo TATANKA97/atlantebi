@@ -38,6 +38,15 @@ const report: QueryIntentTestSuiteReport = {
         unsupported_reason: null
       },
       diffs: [],
+      fixture_diffs: [],
+      invariant_diffs: [],
+      ai_advisory_diffs: [],
+      deterministic_result: null,
+      fake_ai_candidate: null,
+      final_result: null,
+      ai_candidate_decision: "not_applicable",
+      ai_candidate_decision_reason: null,
+      ai_candidate_summary: null,
       duration_ms: 1,
       expected: {
         description: {
@@ -56,12 +65,55 @@ const report: QueryIntentTestSuiteReport = {
       },
       diffs: [
         {
+          category: "fixture",
           actual: "ready",
           expected: "blocked",
           matcher: "result_status_equals",
           message: "Matcher result_status_equals failed."
         }
       ],
+      fixture_diffs: [
+        {
+          category: "fixture",
+          actual: "ready",
+          expected: "blocked",
+          matcher: "result_status_equals",
+          message: "Matcher result_status_equals failed."
+        }
+      ],
+      invariant_diffs: [],
+      ai_advisory_diffs: [
+        {
+          category: "ai_advisory",
+          actual: "ready",
+          expected: "blocked",
+          matcher: "advisory_matches_deterministic_status",
+          message: "AI advisory changed the deterministic final result."
+        }
+      ],
+      deterministic_result: {
+        status: "blocked"
+      },
+      fake_ai_candidate: {
+        primary_metric_key: "99999999-9999-4999-8999-999999999999",
+        dimension_column_key: null,
+        filter_column_keys: []
+      },
+      final_result: {
+        status: "ready"
+      },
+      ai_candidate_decision: "ignored",
+      ai_candidate_decision_reason: "The AI candidate was ignored.",
+      ai_candidate_summary: {
+        candidate: {
+          primary_metric_key: "99999999-9999-4999-8999-999999999999",
+          dimension_column_key: null,
+          filter_column_keys: []
+        },
+        decision: "ignored",
+        decision_reason: "The AI candidate was ignored.",
+        audit_codes: ["AI_METRIC_CANDIDATE_IGNORED"]
+      },
       duration_ms: 1,
       expected: {
         description: {
@@ -86,6 +138,19 @@ const report: QueryIntentTestSuiteReport = {
   suite_id: "adventureworks_v1",
   summary: {
     failed: 1,
+    fixture_assertions: {
+      failed: 1,
+      passed: 1
+    },
+    invariants: {
+      failed: 0,
+      passed: 2
+    },
+    ai_advisory: {
+      candidate_rejections: 0,
+      enabled: true,
+      regressions: 1
+    },
     passed: 1,
     skipped: 0,
     total: 2
@@ -95,7 +160,7 @@ const report: QueryIntentTestSuiteReport = {
 describe("query intent test suite report presentation", () => {
   it("builds a copyable summary", () => {
     expect(queryIntentReportSummary(report)).toBe(
-      "Query Intent adventureworks_v1: 1/2 passed, 1 failed (TEST - AdventureWorksLT)"
+      "Query Intent adventureworks_v1: 1/2 passed, 1 failed, invariants 0 failed, advisory regressions 1 (TEST - AdventureWorksLT)"
     );
   });
 
@@ -106,6 +171,11 @@ describe("query intent test suite report presentation", () => {
     expect(markdown).toContain("| FAIL | safety_cancella_dati_clienti |");
     expect(markdown).toContain("## Failed Details");
     expect(markdown).toContain("Matcher result_status_equals failed.");
+    expect(markdown).toContain("## Failed Invariants");
+    expect(markdown).toContain("No invariant failures.");
+    expect(markdown).toContain("## AI Advisory Regressions");
+    expect(markdown).toContain("AI advisory changed the deterministic final result.");
+    expect(markdown).toContain("## AI Candidate Decisions");
     expect(markdown).toContain("## Full Details");
   });
 
@@ -119,6 +189,9 @@ describe("query intent test suite report presentation", () => {
         metric: expect.objectContaining({
           formula: "SUM(SalesLT.SalesOrderHeader.SubTotal)",
           key: "99999999-9999-4999-8999-999999999999"
+        }),
+        ai_advisory: expect.objectContaining({
+          decision: "not_applicable"
         }),
         time_range: expect.objectContaining({
           end_date: "2009-01-01",

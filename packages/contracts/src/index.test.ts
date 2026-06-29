@@ -628,6 +628,13 @@ describe("contracts", () => {
     });
 
     expect(parsedRequest.ai_mode).toBe("disabled");
+    expect(
+      QueryIntentTestSuiteRunRequestSchema.parse({
+        ...parsedRequest,
+        suite_id: "adventureworks_v1_ai_advisory",
+        ai_mode: "advisory"
+      }).suite_id
+    ).toBe("adventureworks_v1_ai_advisory");
 
     const parsedReport = QueryIntentTestSuiteReportSchema.parse({
       run_id: "99999999-9999-4999-8999-999999999999",
@@ -651,7 +658,20 @@ describe("contracts", () => {
         total: 1,
         passed: 1,
         failed: 0,
-        skipped: 0
+        skipped: 0,
+        fixture_assertions: {
+          passed: 1,
+          failed: 0
+        },
+        invariants: {
+          passed: 1,
+          failed: 0
+        },
+        ai_advisory: {
+          enabled: true,
+          regressions: 0,
+          candidate_rejections: 1
+        }
       },
       results: [
         {
@@ -667,12 +687,40 @@ describe("contracts", () => {
             status: "ready"
           },
           diffs: [],
+          fixture_diffs: [],
+          invariant_diffs: [],
+          ai_advisory_diffs: [],
+          deterministic_result: {
+            status: "ready"
+          },
+          fake_ai_candidate: {
+            primary_metric_key: semanticLayerFixture.metrics[0]?.metric_key,
+            dimension_column_key: null,
+            filter_column_keys: []
+          },
+          final_result: {
+            status: "ready"
+          },
+          ai_candidate_decision: "accepted",
+          ai_candidate_decision_reason: "Candidate matched.",
+          ai_candidate_summary: {
+            candidate: {
+              primary_metric_key: semanticLayerFixture.metrics[0]?.metric_key,
+              dimension_column_key: null,
+              filter_column_keys: []
+            },
+            decision: "accepted",
+            decision_reason: "Candidate matched.",
+            audit_codes: ["AI_METRIC_CANDIDATE_ACCEPTED"]
+          },
           duration_ms: 1
         }
       ]
     });
 
     expect(parsedReport.results[0]?.passed).toBe(true);
+    expect(parsedReport.summary.invariants.failed).toBe(0);
+    expect(parsedReport.results[0]?.ai_candidate_decision).toBe("accepted");
   });
 
   it("rejects null for optional query response fields", () => {
