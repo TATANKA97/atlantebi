@@ -1095,8 +1095,17 @@ def _column_sensitivity(
         return "sensitive", "SECRET_NAME"
     if "key" in token_set and token_set & {"api", "access", "private", "secret"}:
         return "sensitive", "SECRET_KEY_NAME"
-    if any(token in {"email", "phone"} for token in tokens):
+    if any(token in {"email", "phone", "telefono"} for token in tokens):
         return "pii", "CONTACT_IDENTIFIER"
+    if compact_name in {
+        "codicefiscale",
+        "fiscalcode",
+        "taxcode",
+        "iban",
+        "partitaiva",
+        "vatnumber",
+    } or token_set & {"iban"} or token_set >= {"partita", "iva"}:
+        return "pii", "REGULATED_IDENTIFIER"
     if compact_name in {
         "firstname",
         "middlename",
