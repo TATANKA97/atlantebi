@@ -26,8 +26,11 @@ export function QueryIntentTestRunner({
   tenantId: string;
 }) {
   const [error, setError] = useState<string | null>(null);
+  const [activeSuiteId, setActiveSuiteId] =
+    useState<QueryIntentTestSuiteId>("adventureworks_v1");
   const [report, setReport] = useState<QueryIntentTestSuiteReport | null>(null);
   const [status, setStatus] = useState<RunnerStatus>("idle");
+  const visibleSuiteId = report?.suite_id ?? activeSuiteId;
   const markdown = useMemo(
     () => (report ? queryIntentReportToMarkdown(report) : ""),
     [report]
@@ -41,6 +44,7 @@ export function QueryIntentTestRunner({
       return;
     }
     setStatus("running");
+    setActiveSuiteId(suiteId);
     setError(null);
     setReport(null);
     try {
@@ -72,7 +76,7 @@ export function QueryIntentTestRunner({
         <div>
           <h2 className="text-lg font-semibold">Resolver Test Runner</h2>
           <p className="mt-1 text-sm text-[color:var(--muted)]">
-            Suite AdventureWorksLT, AI disabled, nessun SQL e nessuna esecuzione.
+            {suiteDescription(visibleSuiteId)}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -277,6 +281,16 @@ function ResultRow({ result }: { result: QueryIntentTestResult }) {
       </tr>
     </>
   );
+}
+
+function suiteDescription(suiteId: QueryIntentTestSuiteId) {
+  if (suiteId === "adventureworks_v1_ai_advisory") {
+    return "AdventureWorksLT, AI advisory con candidate fake/adversarial, nessun provider live, nessun SQL e nessuna esecuzione.";
+  }
+  if (suiteId === "adventureworks_v1_concept_invariants") {
+    return "AdventureWorksLT concept-level invariants, nessun SQL e nessuna esecuzione.";
+  }
+  return "AdventureWorksLT, AI disabled, nessun SQL e nessuna esecuzione.";
 }
 
 function RunButton({
