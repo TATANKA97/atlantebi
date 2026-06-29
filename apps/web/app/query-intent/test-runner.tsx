@@ -4,6 +4,8 @@ import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import type {
   QueryIntentTestResult,
+  QueryIntentTestAIMode,
+  QueryIntentTestSuiteId,
   QueryIntentTestSuiteReport
 } from "@atlantebi/contracts";
 
@@ -31,7 +33,10 @@ export function QueryIntentTestRunner({
     [report]
   );
 
-  async function runSuite() {
+  async function runSuite(
+    suiteId: QueryIntentTestSuiteId,
+    aiMode: QueryIntentTestAIMode
+  ) {
     if (!connectionId) {
       return;
     }
@@ -41,9 +46,9 @@ export function QueryIntentTestRunner({
     try {
       const response = await fetch("/api/query-intent/test-suite", {
         body: JSON.stringify({
-          ai_mode: "disabled",
+          ai_mode: aiMode,
           connection_id: connectionId,
-          suite_id: "adventureworks_v1",
+          suite_id: suiteId,
           tenant_id: tenantId
         }),
         headers: { "content-type": "application/json" },
@@ -70,14 +75,28 @@ export function QueryIntentTestRunner({
             Suite AdventureWorksLT, AI disabled, nessun SQL e nessuna esecuzione.
           </p>
         </div>
-        <button
-          className="border border-[color:var(--accent)] px-4 py-2 text-sm disabled:opacity-50"
-          disabled={!connectionId || status === "running"}
-          onClick={runSuite}
-          type="button"
-        >
-          {status === "running" ? "Running..." : "Run AdventureWorks resolver suite"}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <RunButton
+            disabled={!connectionId || status === "running"}
+            label="Run deterministic suite"
+            onClick={() => runSuite("adventureworks_v1", "disabled")}
+            running={status === "running"}
+          />
+          <RunButton
+            disabled={!connectionId || status === "running"}
+            label="Run AI advisory suite"
+            onClick={() => runSuite("adventureworks_v1_ai_advisory", "advisory")}
+            running={status === "running"}
+          />
+          <RunButton
+            disabled={!connectionId || status === "running"}
+            label="Run concept invariant suite"
+            onClick={() =>
+              runSuite("adventureworks_v1_concept_invariants", "disabled")
+            }
+            running={status === "running"}
+          />
+        </div>
       </div>
 
       <div className="grid gap-3 md:grid-cols-5">
@@ -87,6 +106,22 @@ export function QueryIntentTestRunner({
         <SummaryPill label="Failed" value={String(report?.summary.failed ?? 0)} />
         <SummaryPill label="Skipped" value={String(report?.summary.skipped ?? 0)} />
       </div>
+      {report ? (
+        <div className="grid gap-3 md:grid-cols-3">
+          <SummaryPill
+            label="Fixture"
+            value={`${report.summary.fixture_assertions.passed}/${report.summary.total} passed`}
+          />
+          <SummaryPill
+            label="Invariants"
+            value={`${report.summary.invariants.failed} failed`}
+          />
+          <SummaryPill
+            label="AI advisory"
+            value={`${report.summary.ai_advisory.regressions} regressions / ${report.summary.ai_advisory.candidate_rejections} rejected`}
+          />
+        </div>
+      ) : null}
 
       {error ? (
         <div className="border border-red-500/40 p-3 text-sm">{error}</div>
@@ -211,7 +246,14 @@ function ResultRow({ result }: { result: QueryIntentTestResult }) {
         <Cell>{labels(actual.group_by).join(", ") || "-"}</Cell>
         <Cell>{text(actual.unsupported_reason)}</Cell>
         <Cell>{listText(actual.disclosures)}</Cell>
-        <Cell>{listText(actual.audit_summary)}</Cell>
+        <Cell>
+          {listText([
+            ...(Array.isArray(actual.audit_summary) ? actual.audit_summary : []),
+            result.ai_candidate_decision !== "not_applicable"
+              ? `AI ${result.ai_candidate_decision}: ${result.ai_candidate_decision_reason ?? "-"}`
+              : ""
+          ])}
+        </Cell>
       </tr>
       <tr className="border-b border-[color:var(--border)]">
         <td className="p-2" colSpan={14}>
@@ -221,8 +263,12 @@ function ResultRow({ result }: { result: QueryIntentTestResult }) {
             </summary>
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               <DetailBlock title="Readable actual" value={readableActual(result)} />
-              <DetailBlock title="Mismatch details" value={result.diffs} />
+              <DetailBlock title="Fixture diffs" value={result.fixture_diffs} />
+              <DetailBlock title="Invariant diffs" value={result.invariant_diffs} />
+              <DetailBlock title="AI advisory diffs" value={result.ai_advisory_diffs} />
+              <DetailBlock title="AI candidate summary" value={result.ai_candidate_summary} />
               <DetailBlock title="Expected" value={result.expected} />
+              <DetailBlock title="Deterministic baseline" value={result.deterministic_result} />
               <DetailBlock title="Actual full QueryIntentResult" value={actual.raw_result} />
               <DetailBlock title="Audit trail raw" value={actual.audit_trail} />
             </div>
@@ -230,6 +276,29 @@ function ResultRow({ result }: { result: QueryIntentTestResult }) {
         </td>
       </tr>
     </>
+  );
+}
+
+function RunButton({
+  disabled,
+  label,
+  onClick,
+  running
+}: {
+  disabled: boolean;
+  label: string;
+  onClick: () => void;
+  running: boolean;
+}) {
+  return (
+    <button
+      className="border border-[color:var(--accent)] px-4 py-2 text-sm disabled:opacity-50"
+      disabled={disabled}
+      onClick={onClick}
+      type="button"
+    >
+      {running ? "Running..." : label}
+    </button>
   );
 }
 

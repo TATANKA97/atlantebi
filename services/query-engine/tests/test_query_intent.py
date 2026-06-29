@@ -420,6 +420,44 @@ def test_invented_ai_stable_key_is_audited_but_not_used() -> None:
     }
 
 
+def test_valid_ai_candidate_is_audited_after_deterministic_selection() -> None:
+    layer = active_adventureworks_layer()
+    net_revenue = metric_by_variant(layer, "net_header")
+    document_total = metric_by_variant(layer, "document_total")
+
+    accepted = resolve_query_intent(
+        request_for(
+            "fatturato 2008",
+            layer=layer,
+            ai_candidate=QueryIntentAICandidate(
+                primary_metric_key=net_revenue.metric_key,
+            ),
+        )
+    )
+    ignored = resolve_query_intent(
+        request_for(
+            "fatturato 2008",
+            layer=layer,
+            ai_candidate=QueryIntentAICandidate(
+                primary_metric_key=document_total.metric_key,
+            ),
+        )
+    )
+
+    assert accepted.status == "ready"
+    assert any(
+        event.code == "AI_METRIC_CANDIDATE_ACCEPTED"
+        for event in accepted.audit_trail
+    )
+    assert ignored.status == "ready"
+    assert ignored.plan is not None
+    assert ignored.plan.selected_variant == "net_header"
+    assert any(
+        event.code == "AI_METRIC_CANDIDATE_IGNORED"
+        for event in ignored.audit_trail
+    )
+
+
 def test_query_intent_endpoint_returns_plan(monkeypatch) -> None:
     monkeypatch.setenv("QUERY_ENGINE_API_TOKEN", "semantic-token")
     request = request_for("fatturato 2008")

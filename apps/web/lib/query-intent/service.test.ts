@@ -123,6 +123,19 @@ describe("query intent service", () => {
       suite_id: "adventureworks_v1",
       summary: {
         failed: 0,
+        fixture_assertions: {
+          failed: 0,
+          passed: 0
+        },
+        invariants: {
+          failed: 0,
+          passed: 0
+        },
+        ai_advisory: {
+          candidate_rejections: 0,
+          enabled: false,
+          regressions: 0
+        },
         passed: 0,
         skipped: 0,
         total: 0
@@ -151,5 +164,66 @@ describe("query intent service", () => {
       120_000
     );
     expect(report.suite_id).toBe("adventureworks_v1");
+  });
+
+  it("can request the AI advisory query intent suite", async () => {
+    mocks.postQueryEngine.mockResolvedValueOnce({
+      ai_mode: "advisory",
+      connection: {
+        id: semanticLayerFixture.connection_id,
+        name: "TEST - AdventureWorksLT"
+      },
+      created_at: "2026-06-29T10:00:00.000Z",
+      environment: "test",
+      results: [],
+      run_id: "99999999-9999-4999-8999-999999999999",
+      semantic_layer: {
+        base_graph_hash: semanticLayerFixture.base_graph_hash,
+        base_policy_hash: semanticLayerFixture.base_policy_hash,
+        freshness: semanticLayerFixture.freshness,
+        semantic_hash: semanticLayerFixture.semantic_hash,
+        status: semanticLayerFixture.status,
+        version: `v${semanticLayerFixture.version}`
+      },
+      suite_id: "adventureworks_v1_ai_advisory",
+      summary: {
+        failed: 0,
+        fixture_assertions: {
+          failed: 0,
+          passed: 0
+        },
+        invariants: {
+          failed: 0,
+          passed: 0
+        },
+        ai_advisory: {
+          candidate_rejections: 0,
+          enabled: true,
+          regressions: 0
+        },
+        passed: 0,
+        skipped: 0,
+        total: 0
+      }
+    });
+
+    await runQueryIntentTestSuite({
+      aiMode: "advisory",
+      connectionId: semanticLayerFixture.connection_id,
+      connectionName: "TEST - AdventureWorksLT",
+      context,
+      environment: "test",
+      suiteId: "adventureworks_v1_ai_advisory"
+    });
+
+    expect(mocks.postQueryEngine).toHaveBeenCalledWith(
+      "/query/intent/test-suite/run",
+      expect.objectContaining({
+        ai_mode: "advisory",
+        suite_id: "adventureworks_v1_ai_advisory"
+      }),
+      expect.anything(),
+      120_000
+    );
   });
 });

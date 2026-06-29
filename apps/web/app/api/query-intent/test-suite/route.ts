@@ -18,7 +18,13 @@ import {
 const RequestSchema = z.strictObject({
   tenant_id: z.string().uuid(),
   connection_id: z.string().uuid(),
-  suite_id: z.enum(["adventureworks_v1"]).default("adventureworks_v1"),
+  suite_id: z
+    .enum([
+      "adventureworks_v1",
+      "adventureworks_v1_ai_advisory",
+      "adventureworks_v1_concept_invariants"
+    ])
+    .default("adventureworks_v1"),
   ai_mode: z.enum(["disabled", "advisory"]).default("disabled")
 });
 

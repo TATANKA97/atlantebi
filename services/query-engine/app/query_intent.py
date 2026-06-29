@@ -306,6 +306,16 @@ def resolve_query_intent(request: QueryIntentRequest) -> QueryIntentResult:
                 "cannot be allocated to product dimensions in V1."
             )
 
+    audit_trail = [
+        *audit_trail,
+        *_audit_ai_candidate_decision(
+            request=request,
+            indexes=indexes,
+            metric=metric,
+            dimension_plan=dimension_plan,
+            filters=filters,
+        ),
+    ]
     plan = QueryIntentPlan(
         primary_metric_key=metric.metric_key,
         requested_concept_ref=metric_selection.concept_ref,
@@ -427,6 +437,87 @@ def _audit_ai_candidate(
                     metadata={"column_key": column_key},
                 )
             )
+    return events
+
+
+def _audit_ai_candidate_decision(
+    *,
+    request: QueryIntentRequest,
+    indexes: _SemanticIndexes,
+    metric: SemanticMetric,
+    dimension_plan: list[QueryIntentGroupByDimension],
+    filters: list[SemanticFilter],
+) -> list[QueryIntentAuditEvent]:
+    candidate = request.ai_candidate
+    if not request.ai_enabled or candidate is None:
+        return []
+    events: list[QueryIntentAuditEvent] = []
+    if (
+        candidate.primary_metric_key is not None
+        and str(candidate.primary_metric_key) in indexes.metrics_by_key
+    ):
+        accepted = candidate.primary_metric_key == metric.metric_key
+        events.append(
+            QueryIntentAuditEvent(
+                code=(
+                    "AI_METRIC_CANDIDATE_ACCEPTED"
+                    if accepted
+                    else "AI_METRIC_CANDIDATE_IGNORED"
+                ),
+                message=(
+                    "AI metric candidate matched the deterministic selection."
+                    if accepted
+                    else "AI metric candidate was valid but ignored by the deterministic canonicalizer."
+                ),
+                metadata={
+                    "metric_key": str(candidate.primary_metric_key),
+                    "selected_metric_key": str(metric.metric_key),
+                },
+            )
+        )
+    if (
+        candidate.dimension_column_key is not None
+        and candidate.dimension_column_key in indexes.columns_by_key
+    ):
+        selected_dimensions = {item.column_key for item in dimension_plan}
+        accepted = candidate.dimension_column_key in selected_dimensions
+        events.append(
+            QueryIntentAuditEvent(
+                code=(
+                    "AI_DIMENSION_CANDIDATE_ACCEPTED"
+                    if accepted
+                    else "AI_DIMENSION_CANDIDATE_IGNORED"
+                ),
+                message=(
+                    "AI dimension candidate matched the deterministic selection."
+                    if accepted
+                    else "AI dimension candidate was valid but ignored by the deterministic canonicalizer."
+                ),
+                metadata={
+                    "column_key": candidate.dimension_column_key,
+                },
+            )
+        )
+    selected_filter_keys = {item.column_key for item in filters}
+    for column_key in candidate.filter_column_keys:
+        if column_key not in indexes.columns_by_key:
+            continue
+        accepted = column_key in selected_filter_keys
+        events.append(
+            QueryIntentAuditEvent(
+                code=(
+                    "AI_FILTER_CANDIDATE_ACCEPTED"
+                    if accepted
+                    else "AI_FILTER_CANDIDATE_IGNORED"
+                ),
+                message=(
+                    "AI filter candidate matched the deterministic selection."
+                    if accepted
+                    else "AI filter candidate was valid but ignored by the deterministic canonicalizer."
+                ),
+                metadata={"column_key": column_key},
+            )
+        )
     return events
 
 

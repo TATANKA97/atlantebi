@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
 from app.models import (
+    QueryIntentAICandidate,
+    QueryIntentAICandidateReport,
     QueryIntentRequest,
     QueryIntentResult,
     QueryIntentTestDiff,
     QueryIntentTestResult,
+    QueryIntentTestSuiteAdvisorySummary,
+    QueryIntentTestSuiteAssertionSummary,
     QueryIntentTestSuiteConnection,
     QueryIntentTestSuiteReport,
     QueryIntentTestSuiteRunRequest,
@@ -36,12 +40,17 @@ class _SuiteCase:
 def run_query_intent_test_suite(
     request: QueryIntentTestSuiteRunRequest,
 ) -> QueryIntentTestSuiteReport:
-    if request.suite_id != "adventureworks_v1":
-        raise ValueError("Unsupported Query Intent test suite.")
+    cases = _suite_cases(request.suite_id)
 
-    results = [_run_case(case, request) for case in _ADVENTUREWORKS_V1_CASES]
+    results = [_run_case(case, request) for case in cases]
     passed = sum(1 for result in results if result.passed)
     failed = len(results) - passed
+    fixture_passed = sum(1 for result in results if not result.fixture_diffs)
+    invariant_passed = sum(1 for result in results if not result.invariant_diffs)
+    advisory_regressions = sum(1 for result in results if result.ai_advisory_diffs)
+    candidate_rejections = sum(
+        1 for result in results if result.ai_candidate_decision == "rejected"
+    )
     created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     return QueryIntentTestSuiteReport(
         run_id=uuid4(),
@@ -66,6 +75,19 @@ def run_query_intent_test_suite(
             passed=passed,
             failed=failed,
             skipped=0,
+            fixture_assertions=QueryIntentTestSuiteAssertionSummary(
+                passed=fixture_passed,
+                failed=len(results) - fixture_passed,
+            ),
+            invariants=QueryIntentTestSuiteAssertionSummary(
+                passed=invariant_passed,
+                failed=len(results) - invariant_passed,
+            ),
+            ai_advisory=QueryIntentTestSuiteAdvisorySummary(
+                enabled=_suite_uses_ai_advisory(request),
+                regressions=advisory_regressions,
+                candidate_rejections=candidate_rejections,
+            ),
         ),
         results=results,
     )
@@ -92,12 +114,53 @@ def _run_case(
                 ai_enabled=False,
             )
         )
+        deterministic_result = None
+        deterministic_actual = None
+        ai_candidate = None
+        if _suite_uses_ai_advisory(request):
+            deterministic_result = result
+            deterministic_actual = _actual_snapshot(
+                result=deterministic_result,
+                graph=request.graph,
+                layer=request.semantic_layer,
+            )
+            ai_candidate = _fake_ai_candidate_for_case(
+                case=case,
+                deterministic_result=deterministic_result,
+                graph=request.graph,
+                layer=request.semantic_layer,
+            )
+            result = resolve_query_intent(
+                QueryIntentRequest(
+                    tenant_id=request.tenant_id,
+                    connection_id=request.connection_id,
+                    user_id=request.user_id,
+                    question=case.question,
+                    semantic_layer=request.semantic_layer,
+                    graph=request.graph,
+                    ai_enabled=ai_candidate is not None,
+                    ai_candidate=ai_candidate,
+                )
+            )
+
         actual = _actual_snapshot(
             result=result,
             graph=request.graph,
             layer=request.semantic_layer,
         )
-        diffs = _evaluate_matchers(case.matchers, actual)
+        fixture_diffs = _evaluate_matchers(case.matchers, actual)
+        invariant_diffs = _evaluate_invariants(
+            result=result,
+            graph=request.graph,
+            layer=request.semantic_layer,
+        )
+        ai_summary = _ai_candidate_report(ai_candidate, result)
+        ai_advisory_diffs = _evaluate_ai_advisory(
+            actual=actual,
+            deterministic_actual=deterministic_actual,
+            candidate_report=ai_summary,
+            advisory_enabled=_suite_uses_ai_advisory(request),
+        )
     except Exception as exc:  # pragma: no cover - defensive report hardening
         actual = {
             "error": str(exc),
@@ -105,14 +168,21 @@ def _run_case(
             "has_sql": False,
             "status": "error",
         }
-        diffs = [
+        fixture_diffs = [
             QueryIntentTestDiff(
+                category="fixture",
                 matcher="case_execution",
                 expected="no exception",
                 actual=exc.__class__.__name__,
                 message="Test case raised an exception.",
             )
         ]
+        invariant_diffs = []
+        ai_advisory_diffs = []
+        deterministic_actual = None
+        ai_candidate = None
+        ai_summary = None
+    diffs = [*fixture_diffs, *invariant_diffs, *ai_advisory_diffs]
     return QueryIntentTestResult(
         id=case.id,
         question=case.question,
@@ -120,8 +190,169 @@ def _run_case(
         expected=expected,
         actual=actual,
         diffs=diffs,
+        fixture_diffs=fixture_diffs,
+        invariant_diffs=invariant_diffs,
+        ai_advisory_diffs=ai_advisory_diffs,
+        deterministic_result=deterministic_actual,
+        fake_ai_candidate=ai_candidate,
+        final_result=actual,
+        ai_candidate_decision=ai_summary.decision if ai_summary else "not_applicable",
+        ai_candidate_decision_reason=(
+            ai_summary.decision_reason if ai_summary else None
+        ),
+        ai_candidate_summary=ai_summary,
         duration_ms=int((perf_counter() - started) * 1000),
     )
+
+
+def _suite_cases(suite_id: str) -> tuple[_SuiteCase, ...]:
+    if suite_id == "adventureworks_v1_concept_invariants":
+        return _ADVENTUREWORKS_V1_CONCEPT_CASES
+    if suite_id in {"adventureworks_v1", "adventureworks_v1_ai_advisory"}:
+        return _ADVENTUREWORKS_V1_CASES
+    raise ValueError("Unsupported Query Intent test suite.")
+
+
+def _suite_uses_ai_advisory(request: QueryIntentTestSuiteRunRequest) -> bool:
+    return (
+        request.suite_id == "adventureworks_v1_ai_advisory"
+        or request.ai_mode == "advisory"
+    )
+
+
+def _fake_ai_candidate_for_case(
+    *,
+    case: _SuiteCase,
+    deterministic_result: QueryIntentResult,
+    graph: QueryabilityGraphArtifact,
+    layer: SemanticLayer,
+) -> QueryIntentAICandidate | None:
+    indexes = _PresentationIndexes(layer=layer, graph=graph)
+    if case.id == "core_fatturato_2008":
+        metric = _metric_by_variant(indexes, "document_total")
+        return QueryIntentAICandidate(primary_metric_key=metric.metric_key if metric else None)
+    if case.id == "grain_fatturato_categoria":
+        metric = _metric_by_variant(indexes, "net_header")
+        dimension_key = (
+            deterministic_result.plan.group_by_dimensions[0].column_key
+            if deterministic_result.plan and deterministic_result.plan.group_by_dimensions
+            else None
+        )
+        return QueryIntentAICandidate(
+            primary_metric_key=metric.metric_key if metric else None,
+            dimension_column_key=dimension_key,
+        )
+    if case.id == "safety_prompt_injection_totaldue_categoria":
+        return QueryIntentAICandidate(
+            primary_metric_key="99999999-9999-4999-8999-999999999999",
+            dimension_column_key="f" * 64,
+            filter_column_keys=["e" * 64],
+        )
+    if deterministic_result.plan is None:
+        return None
+    return QueryIntentAICandidate(
+        primary_metric_key=deterministic_result.plan.primary_metric_key,
+        dimension_column_key=(
+            deterministic_result.plan.group_by_dimensions[0].column_key
+            if deterministic_result.plan.group_by_dimensions
+            else None
+        ),
+        filter_column_keys=[
+            item.column_key for item in deterministic_result.plan.filters
+        ],
+    )
+
+
+def _metric_by_variant(
+    indexes: "_PresentationIndexes",
+    variant: str,
+) -> SemanticMetric | None:
+    return next(
+        (
+            metric
+            for metric in indexes.metrics.values()
+            if metric.metric_variant == variant
+        ),
+        None,
+    )
+
+
+def _ai_candidate_report(
+    candidate: QueryIntentAICandidate | None,
+    result: QueryIntentResult,
+) -> QueryIntentAICandidateReport | None:
+    if candidate is None:
+        return None
+    codes = [
+        event.code
+        for event in result.audit_trail
+        if event.code.startswith("AI_")
+    ]
+    if any(code.endswith("_REJECTED") for code in codes):
+        decision = "rejected"
+        reason = "At least one AI candidate stable key was outside the semantic layer."
+    elif any(code.endswith("_IGNORED") for code in codes):
+        decision = "ignored"
+        reason = "The AI candidate was valid but the deterministic canonicalizer selected a different safe plan."
+    elif any(code.endswith("_ACCEPTED") for code in codes):
+        decision = "accepted"
+        reason = "The AI candidate matched the deterministic final plan."
+    else:
+        decision = "ignored"
+        reason = "The AI candidate did not produce an executable advisory decision."
+    return QueryIntentAICandidateReport(
+        candidate=candidate,
+        decision=decision,
+        decision_reason=reason,
+        audit_codes=codes,
+    )
+
+
+def _evaluate_ai_advisory(
+    *,
+    actual: dict[str, Any],
+    deterministic_actual: dict[str, Any] | None,
+    candidate_report: QueryIntentAICandidateReport | None,
+    advisory_enabled: bool,
+) -> list[QueryIntentTestDiff]:
+    if not advisory_enabled:
+        return []
+    diffs: list[QueryIntentTestDiff] = []
+    if actual.get("has_sql") is not False:
+        diffs.append(_diff(
+            category="ai_advisory",
+            matcher="advisory_no_sql",
+            expected=False,
+            actual=actual.get("has_sql"),
+            message="AI advisory result exposed SQL.",
+        ))
+    if deterministic_actual is not None:
+        for key in ("status", "concept", "variant", "metric_formula", "unsupported_reason"):
+            if deterministic_actual.get(key) != actual.get(key):
+                diffs.append(_diff(
+                    category="ai_advisory",
+                    matcher=f"advisory_matches_deterministic_{key}",
+                    expected=deterministic_actual.get(key),
+                    actual=actual.get(key),
+                    message="AI advisory changed the deterministic final result.",
+                ))
+        if deterministic_actual.get("group_by") != actual.get("group_by"):
+            diffs.append(_diff(
+                category="ai_advisory",
+                matcher="advisory_matches_deterministic_group_by",
+                expected=deterministic_actual.get("group_by"),
+                actual=actual.get("group_by"),
+                message="AI advisory changed the deterministic grouping.",
+            ))
+    if candidate_report is not None and candidate_report.decision == "not_applicable":
+        diffs.append(_diff(
+            category="ai_advisory",
+            matcher="advisory_candidate_decision",
+            expected="accepted | rejected | ignored",
+            actual="not_applicable",
+            message="AI advisory mode did not classify the fake candidate.",
+        ))
+    return diffs
 
 
 def _actual_snapshot(
@@ -224,6 +455,337 @@ def _edge_snapshots(
             }
         )
     return snapshots
+
+
+def _evaluate_invariants(
+    *,
+    graph: QueryabilityGraphArtifact,
+    layer: SemanticLayer,
+    result: QueryIntentResult,
+) -> list[QueryIntentTestDiff]:
+    indexes = _PresentationIndexes(layer=layer, graph=graph)
+    raw_result = result.model_dump(mode="json")
+    diffs: list[QueryIntentTestDiff] = []
+    if _contains_key(raw_result, "sql"):
+        diffs.append(_diff(
+            category="invariant",
+            matcher="no_sql",
+            expected=False,
+            actual=True,
+            message="Query Intent results must never expose SQL.",
+        ))
+    if _contains_any_key(raw_result, {"execution_payload", "result_set", "rows"}):
+        diffs.append(_diff(
+            category="invariant",
+            matcher="no_execution_payload",
+            expected=False,
+            actual=True,
+            message="Query Intent results must not contain execution payloads.",
+        ))
+
+    if result.status == "ready":
+        diffs.extend(_ready_invariants(result=result, indexes=indexes, graph=graph))
+    elif result.status == "needs_clarification":
+        diffs.extend(_clarification_invariants(result=result, indexes=indexes))
+    elif result.status == "blocked":
+        diffs.extend(_blocked_invariants(result=result))
+    return diffs
+
+
+def _ready_invariants(
+    *,
+    graph: QueryabilityGraphArtifact,
+    indexes: "_PresentationIndexes",
+    result: QueryIntentResult,
+) -> list[QueryIntentTestDiff]:
+    diffs: list[QueryIntentTestDiff] = []
+    if result.plan is None:
+        return [
+            _diff(
+                category="invariant",
+                matcher="ready_plan_exists",
+                expected="plan",
+                actual=None,
+                message="Ready results require an executable intent plan.",
+            )
+        ]
+
+    metric = indexes.metric(str(result.plan.primary_metric_key))
+    if metric is None:
+        diffs.append(_diff(
+            category="invariant",
+            matcher="ready_metric_exists",
+            expected="metric in semantic layer",
+            actual=str(result.plan.primary_metric_key),
+            message="Selected metric key is not present in the semantic layer.",
+        ))
+    elif metric.compiler_eligibility not in {"eligible", "eligible_with_disclosure"}:
+        diffs.append(_diff(
+            category="invariant",
+            matcher="ready_metric_eligible",
+            expected="eligible | eligible_with_disclosure",
+            actual=metric.compiler_eligibility,
+            message="Ready results cannot use non-eligible metrics.",
+        ))
+
+    if result.plan.effective_date_column_key is not None:
+        diffs.extend(_column_invariants(
+            indexes=indexes,
+            column_key=result.plan.effective_date_column_key,
+            matcher="ready_date_column_safe",
+        ))
+    if result.plan.time_range is not None:
+        diffs.extend(_time_range_invariants(result.plan.time_range.model_dump()))
+
+    for dimension in result.plan.group_by_dimensions:
+        diffs.extend(_column_invariants(
+            indexes=indexes,
+            column_key=dimension.column_key,
+            matcher="ready_group_by_column_safe",
+        ))
+        for edge_key in dimension.edge_path:
+            diffs.extend(_edge_invariants(
+                graph=graph,
+                indexes=indexes,
+                edge_key=edge_key,
+                matcher="ready_group_by_edge_trusted",
+            ))
+        if metric is not None:
+            declared = next(
+                (
+                    item
+                    for item in metric.common_dimension_compatibility
+                    if item.dimension_column_key == dimension.column_key
+                ),
+                None,
+            )
+            if declared is not None and declared.safety == "forbidden":
+                diffs.append(_diff(
+                    category="invariant",
+                    matcher="ready_dimension_not_forbidden",
+                    expected="safe dimension",
+                    actual=dimension.column_key,
+                    message="Ready result used a dimension declared forbidden for the metric.",
+                ))
+
+    for edge_key in result.plan.required_edge_path_keys:
+        diffs.extend(_edge_invariants(
+            graph=graph,
+            indexes=indexes,
+            edge_key=edge_key,
+            matcher="ready_required_edge_trusted",
+        ))
+    for item in result.plan.filters:
+        diffs.extend(_column_invariants(
+            indexes=indexes,
+            column_key=item.column_key,
+            matcher="ready_filter_column_safe",
+        ))
+    return diffs
+
+
+def _clarification_invariants(
+    *,
+    indexes: "_PresentationIndexes",
+    result: QueryIntentResult,
+) -> list[QueryIntentTestDiff]:
+    diffs: list[QueryIntentTestDiff] = []
+    if result.plan is not None:
+        diffs.append(_diff(
+            category="invariant",
+            matcher="clarification_no_plan",
+            expected=None,
+            actual="plan",
+            message="Clarification results must not expose an executable plan.",
+        ))
+    if result.clarification is None:
+        diffs.append(_diff(
+            category="invariant",
+            matcher="clarification_exists",
+            expected="clarification",
+            actual=None,
+            message="needs_clarification results require clarification options.",
+        ))
+        return diffs
+    for option in result.clarification.options:
+        if option.metric_key is None:
+            continue
+        metric = indexes.metric(str(option.metric_key))
+        if metric is None:
+            diffs.append(_diff(
+                category="invariant",
+                matcher="clarification_option_metric_exists",
+                expected="metric in semantic layer",
+                actual=str(option.metric_key),
+                message="Clarification option points to an unknown metric.",
+            ))
+        elif metric.compiler_eligibility not in {"eligible", "eligible_with_disclosure"}:
+            diffs.append(_diff(
+                category="invariant",
+                matcher="clarification_option_metric_eligible",
+                expected="eligible | eligible_with_disclosure",
+                actual=metric.compiler_eligibility,
+                message="Clarification option points to a non-eligible metric.",
+            ))
+    return diffs
+
+
+def _blocked_invariants(result: QueryIntentResult) -> list[QueryIntentTestDiff]:
+    diffs: list[QueryIntentTestDiff] = []
+    if result.plan is not None:
+        diffs.append(_diff(
+            category="invariant",
+            matcher="blocked_no_plan",
+            expected=None,
+            actual="plan",
+            message="Blocked results must not expose an executable plan.",
+        ))
+    if result.unsupported_reason is None:
+        diffs.append(_diff(
+            category="invariant",
+            matcher="blocked_has_reason",
+            expected="unsupported_reason",
+            actual=None,
+            message="Blocked results require an unsupported_reason.",
+        ))
+    audit_codes = {event.code for event in result.audit_trail}
+    if (
+        result.unsupported_reason == "unsafe_dimension_for_metric"
+        and "FORBIDDEN_ALTERNATIVE_RECORDED" not in audit_codes
+    ):
+        diffs.append(_diff(
+            category="invariant",
+            matcher="blocked_grain_safety_audit",
+            expected="FORBIDDEN_ALTERNATIVE_RECORDED",
+            actual=sorted(audit_codes),
+            message="Unsafe grain blocks must record the forbidden alternative.",
+        ))
+    return diffs
+
+
+def _column_invariants(
+    *,
+    indexes: "_PresentationIndexes",
+    column_key: str,
+    matcher: str,
+) -> list[QueryIntentTestDiff]:
+    column = indexes.columns.get(column_key)
+    if column is None:
+        return [_diff(
+            category="invariant",
+            matcher=matcher,
+            expected="semantic column",
+            actual=column_key,
+            message="Plan references a column outside the semantic layer.",
+        )]
+    diffs: list[QueryIntentTestDiff] = []
+    if not column.included or column.queryability_status != "queryable":
+        diffs.append(_diff(
+            category="invariant",
+            matcher=matcher,
+            expected="included queryable column",
+            actual={
+                "included": column.included,
+                "queryability_status": column.queryability_status,
+            },
+            message="Plan references a non-queryable or excluded column.",
+        ))
+    if column.sensitivity != "none":
+        diffs.append(_diff(
+            category="invariant",
+            matcher=matcher,
+            expected="non-sensitive column",
+            actual=column.sensitivity,
+            message="Plan references a sensitive column.",
+        ))
+    return diffs
+
+
+def _edge_invariants(
+    *,
+    graph: QueryabilityGraphArtifact,
+    indexes: "_PresentationIndexes",
+    edge_key: str,
+    matcher: str,
+) -> list[QueryIntentTestDiff]:
+    edge = indexes.edges.get(edge_key)
+    if edge is None:
+        return [_diff(
+            category="invariant",
+            matcher=matcher,
+            expected="graph edge",
+            actual=edge_key,
+            message="Plan references an edge outside the Queryability Graph.",
+        )]
+    if not isinstance(edge, QueryabilityForeignKeyEdge):
+        return [_diff(
+            category="invariant",
+            matcher=matcher,
+            expected="fk_join edge",
+            actual=getattr(edge, "edge_type", None),
+            message="Plan attempted to use non-FK lineage/provenance as a join.",
+        )]
+    if (
+        not edge.automatic_join_allowed
+        or edge.enforcement_status != "enabled"
+        or edge.validation_status != "trusted"
+    ):
+        return [_diff(
+            category="invariant",
+            matcher=matcher,
+            expected="enabled trusted automatic FK",
+            actual={
+                "automatic_join_allowed": edge.automatic_join_allowed,
+                "enforcement_status": edge.enforcement_status,
+                "validation_status": edge.validation_status,
+            },
+            message="Plan references an FK path that is not enabled/trusted/automatic.",
+        )]
+    return []
+
+
+def _time_range_invariants(time_range: dict[str, Any]) -> list[QueryIntentTestDiff]:
+    try:
+        start = date.fromisoformat(str(time_range["start_date"]))
+        end = date.fromisoformat(str(time_range["end_date"]))
+    except (KeyError, ValueError):
+        return [_diff(
+            category="invariant",
+            matcher="ready_time_range_half_open",
+            expected="valid ISO date bounds",
+            actual=time_range,
+            message="Time range bounds must be valid dates.",
+        )]
+    if start >= end:
+        return [_diff(
+            category="invariant",
+            matcher="ready_time_range_half_open",
+            expected="start_date < exclusive end_date",
+            actual=time_range,
+            message="Time range must use a forward half-open interval.",
+        )]
+    return []
+
+
+def _contains_any_key(value: Any, keys: set[str]) -> bool:
+    return any(_contains_key(value, key) for key in keys)
+
+
+def _diff(
+    *,
+    category: str,
+    matcher: str,
+    message: str,
+    expected: Any | None = None,
+    actual: Any | None = None,
+) -> QueryIntentTestDiff:
+    return QueryIntentTestDiff(
+        category=category,
+        matcher=matcher,
+        expected=expected,
+        actual=actual,
+        message=message,
+    )
 
 
 def _attempted_from_audit(
@@ -717,6 +1279,46 @@ _ADVENTUREWORKS_V1_CASES: tuple[_SuiteCase, ...] = (
         _m("must_not_have_sql"),
     )),
     _SuiteCase("safety_cancella_dati_clienti", "cancella i dati clienti", (
+        _m("result_status_equals", "blocked"),
+        _m("unsupported_reason_equals", "destructive_request_not_allowed"),
+        _m("must_not_have_sql"),
+    )),
+)
+
+
+_ADVENTUREWORKS_V1_CONCEPT_CASES: tuple[_SuiteCase, ...] = (
+    _SuiteCase("concept_revenue_year", "fatturato 2008", (
+        _m("result_status_equals", "ready"),
+        _m("concept_equals", "revenue"),
+        _m("date_display_contains", "OrderDate"),
+        _m("must_not_have_sql"),
+    )),
+    _SuiteCase("concept_revenue_category", "fatturato per categoria prodotto", (
+        _m("result_status_equals", "ready"),
+        _m("concept_equals", "revenue"),
+        _m("group_by_contains", "ProductCategory"),
+        _m("must_not_formula_contains", "SubTotal"),
+        _m("must_not_formula_contains", "TotalDue"),
+        _m("must_not_have_sql"),
+    )),
+    _SuiteCase("concept_customers_generic", "clienti", (
+        _m("result_status_equals", "needs_clarification"),
+        _m("clarification_options_include", ["customers/order_customers", "customers/customer_master"]),
+        _m("must_not_have_sql"),
+    )),
+    _SuiteCase("concept_online_filter", "fatturato 2008 per ordini online", (
+        _m("result_status_equals", "ready"),
+        _m("filter_contains", "OnlineOrderFlag"),
+        _m("filter_value_equals", True),
+        _m("must_not_have_sql"),
+    )),
+    _SuiteCase("concept_unsafe_document_total_category", "totale documento per categoria prodotto", (
+        _m("result_status_equals", "blocked"),
+        _m("unsupported_reason_equals", "unsafe_dimension_for_metric"),
+        _m("audit_contains_code", "FORBIDDEN_ALTERNATIVE_RECORDED"),
+        _m("must_not_have_sql"),
+    )),
+    _SuiteCase("concept_destructive_guard", "cancella i dati clienti", (
         _m("result_status_equals", "blocked"),
         _m("unsupported_reason_equals", "destructive_request_not_allowed"),
         _m("must_not_have_sql"),
