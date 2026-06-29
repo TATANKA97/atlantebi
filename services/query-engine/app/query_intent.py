@@ -43,12 +43,24 @@ _COMPARISON_TERMS = (
 )
 _CALCULATED_TERMS = ("margine", "profitto", "calcol")
 _REVENUE_TERMS = ("fatturato", "ricavi", "vendite", "revenue")
+_REVENUE_LINE_DETAIL_TERMS = (
+    "fatturato righe",
+    "fatturato linee",
+    "fatturato dettaglio",
+    "line revenue",
+    "line item revenue",
+)
+_GENERIC_LINE_DETAIL_TERMS = ("righe", "linee", "dettaglio", "line item")
 _QUANTITY_TERMS = ("quantita", "pezzi", "unita vendute")
 _CUSTOMER_TERMS = ("clienti", "customer")
 _ORDER_CUSTOMER_TERMS = (
     "clienti che hanno ordinato",
     "clienti ordinanti",
     "clienti con ordini",
+    "hanno ordinato",
+    "hanno fatto ordini",
+    "hanno comprato",
+    "acquirenti",
     "order customers",
 )
 _CUSTOMER_MASTER_TERMS = (
@@ -58,6 +70,7 @@ _CUSTOMER_MASTER_TERMS = (
 )
 _DOCUMENT_TOTAL_TERMS = ("totale documento", "totaldue", "total amount due")
 _NET_REVENUE_TERMS = ("fatturato netto", "net revenue")
+_ORDER_TERMS = ("ordini", "ordine", "documenti vendita", "sales orders", "orders")
 _CATEGORY_TERMS = ("categoria prodotto", "categorie prodotto", "categoria")
 _PRODUCT_TERMS = ("prodotto", "prodotti", "product")
 _EMAIL_TERMS = ("email", "e-mail", "mail")
@@ -384,7 +397,7 @@ def _parse_time_range(normalized: str) -> QueryIntentTimeRange | None:
     return QueryIntentTimeRange(
         kind="year",
         start_date=f"{year}-01-01",
-        end_date=f"{year}-12-31",
+        end_date=f"{int(year) + 1}-01-01",
         label=year,
     )
 
@@ -417,6 +430,7 @@ def _select_metric(
     dimension: _DimensionSelection | None,
     indexes: _SemanticIndexes,
 ) -> _MetricSelection | str | None:
+    revenue_mentioned = _mentions_concept(normalized, indexes, "revenue", _REVENUE_TERMS)
     if _mentions_concept(normalized, indexes, "customers", _CUSTOMER_TERMS):
         if _mentions_variant(
             normalized,
@@ -435,7 +449,7 @@ def _select_metric(
         ):
             return _MetricSelection("customers", "customer_master")
         if not (
-            _mentions_concept(normalized, indexes, "revenue", _REVENUE_TERMS)
+            revenue_mentioned
             or _mentions_concept(
                 normalized,
                 indexes,
@@ -457,7 +471,9 @@ def _select_metric(
     ):
         return _MetricSelection("revenue", "document_total")
 
-    if _mentions_concept(normalized, indexes, "revenue", _REVENUE_TERMS):
+    if revenue_mentioned:
+        if _mentions_line_detail_revenue(normalized, indexes):
+            return _MetricSelection("revenue", "line_detail")
         if dimension is not None and dimension.kind in {"product", "category"}:
             disclosure = None
             if _mentions_variant(
@@ -473,6 +489,9 @@ def _select_metric(
                 )
             return _MetricSelection("revenue", "line_detail", disclosure)
         return _MetricSelection("revenue", "net_header")
+
+    if _mentions_concept(normalized, indexes, "orders", _ORDER_TERMS):
+        return _MetricSelection("orders", "header_count")
 
     return None
 
@@ -707,6 +726,22 @@ def _graph_column_key(
 
 def _mentions_revenue(normalized: str) -> bool:
     return any(term in normalized for term in _REVENUE_TERMS)
+
+
+def _mentions_line_detail_revenue(
+    normalized: str,
+    indexes: _SemanticIndexes,
+) -> bool:
+    return (
+        _contains_any(normalized, _REVENUE_LINE_DETAIL_TERMS)
+        or _mentions_variant(
+            normalized,
+            indexes,
+            "revenue",
+            "line_detail",
+            _GENERIC_LINE_DETAIL_TERMS,
+        )
+    )
 
 
 def _mentions_quantity(normalized: str) -> bool:

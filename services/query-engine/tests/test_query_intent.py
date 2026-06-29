@@ -63,6 +63,19 @@ def metric_by_variant(layer: SemanticLayer, variant: str):
     return next(metric for metric in layer.metrics if metric.metric_variant == variant)
 
 
+def fk_edge_key_between(from_object: str, to_object: str) -> str:
+    graph = adventureworks_graph()
+    nodes = {node.object_name: node.node_key for node in graph.nodes}
+    for edge in graph.edges:
+        if (
+            edge.edge_type == "fk_join"
+            and edge.from_node_key == nodes[from_object]
+            and edge.to_node_key == nodes[to_object]
+        ):
+            return edge.edge_key
+    raise AssertionError(f"FK edge {from_object} -> {to_object} not found")
+
+
 def test_revenue_year_resolves_without_ai() -> None:
     layer = active_adventureworks_layer()
 
@@ -80,7 +93,59 @@ def test_revenue_year_resolves_without_ai() -> None:
     )
     assert result.plan.time_range is not None
     assert result.plan.time_range.start_date == "2008-01-01"
-    assert result.plan.time_range.end_date == "2008-12-31"
+    assert result.plan.time_range.end_date == "2009-01-01"
+    assert "Order status scope defaults to all statuses in V1." in (
+        result.plan.disclosures
+    )
+
+
+def test_line_revenue_year_resolves_to_detail_metric() -> None:
+    layer = active_adventureworks_layer()
+
+    result = resolve_query_intent(request_for("fatturato righe 2008", layer=layer))
+
+    assert result.status == "ready"
+    assert result.plan is not None
+    assert result.plan.requested_concept_ref == "revenue"
+    assert result.plan.selected_variant == "line_detail"
+    selected_metric = metric_by_variant(layer, "line_detail")
+    assert result.plan.primary_metric_key == selected_metric.metric_key
+    assert selected_metric.measure_column_key == column_key(
+        "SalesOrderDetail",
+        "LineTotal",
+    )
+    assert result.plan.effective_date_column_key == column_key(
+        "SalesOrderHeader",
+        "OrderDate",
+    )
+    assert fk_edge_key_between("SalesOrderDetail", "SalesOrderHeader") in (
+        result.plan.required_edge_path_keys
+    )
+    assert result.plan.time_range is not None
+    assert result.plan.time_range.start_date == "2008-01-01"
+    assert result.plan.time_range.end_date == "2009-01-01"
+
+
+def test_orders_year_resolves_to_header_count() -> None:
+    layer = active_adventureworks_layer()
+
+    result = resolve_query_intent(request_for("ordini 2008", layer=layer))
+
+    assert result.status == "ready"
+    assert result.plan is not None
+    assert result.plan.requested_concept_ref == "orders"
+    assert result.plan.selected_variant == "header_count"
+    selected_metric = metric_by_variant(layer, "header_count")
+    assert result.plan.primary_metric_key == selected_metric.metric_key
+    assert selected_metric.aggregation == "count"
+    assert selected_metric.measure_column_key == column_key(
+        "SalesOrderHeader",
+        "SalesOrderID",
+    )
+    assert result.plan.effective_date_column_key == column_key(
+        "SalesOrderHeader",
+        "OrderDate",
+    )
     assert "Order status scope defaults to all statuses in V1." in (
         result.plan.disclosures
     )
@@ -118,11 +183,23 @@ def test_generic_customers_needs_clarification() -> None:
 
 def test_specific_customer_populations_are_ready() -> None:
     order_customers = resolve_query_intent(request_for("clienti che hanno ordinato"))
+    order_customers_question = resolve_query_intent(
+        request_for("quanti clienti hanno ordinato")
+    )
+    order_customers_ordered = resolve_query_intent(
+        request_for("clienti che hanno fatto ordini")
+    )
     customer_master = resolve_query_intent(request_for("clienti in anagrafica"))
 
     assert order_customers.status == "ready"
     assert order_customers.plan is not None
     assert order_customers.plan.selected_variant == "order_customers"
+    assert order_customers_question.status == "ready"
+    assert order_customers_question.plan is not None
+    assert order_customers_question.plan.selected_variant == "order_customers"
+    assert order_customers_ordered.status == "ready"
+    assert order_customers_ordered.plan is not None
+    assert order_customers_ordered.plan.selected_variant == "order_customers"
     assert customer_master.status == "ready"
     assert customer_master.plan is not None
     assert customer_master.plan.selected_variant == "customer_master"
@@ -163,6 +240,13 @@ def test_multi_metric_request_is_blocked() -> None:
 
     assert result.status == "blocked"
     assert result.unsupported_reason == "multi_metric_not_supported"
+
+
+def test_generic_line_detail_terms_do_not_select_revenue_without_revenue_intent() -> None:
+    result = resolve_query_intent(request_for("righe 2008"))
+
+    assert result.status == "blocked"
+    assert result.unsupported_reason == "metric_not_eligible"
 
 
 def test_relative_time_expression_is_blocked() -> None:

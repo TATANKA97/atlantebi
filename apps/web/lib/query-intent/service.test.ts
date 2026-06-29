@@ -18,6 +18,7 @@ vi.mock("../query-engine/client", () => ({
 }));
 
 vi.mock("../semantic-layer/service", () => ({
+  graphForSemanticService: (graph: unknown) => graph,
   readCurrentQueryabilityGraph: mocks.readCurrentQueryabilityGraph,
   readCurrentSemanticLayer: mocks.readCurrentSemanticLayer
 }));
@@ -95,6 +96,7 @@ describe("query intent service", () => {
     >;
     expect(payload.sql).toBeUndefined();
     expect(payload.execution).toBeUndefined();
+    expect(resolution.graph).toEqual(graphFixture);
     expect(resolution.semanticLayer).toEqual(semanticLayerFixture);
     expect(resolution.result.status).toBe("ready");
   });
