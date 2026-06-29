@@ -69,7 +69,7 @@ describe("query intent service", () => {
   });
 
   it("posts a deterministic resolver request without SQL or execution payloads", async () => {
-    await resolveQueryIntent({
+    const resolution = await resolveQueryIntent({
       connectionId: semanticLayerFixture.connection_id,
       context,
       question: "fatturato 2008"
@@ -95,5 +95,7 @@ describe("query intent service", () => {
     >;
     expect(payload.sql).toBeUndefined();
     expect(payload.execution).toBeUndefined();
+    expect(resolution.semanticLayer).toEqual(semanticLayerFixture);
+    expect(resolution.result.status).toBe("ready");
   });
 });

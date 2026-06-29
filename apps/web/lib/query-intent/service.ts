@@ -1,6 +1,10 @@
 import "server-only";
 
-import { QueryIntentResultSchema, type QueryIntentResult } from "@atlantebi/contracts";
+import {
+  QueryIntentResultSchema,
+  type QueryIntentResult,
+  type SemanticLayer
+} from "@atlantebi/contracts";
 
 import { postQueryEngine } from "../query-engine/client";
 import {
@@ -20,6 +24,11 @@ export class QueryIntentServiceError extends Error {
   }
 }
 
+export type QueryIntentResolution = {
+  result: QueryIntentResult;
+  semanticLayer: SemanticLayer;
+};
+
 export async function resolveQueryIntent({
   connectionId,
   context,
@@ -28,7 +37,7 @@ export async function resolveQueryIntent({
   connectionId: string;
   context: ActiveTenantContext;
   question: string;
-}): Promise<QueryIntentResult> {
+}): Promise<QueryIntentResolution> {
   const [semanticLayer, graph] = await Promise.all([
     readCurrentSemanticLayer({ connectionId, context }),
     readCurrentQueryabilityGraph({ connectionId, context })
@@ -41,7 +50,7 @@ export async function resolveQueryIntent({
     );
   }
 
-  return postQueryEngine(
+  const result = await postQueryEngine(
     "/query/intent/resolve",
     {
       tenant_id: context.tenantId,
@@ -55,4 +64,8 @@ export async function resolveQueryIntent({
     QueryIntentResultSchema,
     30_000
   );
+  return {
+    result,
+    semanticLayer: semanticLayer.artifact
+  };
 }
