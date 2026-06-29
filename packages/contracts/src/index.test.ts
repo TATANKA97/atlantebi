@@ -599,11 +599,11 @@ describe("contracts", () => {
     expect(
       QueryIntentResultSchema.parse({
         status: "blocked",
-        unsupported_reason: "multi_metric_not_supported",
+        unsupported_reason: "destructive_request_not_allowed",
         audit_trail: [],
-        message: "Query Intent Resolver V1 supports one primary metric per request."
+        message: "Destructive operations are outside Query Intent Resolver V1."
       }).unsupported_reason
-    ).toBe("multi_metric_not_supported");
+    ).toBe("destructive_request_not_allowed");
 
     expect(() =>
       QueryIntentResultSchema.parse({

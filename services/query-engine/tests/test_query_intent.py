@@ -190,6 +190,9 @@ def test_specific_customer_populations_are_ready() -> None:
         request_for("clienti che hanno fatto ordini")
     )
     customer_master = resolve_query_intent(request_for("clienti in anagrafica"))
+    registered_customers = resolve_query_intent(
+        request_for("totale clienti registrati")
+    )
 
     assert order_customers.status == "ready"
     assert order_customers.plan is not None
@@ -203,6 +206,85 @@ def test_specific_customer_populations_are_ready() -> None:
     assert customer_master.status == "ready"
     assert customer_master.plan is not None
     assert customer_master.plan.selected_variant == "customer_master"
+    assert registered_customers.status == "ready"
+    assert registered_customers.plan is not None
+    assert registered_customers.plan.selected_variant == "customer_master"
+
+
+def test_month_and_explicit_date_ranges_use_exclusive_end_dates() -> None:
+    january = resolve_query_intent(request_for("fatturato gennaio 2008"))
+    march = resolve_query_intent(request_for("fatturato marzo 2008"))
+    quarter = resolve_query_intent(
+        request_for("fatturato dal 1 gennaio 2008 al 31 marzo 2008")
+    )
+    january_range = resolve_query_intent(
+        request_for("fatturato dal 1 gennaio 2008 al 31 gennaio 2008")
+    )
+
+    assert january.status == "ready"
+    assert january.plan is not None
+    assert january.plan.time_range is not None
+    assert january.plan.time_range.start_date == "2008-01-01"
+    assert january.plan.time_range.end_date == "2008-02-01"
+    assert march.status == "ready"
+    assert march.plan is not None
+    assert march.plan.time_range is not None
+    assert march.plan.time_range.start_date == "2008-03-01"
+    assert march.plan.time_range.end_date == "2008-04-01"
+    assert quarter.status == "ready"
+    assert quarter.plan is not None
+    assert quarter.plan.time_range is not None
+    assert quarter.plan.time_range.start_date == "2008-01-01"
+    assert quarter.plan.time_range.end_date == "2008-04-01"
+    assert january_range.status == "ready"
+    assert january_range.plan is not None
+    assert january_range.plan.time_range is not None
+    assert january_range.plan.time_range.start_date == "2008-01-01"
+    assert january_range.plan.time_range.end_date == "2008-02-01"
+
+
+def test_safe_filter_terms_create_structured_filters() -> None:
+    revenue_online = resolve_query_intent(
+        request_for("fatturato 2008 per ordini online")
+    )
+    orders_online = resolve_query_intent(request_for("ordini online 2008"))
+    orders_offline = resolve_query_intent(request_for("ordini offline 2008"))
+    black_products = resolve_query_intent(
+        request_for("fatturato per prodotto colore nero")
+    )
+
+    assert revenue_online.status == "ready"
+    assert revenue_online.plan is not None
+    assert any(
+        filter.column_key == column_key("SalesOrderHeader", "OnlineOrderFlag")
+        and filter.operator == "eq"
+        and filter.value is True
+        and filter.value_type == "boolean"
+        for filter in revenue_online.plan.filters
+    )
+    assert orders_online.status == "ready"
+    assert orders_online.plan is not None
+    assert any(
+        filter.column_key == column_key("SalesOrderHeader", "OnlineOrderFlag")
+        and filter.value is True
+        for filter in orders_online.plan.filters
+    )
+    assert orders_offline.status == "ready"
+    assert orders_offline.plan is not None
+    assert any(
+        filter.column_key == column_key("SalesOrderHeader", "OnlineOrderFlag")
+        and filter.value is False
+        for filter in orders_offline.plan.filters
+    )
+    assert black_products.status == "ready"
+    assert black_products.plan is not None
+    assert any(
+        filter.column_key == column_key("Product", "Color")
+        and filter.operator == "eq"
+        and filter.value == "black"
+        and filter.value_type == "string"
+        for filter in black_products.plan.filters
+    )
 
 
 def test_document_total_by_category_is_blocked_as_unsafe() -> None:
@@ -237,9 +319,12 @@ def test_net_revenue_by_product_never_uses_header_subtotal() -> None:
 
 def test_multi_metric_request_is_blocked() -> None:
     result = resolve_query_intent(request_for("fatturato e quantita per categoria"))
+    revenue_orders = resolve_query_intent(request_for("fatturato e ordini 2008"))
 
     assert result.status == "blocked"
     assert result.unsupported_reason == "multi_metric_not_supported"
+    assert revenue_orders.status == "blocked"
+    assert revenue_orders.unsupported_reason == "multi_metric_not_supported"
 
 
 def test_generic_line_detail_terms_do_not_select_revenue_without_revenue_intent() -> None:
@@ -254,6 +339,29 @@ def test_relative_time_expression_is_blocked() -> None:
 
     assert result.status == "blocked"
     assert result.unsupported_reason == "unsupported_time_expression"
+
+
+def test_calculated_metric_request_is_blocked_before_customer_matching() -> None:
+    result = resolve_query_intent(request_for("percentuale clienti che hanno ordinato"))
+    customers = resolve_query_intent(request_for("quanti clienti hanno ordinato"))
+
+    assert result.status == "blocked"
+    assert result.unsupported_reason == "unsupported_calculated_metric"
+    assert customers.status == "ready"
+    assert customers.plan is not None
+    assert customers.plan.selected_variant == "order_customers"
+
+
+def test_destructive_requests_are_blocked_before_semantic_matching() -> None:
+    delete_customers = resolve_query_intent(request_for("cancella i dati clienti"))
+    drop_customer = resolve_query_intent(request_for("drop table customer"))
+    generic_customers = resolve_query_intent(request_for("clienti"))
+
+    assert delete_customers.status == "blocked"
+    assert delete_customers.unsupported_reason == "destructive_request_not_allowed"
+    assert drop_customer.status == "blocked"
+    assert drop_customer.unsupported_reason == "destructive_request_not_allowed"
+    assert generic_customers.status == "needs_clarification"
 
 
 def test_sensitive_dimension_or_filter_is_blocked() -> None:

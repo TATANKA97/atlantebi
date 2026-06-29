@@ -25,7 +25,7 @@ def result_by_id(report, test_id: str):
     return next(result for result in report.results if result.id == test_id)
 
 
-def test_query_intent_suite_report_contains_pass_fail_and_context() -> None:
+def test_query_intent_suite_report_passes_adventureworks_v1() -> None:
     request = suite_request()
 
     report = run_query_intent_test_suite(request)
@@ -38,12 +38,13 @@ def test_query_intent_suite_report_contains_pass_fail_and_context() -> None:
     assert report.semantic_layer.base_graph_hash == request.semantic_layer.base_graph_hash
     assert report.semantic_layer.base_policy_hash == request.semantic_layer.base_policy_hash
     assert report.summary.total == 35
-    assert report.summary.passed > 0
-    assert report.summary.failed > 0
+    assert report.summary.passed == 35
+    assert report.summary.failed == 0
+    assert report.summary.skipped == 0
     assert result_by_id(report, "core_fatturato_2008").passed
     assert result_by_id(report, "grain_totale_documento_categoria").passed
-    assert not result_by_id(report, "time_fatturato_gennaio_2008").passed
-    assert not result_by_id(report, "safety_cancella_dati_clienti").passed
+    assert result_by_id(report, "time_fatturato_gennaio_2008").passed
+    assert result_by_id(report, "safety_cancella_dati_clienti").passed
 
 
 def test_query_intent_suite_report_contains_no_sql_fields() -> None:
