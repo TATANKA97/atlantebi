@@ -97,6 +97,99 @@ def test_structural_invariants_detect_duplicate_and_dangling_references() -> Non
     assert report.status == "invalid"
 
 
+def test_structural_invariants_detect_duplicate_nodes_and_edges() -> None:
+    parent = table("Parent", [column("ParentID", 1)], primary_key=["ParentID"])
+    child = table(
+        "Child",
+        [column("ChildID", 1), column("ParentID", 2)],
+        primary_key=["ChildID"],
+    )
+    graph = build(
+        snapshot(
+            tables=[parent, child],
+            foreign_keys=[
+                foreign_key(
+                    "FK_Child_Parent",
+                    "Child",
+                    ["ParentID"],
+                    "Parent",
+                    ["ParentID"],
+                )
+            ],
+        )
+    )
+    parent_node = node_by_name(graph, "Parent")
+    child_node = node_by_name(graph, "Child")
+    duplicated_child = child_node.model_copy(
+        update={"node_key": parent_node.node_key}
+    )
+    edge = fk_edges(graph)[0]
+    corrupted = graph.model_copy(
+        update={
+            "nodes": [
+                parent_node,
+                duplicated_child,
+            ],
+            "edges": [edge, edge],
+        }
+    )
+
+    report = validate_queryability_graph(corrupted)
+
+    assert "DUPLICATE_NODE_KEY" in issue_codes(report)
+    assert "DUPLICATE_EDGE_KEY" in issue_codes(report)
+    assert report.status == "invalid"
+
+
+def test_fk_column_pairs_must_exist_and_belong_to_edge_nodes() -> None:
+    parent = table("Parent", [column("ParentID", 1)], primary_key=["ParentID"])
+    child = table(
+        "Child",
+        [column("ChildID", 1), column("ParentID", 2)],
+        primary_key=["ChildID"],
+    )
+    graph = build(
+        snapshot(
+            tables=[parent, child],
+            foreign_keys=[
+                foreign_key(
+                    "FK_Child_Parent",
+                    "Child",
+                    ["ParentID"],
+                    "Parent",
+                    ["ParentID"],
+                )
+            ],
+        )
+    )
+    edge = fk_edges(graph)[0]
+    parent_key = node_by_name(graph, "Parent").columns[0].column_key
+    missing_key_pair = edge.column_pairs[0].model_copy(
+        update={"from_column_key": "2" * 64}
+    )
+    wrong_node_pair = edge.column_pairs[0].model_copy(
+        update={"from_column_key": parent_key}
+    )
+    corrupted = graph.model_copy(
+        update={
+            "edges": [
+                edge.model_copy(update={"column_pairs": [missing_key_pair]}),
+                edge.model_copy(
+                    update={
+                        "edge_key": "3" * 64,
+                        "column_pairs": [wrong_node_pair],
+                    }
+                ),
+            ]
+        }
+    )
+
+    report = validate_queryability_graph(corrupted)
+
+    assert "FK_COLUMN_PAIR_NODE_MISMATCH" in issue_codes(report)
+    assert report.status == "invalid"
+
+
 def test_untrusted_fk_cannot_be_promoted_to_automatic_join() -> None:
     parent = table("Parent", [column("ParentID", 1)], primary_key=["ParentID"])
     child = table(
@@ -131,6 +224,126 @@ def test_untrusted_fk_cannot_be_promoted_to_automatic_join() -> None:
 
     assert "AUTOMATIC_JOIN_ON_UNTRUSTED_FK" in issue_codes(report)
     assert report.status == "invalid"
+
+
+def test_disabled_and_unverified_fk_cannot_be_promoted_to_automatic_join() -> None:
+    parent = table("Parent", [column("ParentID", 1)], primary_key=["ParentID"])
+    child = table(
+        "Child",
+        [column("ChildID", 1), column("ParentID", 2)],
+        primary_key=["ChildID"],
+    )
+
+    for unsafe_fk in [
+        foreign_key(
+            "FK_Child_Parent_Disabled",
+            "Child",
+            ["ParentID"],
+            "Parent",
+            ["ParentID"],
+            disabled=True,
+        ),
+        foreign_key(
+            "FK_Child_Parent_Unverified",
+            "Child",
+            ["ParentID"],
+            "Parent",
+            ["ParentID"],
+            verified_by_db=False,
+        ),
+    ]:
+        graph = build(snapshot(tables=[parent, child], foreign_keys=[unsafe_fk]))
+        corrupted = graph.model_copy(
+            update={
+                "edges": [
+                    fk_edges(graph)[0].model_copy(
+                        update={"automatic_join_allowed": True}
+                    )
+                ]
+            }
+        )
+
+        report = validate_queryability_graph(corrupted)
+
+        assert "AUTOMATIC_JOIN_ON_UNTRUSTED_FK" in issue_codes(report)
+        assert report.status == "invalid"
+
+
+def test_automatic_join_on_excluded_fk_column_is_invalid() -> None:
+    parent = table("Parent", [column("ParentID", 1)], primary_key=["ParentID"])
+    child = table(
+        "Child",
+        [column("ChildID", 1), column("ParentID", 2)],
+        primary_key=["ChildID"],
+    )
+    graph = build(
+        snapshot(
+            tables=[parent, child],
+            foreign_keys=[
+                foreign_key(
+                    "FK_Child_Parent",
+                    "Child",
+                    ["ParentID"],
+                    "Parent",
+                    ["ParentID"],
+                )
+            ],
+        )
+    )
+    child_node = node_by_name(graph, "Child")
+    excluded_parent_id = child_node.columns[1].model_copy(
+        update={"queryability_status": "excluded"}
+    )
+    corrupted_child = child_node.model_copy(
+        update={"columns": [child_node.columns[0], excluded_parent_id]}
+    )
+    corrupted = graph.model_copy(
+        update={
+            "nodes": [
+                corrupted_child if node.node_key == child_node.node_key else node
+                for node in graph.nodes
+            ]
+        }
+    )
+
+    report = validate_queryability_graph(corrupted)
+
+    assert "AUTOMATIC_JOIN_ON_EXCLUDED_COLUMN" in issue_codes(report)
+    assert report.status == "invalid"
+
+
+def test_self_reference_is_not_compiler_safe_by_default() -> None:
+    employee = table(
+        "Employee",
+        [column("EmployeeID", 1), column("ManagerID", 2)],
+        primary_key=["EmployeeID"],
+    )
+    graph = build(
+        snapshot(
+            tables=[employee],
+            foreign_keys=[
+                foreign_key(
+                    "FK_Employee_Manager",
+                    "Employee",
+                    ["ManagerID"],
+                    "Employee",
+                    ["EmployeeID"],
+                )
+            ],
+        )
+    )
+    corrupted = graph.model_copy(
+        update={
+            "edges": [
+                fk_edges(graph)[0].model_copy(update={"automatic_join_allowed": True})
+            ]
+        }
+    )
+
+    report = validate_queryability_graph(corrupted)
+
+    assert "SELF_REFERENCE_REQUIRES_POLICY" in issue_codes(report)
+    assert report.status == "valid_with_warnings"
 
 
 def test_missing_fk_schema_fails_closed_without_invented_trusted_join() -> None:
@@ -294,6 +507,37 @@ def test_view_lineage_is_provenance_not_join_evidence() -> None:
     assert "LINEAGE_USED_AS_JOIN" not in issue_codes(report)
 
 
+def test_lineage_edges_cannot_be_promoted_to_automatic_join() -> None:
+    customer = table("Customer", [column("CustomerID", 1)], primary_key=["CustomerID"])
+    view = replace(
+        table("vCustomer", [column("CustomerID", 1)], table_type="view"),
+        view_lineage=[
+            SchemaViewLineageDependency(
+                source="dm_sql_referenced_entities",
+                referencing_column="CustomerID",
+                referenced_schema_name="SalesLT",
+                referenced_entity_name="Customer",
+                referenced_column_name="CustomerID",
+                referenced_class="OBJECT_OR_COLUMN",
+            )
+        ],
+    )
+    graph = build(snapshot(tables=[customer, view]))
+    corrupted = graph.model_copy(
+        update={
+            "edges": [
+                edge.model_copy(update={"automatic_join_allowed": True})
+                for edge in graph.edges
+            ]
+        }
+    )
+
+    report = validate_queryability_graph(corrupted)
+
+    assert "LINEAGE_USED_AS_JOIN" in issue_codes(report)
+    assert report.status == "invalid"
+
+
 def test_multiple_dates_require_semantic_selection() -> None:
     graph = build(
         snapshot(
@@ -355,6 +599,36 @@ def test_sensitive_and_pii_columns_are_diagnosed_without_blocking_queryability()
     assert report.errors == []
 
 
+def test_unsupported_type_cannot_remain_queryable() -> None:
+    graph = build(
+        snapshot(
+            tables=[
+                table(
+                    "Documents",
+                    [
+                        column("DocumentID", 1),
+                        column("RawPayload", 2, role="binary", native_type="varbinary"),
+                    ],
+                    primary_key=["DocumentID"],
+                )
+            ]
+        )
+    )
+    node = node_by_name(graph, "Documents")
+    forced_queryable_payload = node.columns[1].model_copy(
+        update={"queryability_status": "queryable"}
+    )
+    corrupted_node = node.model_copy(
+        update={"columns": [node.columns[0], forced_queryable_payload]}
+    )
+    corrupted = graph.model_copy(update={"nodes": [corrupted_node]})
+
+    report = validate_queryability_graph(corrupted)
+
+    assert "UNSUPPORTED_TYPE_QUERYABLE" in issue_codes(report)
+    assert report.status == "invalid"
+
+
 def test_composite_fk_pair_order_remains_validated() -> None:
     parent = table(
         "Parent",
@@ -413,10 +687,23 @@ def test_semantic_graph_freshness_helper_is_separate_from_graph_invariants() -> 
     graph = adventureworks_graph()
     layer = active_adventureworks_layer()
     stale_layer = layer.model_copy(update={"base_graph_hash": "0" * 64})
+    mismatched_policy_hash = (
+        "0" * 64
+        if layer.semantic_policy_snapshot.policy_hash != "0" * 64
+        else "1" * 64
+    )
+    policy_stale_layer = layer.model_copy(
+        update={"base_policy_hash": mismatched_policy_hash}
+    )
 
     graph_report = validate_queryability_graph(graph)
     freshness_report = validate_semantic_graph_freshness(graph, stale_layer)
+    policy_freshness_report = validate_semantic_graph_freshness(
+        graph, policy_stale_layer
+    )
 
     assert "SEMANTIC_GRAPH_HASH_STALE" not in issue_codes(graph_report)
     assert "SEMANTIC_GRAPH_HASH_STALE" in issue_codes(freshness_report)
     assert freshness_report.status == "invalid"
+    assert "SEMANTIC_POLICY_HASH_STALE" in issue_codes(policy_freshness_report)
+    assert policy_freshness_report.status == "invalid"
