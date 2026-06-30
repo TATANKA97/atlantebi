@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
@@ -683,7 +685,7 @@ def _stage_metadata_prefetch(
             issues.append(
                 _issue(
                     stage="metadata_prefetch",
-                    code="GRAPH_REFERENCE_INVALID",
+                    code="GRAPH_PATH_INVALID",
                     severity="error",
                     message="Selected path edge key is missing from the graph.",
                     metric_key=metric_key,
@@ -1462,7 +1464,7 @@ def _category_for_code(code: str) -> PreflightDecisionCategory:
         return "unsafe"
     if code.startswith("QUERY_INTENT") or code in {"METRIC_NOT_COMPILER_ELIGIBLE", "RAW_SQL_NOT_ALLOWED"}:
         return "unsupported"
-    if any(token in code for token in ("MISSING", "NOT_FOUND", "SNAPSHOT_BLOCKED", "DATE_PATH_INVALID")):
+    if any(token in code for token in ("MISSING", "NOT_FOUND", "SNAPSHOT_BLOCKED", "DATE_PATH_INVALID", "GRAPH_PATH_INVALID")):
         return "insufficient_metadata"
     return "needs_policy"
 
@@ -1486,6 +1488,7 @@ def _plan_trace(
             "column_key": column.column_key,
             "operator": getattr(filter_item, "operator", None),
             "value_type": getattr(filter_item, "value_type", None),
+            "value_fingerprint": _filter_value_fingerprint(filter_item),
         }
         for _, column, filter_item in context.prefetched.selected_filters
     ]
@@ -1527,6 +1530,7 @@ def _plan_trace(
             "dimension_keys": dimension_keys,
             "filter_keys": filter_keys,
             "edge_path_keys": sorted(_selected_edge_keys(context)),
+            "snapshot_hash": getattr(context.schema_snapshot, "snapshot_hash", None),
         },
         selected_segments=[],
         expanded_segment_filters=[],
@@ -1535,6 +1539,7 @@ def _plan_trace(
             "tenant_id": str(context.semantic_layer.tenant_id),
             "semantic_hash": context.semantic_layer.semantic_hash,
             "graph_hash": context.queryability_graph.graph_hash,
+            "snapshot_hash": getattr(context.schema_snapshot, "snapshot_hash", None),
             "policy_hash": context.semantic_layer.base_policy_hash,
             "metric_key": metric_key,
             "dimension_keys": dimension_keys,
@@ -2124,3 +2129,14 @@ def _issue_sort_key(issue: QueryCompilerPreflightIssue) -> tuple[str, str, str, 
         issue.column_key or "",
         issue.edge_key or "",
     )
+
+
+def _filter_value_fingerprint(filter_item: Any) -> str:
+    payload = {
+        "column_key": getattr(filter_item, "column_key", None),
+        "operator": getattr(filter_item, "operator", None),
+        "value_type": getattr(filter_item, "value_type", None),
+        "value": getattr(filter_item, "value", None),
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
