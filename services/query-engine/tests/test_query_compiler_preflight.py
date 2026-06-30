@@ -5,7 +5,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 
+from app.drivers.base import (
+    SchemaColumnMetadata,
+    SchemaForeignKeyMetadata,
+    SchemaIntrospectionResult,
+    SchemaPrimaryKeyMetadata,
+    SchemaTableMetadata,
+)
 from app.models import (
+    Engine,
     QueryIntentGroupByDimension,
     QueryIntentPlan,
     QueryIntentResult,
@@ -111,6 +119,26 @@ def test_metadata_prefetch_blocks_missing_metric_before_downstream_checks() -> N
     assert prefetch.status == "blocked"
 
 
+def test_not_eligible_metric_is_unsupported_for_preflight() -> None:
+    graph = adventureworks_graph()
+    layer = _active_layer(validate_semantic_layer(layer=semantic_draft(graph), graph=graph, validated_at=VALIDATED_AT))
+    metric = metric_by_variant(layer, "customer_master").model_copy(
+        update={"compiler_eligibility": "not_eligible"}
+    )
+
+    report = validate_query_compiler_preflight(
+        _intent(metric),
+        _layer_with_metrics(layer, [metric]),
+        graph,
+        _graph_report(),
+        _semantic_invariant_report(),
+        snapshot_checks_applicable=False,
+    )
+
+    assert "METRIC_NOT_COMPILER_ELIGIBLE" in report.blocking_codes
+    assert report.decision_category == "unsupported"
+
+
 def test_mixed_blocking_categories_use_deterministic_precedence() -> None:
     graph = adventureworks_graph()
     layer = _active_layer(validate_semantic_layer(layer=semantic_draft(graph), graph=graph, validated_at=VALIDATED_AT))
@@ -142,6 +170,44 @@ def test_mixed_blocking_categories_use_deterministic_precedence() -> None:
     assert {"QUERYABILITY_GRAPH_INVALID", "QUERY_INTENT_MULTI_METRIC_NOT_SUPPORTED"} <= _codes(invalid_artifact_report)
     assert stale_report.decision_category == "stale"
     assert {"SEMANTIC_LAYER_STALE", "QUERY_INTENT_MULTI_METRIC_NOT_SUPPORTED"} <= _codes(stale_report)
+
+
+def test_stale_untrusted_path_and_missing_policy_emit_all_codes_with_stale_precedence() -> None:
+    graph = _header_detail_graph(with_fk=True, disabled=True)
+    layer = _layer_with_concept(
+        _active_layer(_empty_layer_for(graph)).model_copy(update={"freshness": "stale"}),
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "revenue",
+    )
+    metric = _semantic_metric(
+        graph,
+        concept_key="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        concept_ref="revenue",
+        variant="generic_revenue",
+        table_name="DORIG",
+        measure_column="IMPORTO",
+        grain_columns=["IDRIG"],
+        date_column=("DOTES", "DATA_DOC"),
+        required_edges=["FK_DORIG_DOTES"],
+        value_type="currency",
+        eligibility="eligible",
+    )
+
+    report = validate_query_compiler_preflight(
+        _intent(metric, concept_ref="revenue", date_column=_column_key(graph, "DOTES", "DATA_DOC")),
+        _layer_with_metrics(layer, [metric]),
+        graph,
+        _graph_report(),
+        _semantic_invariant_report(),
+        snapshot_checks_applicable=False,
+    )
+
+    assert {
+        "SEMANTIC_LAYER_STALE",
+        "GRAPH_PATH_USES_UNTRUSTED_EDGE",
+        "STATUS_SCOPE_REQUIRES_POLICY",
+    } <= _codes(report)
+    assert report.decision_category == "stale"
 
 
 def test_adventureworks_status_disclosure_policy_source_and_no_resolver_mutation() -> None:
@@ -275,10 +341,50 @@ def test_missing_and_disabled_fk_fail_closed_without_name_inference() -> None:
         snapshot_checks_applicable=False,
     )
 
-    assert "GRAPH_REFERENCE_INVALID" in missing_fk.blocking_codes
-    assert missing_fk.decision_category == "invalid_artifact"
+    assert "GRAPH_PATH_INVALID" in missing_fk.blocking_codes
+    assert missing_fk.decision_category == "insufficient_metadata"
     assert "GRAPH_PATH_USES_UNTRUSTED_EDGE" in disabled.blocking_codes
     assert disabled.decision_category == "unsafe"
+
+
+def test_snapshot_selected_metadata_gap_blocks_contextually() -> None:
+    graph = _header_detail_graph(with_fk=True)
+    layer = _layer_with_concept(
+        _active_layer(_empty_layer_for(graph)),
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "revenue",
+    )
+    metric = _semantic_metric(
+        graph,
+        concept_key="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        concept_ref="revenue",
+        variant="line_detail",
+        table_name="DORIG",
+        measure_column="IMPORTO",
+        grain_columns=["IDRIG"],
+        date_column=("DOTES", "DATA_DOC"),
+        required_edges=["FK_DORIG_DOTES"],
+        value_type="currency",
+        eligibility="eligible_with_disclosure",
+    )
+
+    report = validate_query_compiler_preflight(
+        _intent(metric, concept_ref="revenue", date_column=_column_key(graph, "DOTES", "DATA_DOC")),
+        _layer_with_metrics(layer, [metric]),
+        graph,
+        _graph_report(),
+        _semantic_invariant_report(),
+        schema_snapshot=snapshot(
+            tables=[
+                table("DOTES", [column("ID", 1), column("DATA_DOC", 2, role="date", native_type="datetime")], primary_key=["ID"]),
+                table("DORIG", [column("IDRIG", 1), column("IDTES", 2), column("IMPORTO", 3, role="money_candidate", native_type="money"), column("STATO", 4, role="text", native_type="nvarchar")], primary_key=["IDRIG"]),
+            ],
+            foreign_keys=[],
+        ),
+    )
+
+    assert "SCHEMA_FK_NOT_FOUND" in report.blocking_codes
+    assert report.decision_category == "insufficient_metadata"
 
 
 def test_view_source_is_allowed_but_lineage_join_and_raw_sql_semantic_object_block() -> None:
@@ -438,6 +544,83 @@ def test_table_without_pk_bridge_and_semantic_invariant_errors_block() -> None:
 
     assert "TABLE_WITHOUT_PK_UNSAFE_FOR_GRAIN" in _codes(report)
     assert "SEMANTIC_INVARIANT_ERROR" in report.blocking_codes
+
+
+def test_bridge_many_to_many_path_requires_policy() -> None:
+    graph = _bridge_graph()
+    layer = _layer_with_concept(
+        _active_layer(_empty_layer_for(graph)),
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "orders",
+    )
+    metric = _semantic_metric(
+        graph,
+        concept_key="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        concept_ref="orders",
+        variant="bridge_count",
+        table_name="CUSTOMER_PRODUCT",
+        measure_column="CUSTOMER_ID",
+        grain_columns=["CUSTOMER_ID", "PRODUCT_ID"],
+        dimension_column=("PRODUCT", "PRODUCT_ID"),
+        dimension_edges=["FK_BRIDGE_PRODUCT"],
+        value_type="count",
+    )
+
+    report = validate_query_compiler_preflight(
+        _intent(
+            metric,
+            concept_ref="orders",
+            group_by=[
+                QueryIntentGroupByDimension(
+                    column_key=_column_key(graph, "PRODUCT", "PRODUCT_ID"),
+                    edge_path=[_edge_key(graph, "FK_BRIDGE_PRODUCT")],
+                    safety="safe",
+                )
+            ],
+            required_edges=[_edge_key(graph, "FK_BRIDGE_PRODUCT")],
+        ),
+        _layer_with_metrics(layer, [metric]),
+        graph,
+        _graph_report(),
+        _semantic_invariant_report(),
+        snapshot_checks_applicable=False,
+    )
+
+    assert "GRAPH_PATH_REQUIRES_BRIDGE_POLICY" in report.blocking_codes
+    assert report.decision_category == "needs_policy"
+
+
+def test_composite_multischema_trusted_path_can_pass() -> None:
+    graph = _composite_multischema_graph()
+    layer = _layer_with_concept(
+        _active_layer(_empty_layer_for(graph)),
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "quantity_sold",
+    )
+    metric = _semantic_metric(
+        graph,
+        concept_key="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        concept_ref="quantity_sold",
+        variant="line_quantity",
+        table_name="DOC_LINE",
+        measure_column="QTY",
+        grain_columns=["COMPANY_ID", "DOC_ID", "LINE_NO"],
+        date_column=("DOC_HEAD", "DOC_DATE"),
+        required_edges=["FK_LINE_HEAD"],
+        value_type="number",
+    )
+
+    report = validate_query_compiler_preflight(
+        _intent(metric, concept_ref="quantity_sold", date_column=_column_key(graph, "DOC_HEAD", "DOC_DATE")),
+        _layer_with_metrics(layer, [metric]),
+        graph,
+        _graph_report(),
+        _semantic_invariant_report(),
+        snapshot_checks_applicable=False,
+    )
+
+    assert report.status == "ready"
+    assert report.decision_category == "safe"
 
 
 def test_preflight_module_has_no_demo_or_fixture_literals() -> None:
@@ -680,7 +863,7 @@ def _header_detail_graph(*, with_fk: bool, disabled: bool = False):
         snapshot(
             tables=[
                 table("DOTES", [column("ID", 1), column("DATA_DOC", 2, role="date", native_type="datetime"), column("TOTALE", 3, role="money_candidate", native_type="money")], primary_key=["ID"]),
-                table("DORIG", [column("IDRIG", 1), column("IDTES", 2), column("IMPORTO", 3, role="money_candidate", native_type="money")], primary_key=["IDRIG"]),
+                table("DORIG", [column("IDRIG", 1), column("IDTES", 2), column("IMPORTO", 3, role="money_candidate", native_type="money"), column("STATO", 4, role="text", native_type="nvarchar")], primary_key=["IDRIG"]),
             ],
             foreign_keys=fks,
         )
@@ -731,3 +914,102 @@ def _ambiguous_business_graph():
             ]
         )
     )
+
+
+def _bridge_graph():
+    return build(
+        snapshot(
+            tables=[
+                table("CUSTOMER", [column("CUSTOMER_ID", 1)], primary_key=["CUSTOMER_ID"]),
+                table("PRODUCT", [column("PRODUCT_ID", 1)], primary_key=["PRODUCT_ID"]),
+                table(
+                    "CUSTOMER_PRODUCT",
+                    [column("CUSTOMER_ID", 1), column("PRODUCT_ID", 2)],
+                    primary_key=["CUSTOMER_ID", "PRODUCT_ID"],
+                ),
+            ],
+            foreign_keys=[
+                foreign_key("FK_BRIDGE_CUSTOMER", "CUSTOMER_PRODUCT", ["CUSTOMER_ID"], "CUSTOMER", ["CUSTOMER_ID"]),
+                foreign_key("FK_BRIDGE_PRODUCT", "CUSTOMER_PRODUCT", ["PRODUCT_ID"], "PRODUCT", ["PRODUCT_ID"]),
+            ],
+        )
+    )
+
+
+def _schema_column(name: str, ordinal: int, *, role: str = "identifier", native_type: str = "int") -> SchemaColumnMetadata:
+    return SchemaColumnMetadata(
+        name=name,
+        data_type=native_type,
+        native_type=native_type,
+        normalized_type=native_type,
+        technical_role=role,
+        ordinal_position=ordinal,
+        is_nullable=False,
+    )
+
+
+def _schema_table(
+    schema_name: str,
+    table_name: str,
+    columns: list[SchemaColumnMetadata],
+    primary_key: list[str],
+) -> SchemaTableMetadata:
+    return SchemaTableMetadata(
+        table_schema=schema_name,
+        name=table_name,
+        table_type="base_table",
+        columns=columns,
+        primary_key=SchemaPrimaryKeyMetadata(
+            name=f"PK_{table_name}",
+            columns=primary_key,
+        ),
+    )
+
+
+def _composite_multischema_graph():
+    source = SchemaIntrospectionResult(
+        engine=Engine.sqlserver,
+        database_name="ERP",
+        engine_version="16.0",
+        schema_hash="a" * 64,
+        snapshot_hash="b" * 64,
+        coverage_status="ok",
+        tables=[
+            _schema_table(
+                "azienda",
+                "DOC_HEAD",
+                [
+                    _schema_column("COMPANY_ID", 1),
+                    _schema_column("DOC_ID", 2),
+                    _schema_column("DOC_DATE", 3, role="date", native_type="datetime"),
+                ],
+                ["COMPANY_ID", "DOC_ID"],
+            ),
+            _schema_table(
+                "azienda",
+                "DOC_LINE",
+                [
+                    _schema_column("COMPANY_ID", 1),
+                    _schema_column("DOC_ID", 2),
+                    _schema_column("LINE_NO", 3),
+                    _schema_column("QTY", 4, role="quantity_candidate", native_type="decimal"),
+                ],
+                ["COMPANY_ID", "DOC_ID", "LINE_NO"],
+            ),
+        ],
+        foreign_keys=[
+            SchemaForeignKeyMetadata(
+                constraint_name="FK_LINE_HEAD",
+                from_schema="azienda",
+                from_table="DOC_LINE",
+                from_columns=["COMPANY_ID", "DOC_ID"],
+                to_schema="azienda",
+                to_table="DOC_HEAD",
+                to_columns=["COMPANY_ID", "DOC_ID"],
+                delete_rule="no_action",
+                update_rule="no_action",
+                verified_by_db=True,
+            )
+        ],
+    )
+    return build(source)
