@@ -250,9 +250,24 @@ Process/User/Machine environment variables also do not contain
 container is not running, so connection metadata could not be read from the
 local database. Therefore no live SQL Server call was executed in this pass.
 
+After demo credentials were supplied explicitly, the live test path was retried.
+That attempt did not reach SQL Server with the adapter's production driver
+configuration because this Windows environment has `ODBC Driver 17 for SQL
+Server` installed but not `ODBC Driver 18 for SQL Server`, which is the driver
+name used by the existing SQL Server connection layer. The adapter returned
+`engine_error / driver_error` with SQLSTATE `IM002` from the ODBC Driver Manager.
+
+An additional diagnostic probe with local `ODBC Driver 17 for SQL Server`
+confirmed that the available older driver cannot establish the required TLS
+connection to the demo endpoint (`08001`, encryption/SSL provider failure).
+Installing Microsoft ODBC Driver 18.6.2.1 from the official Microsoft download
+was attempted, but Windows Installer returned `1603` because the current user is
+not in the administrator group. No password or secret value was written to the
+repository or report.
+
 This is a real limitation of the current verification environment, not a reason
-to skip the demo gate. When credentials are loaded, the tests below will execute
-the adapter against SQL Server using only `sp_describe_first_result_set`.
+to skip the demo gate. When ODBC Driver 18 is installed, the tests below will
+execute the adapter against SQL Server using only `sp_describe_first_result_set`.
 
 ## Optional Integration Path
 
@@ -387,6 +402,8 @@ Run during this pass:
 
 ```text
 tests/test_sqlserver_dry_run_adapter.py: 10 passed, 3 skipped
+tests/test_sqlserver_dry_run_adapter.py with supplied AdventureWorksLT credentials: 10 passed, 3 failed
+  failed before metadata validation due to missing ODBC Driver 18 / local driver error
 tests/test_controlled_dry_run.py: 11 passed
 tests/test_query_result_validator.py: 15 passed
 tests/test_query_compiler.py: 15 passed
