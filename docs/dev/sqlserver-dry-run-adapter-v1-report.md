@@ -251,23 +251,27 @@ container is not running, so connection metadata could not be read from the
 local database. Therefore no live SQL Server call was executed in this pass.
 
 After demo credentials were supplied explicitly, the live test path was retried.
-That attempt did not reach SQL Server with the adapter's production driver
-configuration because this Windows environment has `ODBC Driver 17 for SQL
-Server` installed but not `ODBC Driver 18 for SQL Server`, which is the driver
-name used by the existing SQL Server connection layer. The adapter returned
-`engine_error / driver_error` with SQLSTATE `IM002` from the ODBC Driver Manager.
+The first attempt did not reach SQL Server because this Windows environment had
+`ODBC Driver 17 for SQL Server` installed but not `ODBC Driver 18 for SQL
+Server`, which is the driver name used by the existing SQL Server connection
+layer. Microsoft ODBC Driver 18.6.2.1 was then installed locally.
 
-An additional diagnostic probe with local `ODBC Driver 17 for SQL Server`
-confirmed that the available older driver cannot establish the required TLS
-connection to the demo endpoint (`08001`, encryption/SSL provider failure).
-Installing Microsoft ODBC Driver 18.6.2.1 from the official Microsoft download
-was attempted, but Windows Installer returned `1603` because the current user is
-not in the administrator group. No password or secret value was written to the
-repository or report.
+With ODBC Driver 18 installed, the adapter reached the driver path but still
+failed before metadata validation with `engine_error / tls_error`. Direct
+diagnostic probes through ODBC Driver 18 failed with SQLSTATE `08001` and the
+Windows Schannel message `Nessuna credenziale disponibile nel pacchetto di
+sicurezza` / `Encryption not supported on the client`, both against the supplied
+`136.111.143.3:10002` endpoint and against `atlanteadmin.database.windows.net`
+on 1433. TCP reachability is open, and a raw Python/OpenSSL TLS handshake to the
+demo endpoint succeeds; the failure is therefore specific to the local Microsoft
+ODBC Driver / Windows Schannel path, not to the adapter SQL text or the metadata
+procedure contract.
 
-This is a real limitation of the current verification environment, not a reason
-to skip the demo gate. When ODBC Driver 18 is installed, the tests below will
-execute the adapter against SQL Server using only `sp_describe_first_result_set`.
+No password or secret value was written to the repository or report. This is a
+real limitation of the current verification environment, not a reason to skip
+the demo gate. When the local Schannel/ODBC connectivity issue is resolved, the
+tests below will execute the adapter against SQL Server using only
+`sp_describe_first_result_set`.
 
 ## Optional Integration Path
 
@@ -403,7 +407,7 @@ Run during this pass:
 ```text
 tests/test_sqlserver_dry_run_adapter.py: 10 passed, 3 skipped
 tests/test_sqlserver_dry_run_adapter.py with supplied AdventureWorksLT credentials: 10 passed, 3 failed
-  failed before metadata validation due to missing ODBC Driver 18 / local driver error
+  failed before metadata validation due to local ODBC Driver 18 / Schannel TLS error
 tests/test_controlled_dry_run.py: 11 passed
 tests/test_query_result_validator.py: 15 passed
 tests/test_query_compiler.py: 15 passed
