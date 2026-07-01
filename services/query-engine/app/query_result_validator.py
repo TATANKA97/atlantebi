@@ -14,6 +14,8 @@ from app.models import (
     SemanticMetric,
 )
 from app.query_compiler import (
+    CompiledJoinColumnPair,
+    CompiledJoinPredicate,
     CompiledSqlParameter,
     CompiledSqlReference,
     QueryCompilerResult,
@@ -226,6 +228,7 @@ class _SqlBuildState:
     group_by_structured: list[dict[str, object]] = field(default_factory=list)
     order_by_structured: list[dict[str, object]] | None = None
     joins: list[str] = field(default_factory=list)
+    join_predicates: list[CompiledJoinPredicate] = field(default_factory=list)
     limit: int | None = None
 
 
@@ -498,6 +501,7 @@ def _build_expected_sql(context: _ValidationContext) -> _ExpectedSql | list[Quer
         dimension_keys=[item.column_key for item in context.plan.group_by_dimensions],
         filter_keys=[item.column_key for item in context.plan.filters],
         join_paths=_selected_plan_edge_keys(context.plan),
+        join_predicates=list(state.join_predicates),
         selected_tables=list(state.table_refs.values()),
         selected_columns=list(state.column_refs.values()),
         aliases=dict(sorted(state.aliases.items(), key=lambda item: item[1])),
@@ -610,6 +614,7 @@ def _validate_trace_consistency(context: _ValidationContext, expected: _Expected
         ("dimension_keys", actual.dimension_keys, expected_trace.dimension_keys),
         ("filter_keys", actual.filter_keys, expected_trace.filter_keys),
         ("join_paths", sorted(actual.join_paths), sorted(expected_trace.join_paths)),
+        ("join_predicates", actual.join_predicates, expected_trace.join_predicates),
         ("aliases", actual.aliases, expected_trace.aliases),
         ("where_clauses_structured", actual.where_clauses_structured, expected_trace.where_clauses_structured),
         ("group_by_structured", actual.group_by_structured, expected_trace.group_by_structured),
@@ -653,6 +658,21 @@ def _validate_identifiers(context: _ValidationContext, expected: _ExpectedSql) -
 
 def _validate_join_contract(context: _ValidationContext, expected: _ExpectedSql) -> list[QueryResultValidationIssue]:
     issues: list[QueryResultValidationIssue] = []
+    actual_join_clauses = _extract_clauses(context.compiler_result.sql or "").joins
+    actual_predicates = list(context.compiler_result.trace.join_predicates)
+    expected_predicates = list(expected.trace.join_predicates)
+    if actual_join_clauses and not actual_predicates:
+        issues.append(_issue("join_contract_validation", "JOIN_PREDICATE_TRACE_MISSING", "error", "SQL contains JOIN clauses but compiler trace has no materialized join predicates.", decision_category="trace_mismatch"))
+    if len(actual_join_clauses) != len(actual_predicates):
+        issues.append(_issue("join_contract_validation", "TRACE_JOIN_MISMATCH", "error", "SQL JOIN count differs from materialized join predicate count.", decision_category="trace_mismatch"))
+    if actual_predicates != expected_predicates:
+        issues.append(_issue("join_contract_validation", "TRACE_JOIN_MISMATCH", "error", "Materialized join predicates differ from canonical contract.", decision_category="trace_mismatch"))
+    for index, predicate in enumerate(actual_predicates):
+        if index >= len(actual_join_clauses):
+            break
+        expected_clause = _join_sql_from_predicate(context, predicate)
+        if _normalize_sql(actual_join_clauses[index]) != _normalize_sql(expected_clause):
+            issues.append(_issue("join_contract_validation", "CANONICAL_JOIN_MISMATCH", "error", "SQL JOIN clause does not match materialized join predicate.", edge_key=predicate.edge_key, decision_category="trace_mismatch"))
     actual_join_keys = set(context.compiler_result.trace.join_paths)
     expected_join_keys = set(expected.trace.join_paths)
     if actual_join_keys != expected_join_keys:
@@ -675,6 +695,12 @@ def _validate_join_contract(context: _ValidationContext, expected: _ExpectedSql)
             continue
         if not _snapshot_fk_matches(context, edge, fk):
             issues.append(_issue("join_contract_validation", "JOIN_PAIR_ORDER_INVALID", "error", "Join FK pair order or physical metadata differs from snapshot.", edge_key=edge_key, decision_category="trace_mismatch"))
+        predicate = next((item for item in actual_predicates if item.edge_key == edge_key), None)
+        if predicate is None:
+            if actual_join_clauses:
+                issues.append(_issue("join_contract_validation", "JOIN_PREDICATE_TRACE_MISSING", "error", "Selected join edge has no materialized join predicate.", edge_key=edge_key, decision_category="trace_mismatch"))
+            continue
+        issues.extend(_validate_materialized_join_predicate(context, edge, predicate))
     if expected.clauses.joins and not all(" = " in join for join in expected.clauses.joins):
         issues.append(_issue("join_contract_validation", "JOIN_NAME_INFERRED_FORBIDDEN", "error", "Join predicate must be FK column-pair based.", decision_category="unsafe_sql"))
     return issues
@@ -839,7 +865,9 @@ def _assign_expected_aliases_and_joins(state: _SqlBuildState) -> list[QueryResul
             join_node_key = edge.from_node_key
         _record_table_ref(state, join_node_key)
         _record_edge_ref(state, edge)
-        state.joins.append(_join_sql(state, edge, join_node_key))
+        join_predicate = _join_predicate(state, edge, join_node_key)
+        state.join_predicates.append(join_predicate)
+        state.joins.append(_join_sql(state, join_node_key, join_predicate))
     return issues
 
 
@@ -972,14 +1000,59 @@ def _expected_filter_clause(state: _SqlBuildState, filter_item: SemanticFilter, 
     return f"{expr} {sql_op} {param.name}"
 
 
-def _join_sql(state: _SqlBuildState, edge: Any, join_node_key: str) -> str:
-    join_node = _node(state.context, join_node_key)
-    join_alias = state.aliases[join_node_key]
+def _join_predicate(state: _SqlBuildState, edge: Any, join_node_key: str) -> CompiledJoinPredicate:
+    from_node = _node(state.context, edge.from_node_key)
+    to_node = _node(state.context, edge.to_node_key)
     from_alias = state.aliases[edge.from_node_key]
     to_alias = state.aliases[edge.to_node_key]
-    predicates = [
-        f"{_column_expr(from_alias, pair.from_column)} = {_column_expr(to_alias, pair.to_column)}"
+    column_pairs = [
+        _join_column_pair(from_alias, to_alias, pair)
         for pair in sorted(edge.column_pairs, key=lambda item: item.ordinal_position)
+    ]
+    return CompiledJoinPredicate(
+        path_key=None,
+        edge_key=edge.edge_key,
+        from_table_key=edge.from_node_key,
+        to_table_key=edge.to_node_key,
+        from_alias=from_alias,
+        to_alias=to_alias,
+        from_schema=from_node.schema_name,
+        from_table=from_node.object_name,
+        to_schema=to_node.schema_name,
+        to_table=to_node.object_name,
+        constraint_name=edge.constraint_name,
+        column_pairs=column_pairs,
+        traversal_direction="forward" if join_node_key == edge.to_node_key else "reverse",
+    )
+
+
+def _join_column_pair(from_alias: str, to_alias: str, pair: Any) -> CompiledJoinColumnPair:
+    from_identifier = _column_expr(from_alias, pair.from_column)
+    to_identifier = _column_expr(to_alias, pair.to_column)
+    return CompiledJoinColumnPair(
+        ordinal=pair.ordinal_position,
+        from_column_key=pair.from_column_key,
+        to_column_key=pair.to_column_key,
+        from_physical_column=pair.from_column,
+        to_physical_column=pair.to_column,
+        from_sql_identifier=from_identifier,
+        to_sql_identifier=to_identifier,
+        sql_left_alias=from_alias,
+        sql_right_alias=to_alias,
+        sql_left_column_key=pair.from_column_key,
+        sql_right_column_key=pair.to_column_key,
+        sql_left_physical_column=pair.from_column,
+        sql_right_physical_column=pair.to_column,
+        sql_left_identifier=from_identifier,
+        sql_right_identifier=to_identifier,
+    )
+
+
+def _join_sql(state: _SqlBuildState, join_node_key: str, join_predicate: CompiledJoinPredicate) -> str:
+    join_alias = state.aliases[join_node_key]
+    predicates = [
+        f"{pair.sql_left_identifier} = {pair.sql_right_identifier}"
+        for pair in join_predicate.column_pairs
     ]
     return f"JOIN {_table_sql(state.context, join_node_key)} AS [{join_alias}] ON " + " AND ".join(predicates)
 
@@ -1321,6 +1394,71 @@ def _snapshot_fk_matches(context: _ValidationContext, edge: Any, fk: Any) -> boo
         and not getattr(fk, "is_not_trusted", False)
         and getattr(fk, "verified_by_db", True)
     )
+
+
+def _validate_materialized_join_predicate(
+    context: _ValidationContext,
+    edge: Any,
+    predicate: CompiledJoinPredicate,
+) -> list[QueryResultValidationIssue]:
+    issues: list[QueryResultValidationIssue] = []
+    from_node = _node(context, edge.from_node_key)
+    to_node = _node(context, edge.to_node_key)
+    trace_aliases = context.compiler_result.trace.aliases
+    expected_from_alias = trace_aliases.get(edge.from_node_key)
+    expected_to_alias = trace_aliases.get(edge.to_node_key)
+    if (
+        predicate.from_table_key != edge.from_node_key
+        or predicate.to_table_key != edge.to_node_key
+        or predicate.from_schema != from_node.schema_name
+        or predicate.from_table != from_node.object_name
+        or predicate.to_schema != to_node.schema_name
+        or predicate.to_table != to_node.object_name
+        or predicate.constraint_name != edge.constraint_name
+        or predicate.source != "graph_fk"
+        or predicate.join_type != "inner"
+    ):
+        issues.append(_issue("join_contract_validation", "TRACE_JOIN_MISMATCH", "error", "Materialized join predicate metadata differs from graph edge.", edge_key=edge.edge_key, decision_category="trace_mismatch"))
+    if predicate.from_alias != expected_from_alias or predicate.to_alias != expected_to_alias:
+        issues.append(_issue("join_contract_validation", "ALIAS_REFERENCE_INVALID", "error", "Join predicate aliases differ from compiler trace aliases.", edge_key=edge.edge_key, decision_category="trace_mismatch"))
+    ordered_pairs = sorted(edge.column_pairs, key=lambda item: item.ordinal_position)
+    actual_pairs = list(predicate.column_pairs)
+    if len(actual_pairs) != len(ordered_pairs):
+        issues.append(_issue("join_contract_validation", "JOIN_PAIR_ORDER_INVALID", "error", "Materialized join predicate column pair count differs from graph edge.", edge_key=edge.edge_key, decision_category="trace_mismatch"))
+        return issues
+    for expected_pair, actual_pair in zip(ordered_pairs, actual_pairs, strict=True):
+        expected_from_identifier = _column_expr(predicate.from_alias, expected_pair.from_column)
+        expected_to_identifier = _column_expr(predicate.to_alias, expected_pair.to_column)
+        if (
+            actual_pair.ordinal != expected_pair.ordinal_position
+            or actual_pair.from_column_key != expected_pair.from_column_key
+            or actual_pair.to_column_key != expected_pair.to_column_key
+            or actual_pair.from_physical_column != expected_pair.from_column
+            or actual_pair.to_physical_column != expected_pair.to_column
+            or actual_pair.from_sql_identifier != expected_from_identifier
+            or actual_pair.to_sql_identifier != expected_to_identifier
+            or actual_pair.sql_left_alias != predicate.from_alias
+            or actual_pair.sql_right_alias != predicate.to_alias
+            or actual_pair.sql_left_column_key != expected_pair.from_column_key
+            or actual_pair.sql_right_column_key != expected_pair.to_column_key
+            or actual_pair.sql_left_physical_column != expected_pair.from_column
+            or actual_pair.sql_right_physical_column != expected_pair.to_column
+            or actual_pair.sql_left_identifier != expected_from_identifier
+            or actual_pair.sql_right_identifier != expected_to_identifier
+        ):
+            issues.append(_issue("join_contract_validation", "JOIN_PAIR_ORDER_INVALID", "error", "Materialized join predicate column pair differs from graph FK order or SQL alias side.", edge_key=edge.edge_key, decision_category="trace_mismatch"))
+            break
+    return issues
+
+
+def _join_sql_from_predicate(context: _ValidationContext, predicate: CompiledJoinPredicate) -> str:
+    join_node_key = predicate.to_table_key if predicate.traversal_direction == "forward" else predicate.from_table_key
+    join_alias = predicate.to_alias if predicate.traversal_direction == "forward" else predicate.from_alias
+    predicates = [
+        f"{pair.sql_left_identifier} = {pair.sql_right_identifier}"
+        for pair in predicate.column_pairs
+    ]
+    return f"JOIN {_table_sql(context, join_node_key)} AS [{join_alias}] ON " + " AND ".join(predicates)
 
 
 def _edge_is_compiler_safe(edge: Any) -> bool:

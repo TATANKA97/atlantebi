@@ -84,6 +84,9 @@ def test_line_metric_by_category_uses_trusted_path_group_shape_and_not_header_am
     assert "LineTotal" in compiled.sql
     assert "SubTotal" not in compiled.sql
     assert "TotalDue" not in compiled.sql
+    assert len(compiled.trace.join_predicates) == len(compiled.trace.join_paths)
+    assert all(predicate.source == "graph_fk" for predicate in compiled.trace.join_predicates)
+    assert all(predicate.join_type == "inner" for predicate in compiled.trace.join_predicates)
     assert compiled.parameters[0].source == "limit"
     assert compiled.parameters[0].value == 500
 
@@ -131,6 +134,10 @@ def test_ugly_schema_with_explicit_evidence_compiles_without_demo_hardcoding() -
     assert "ProductCategory" not in compiled.sql
     assert "[SalesLT].[DORIG]" in compiled.sql
     assert "[SalesLT].[CATART]" in compiled.sql
+    assert [predicate.edge_key for predicate in compiled.trace.join_predicates] == [
+        _edge_key(graph, "FK_DORIG_ARTICO"),
+        _edge_key(graph, "FK_ARTICO_CATART"),
+    ]
 
 
 def test_structured_filters_expand_parameters_and_reject_invalid_shapes() -> None:
@@ -169,6 +176,13 @@ def test_structured_filters_expand_parameters_and_reject_invalid_shapes() -> Non
     assert compiled.status == "compiled"
     assert "IN (@p2, @p3, @p4)" in compiled.sql
     assert [param.value for param in compiled.parameters[2:]] == ["A", "B", "C"]
+    assert len(compiled.trace.join_predicates) == 1
+    predicate = compiled.trace.join_predicates[0]
+    assert predicate.traversal_direction == "forward"
+    assert predicate.constraint_name == "FK_DORIG_DOTES"
+    assert len(predicate.column_pairs) == 1
+    assert predicate.column_pairs[0].sql_left_identifier in compiled.sql
+    assert predicate.column_pairs[0].sql_right_identifier in compiled.sql
 
     invalid_filter = status_filter.model_copy(update={"operator": "eq", "value": None})
     invalid_result = _intent(metric, concept_ref="revenue", date_column=_column_key(graph, "DOTES", "DATA_DOC"), filters=[invalid_filter])
@@ -225,6 +239,81 @@ def test_composite_multischema_fk_preserves_pair_order_and_schema_qualification(
     assert "[azienda].[DOC_LINE]" in compiled.sql
     assert "[azienda].[DOC_HEAD]" in compiled.sql
     assert "[t0].[COMPANY_ID] = [t1].[COMPANY_ID] AND [t0].[DOC_ID] = [t1].[DOC_ID]" in compiled.sql
+    assert len(compiled.trace.join_predicates) == 1
+    predicate = compiled.trace.join_predicates[0]
+    assert predicate.from_schema == "azienda"
+    assert predicate.to_schema == "azienda"
+    assert predicate.from_table == "DOC_LINE"
+    assert predicate.to_table == "DOC_HEAD"
+    assert predicate.traversal_direction == "forward"
+    assert [pair.ordinal for pair in predicate.column_pairs] == [1, 2]
+    assert [pair.from_physical_column for pair in predicate.column_pairs] == ["COMPANY_ID", "DOC_ID"]
+    assert [pair.to_physical_column for pair in predicate.column_pairs] == ["COMPANY_ID", "DOC_ID"]
+    assert [pair.sql_left_identifier for pair in predicate.column_pairs] == ["[t0].[COMPANY_ID]", "[t0].[DOC_ID]"]
+    assert [pair.sql_right_identifier for pair in predicate.column_pairs] == ["[t1].[COMPANY_ID]", "[t1].[DOC_ID]"]
+
+
+def test_reverse_fk_traversal_materializes_join_predicate_direction() -> None:
+    graph = _composite_multischema_graph()
+    schema_snapshot = _snapshot_from_graph(graph)
+    layer = _layer_with_concept(
+        _active_layer(_empty_layer_for(graph)),
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "document_total",
+    )
+    metric = _semantic_metric(
+        graph,
+        concept_key="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        concept_ref="document_total",
+        variant="header_total",
+        table_name="DOC_HEAD",
+        measure_column="DOC_ID",
+        grain_columns=["COMPANY_ID", "DOC_ID"],
+        dimension_column=("DOC_LINE", "LINE_NO"),
+        dimension_edges=["FK_LINE_HEAD"],
+        value_type="number",
+    )
+    result = _intent(
+        metric,
+        concept_ref="document_total",
+        group_by=[
+            QueryIntentGroupByDimension(
+                column_key=_column_key(graph, "DOC_LINE", "LINE_NO"),
+                edge_path=[_edge_key(graph, "FK_LINE_HEAD")],
+                safety="safe",
+            )
+        ],
+        required_edges=[_edge_key(graph, "FK_LINE_HEAD")],
+    )
+    layer = _layer_with_metrics(layer, [metric])
+    blocked_preflight = validate_query_compiler_preflight(
+        result,
+        layer,
+        graph,
+        _graph_report(),
+        _semantic_invariant_report(),
+        schema_snapshot=schema_snapshot,
+        policy={"status_scope": "include_all_with_disclosure"},
+    )
+    accepted_preflight = replace(
+        blocked_preflight,
+        status="ready",
+        decision_category="safe",
+        errors=[],
+        warnings=[],
+        blocking_codes=[],
+    )
+
+    compiled = compile_query_plan(result, accepted_preflight, layer, graph, schema_snapshot)
+
+    assert compiled.status == "compiled"
+    assert len(compiled.trace.join_predicates) == 1
+    predicate = compiled.trace.join_predicates[0]
+    assert predicate.traversal_direction == "reverse"
+    assert predicate.from_table == "DOC_LINE"
+    assert predicate.to_table == "DOC_HEAD"
+    assert [pair.ordinal for pair in predicate.column_pairs] == [1, 2]
+    assert "[t1].[COMPANY_ID] = [t0].[COMPANY_ID] AND [t1].[DOC_ID] = [t0].[DOC_ID]" in compiled.sql
 
 
 def test_count_semantics_are_explicit_and_never_choose_grain_column_silently() -> None:
@@ -423,6 +512,7 @@ def test_preflight_blocked_safety_cases_remain_blocked_at_compiler_boundary() ->
     assert bridge_preflight.status == "blocked"
     assert compiled.status == "blocked"
     assert "PREFLIGHT_NOT_ACCEPTED" in _compiler_codes(compiled)
+    assert compiled.trace.join_predicates == []
 
 
 def test_cross_table_filter_without_selected_path_blocks() -> None:
@@ -537,6 +627,7 @@ def test_view_source_can_compile_but_lineage_path_cannot() -> None:
     assert compiled.status == "compiled"
     assert "[SalesLT].[VW_DOC]" in compiled.sql
     assert "JOIN" not in compiled.sql
+    assert compiled.trace.join_predicates == []
 
 
 def test_query_compiler_module_has_no_demo_literals_or_execution_calls() -> None:

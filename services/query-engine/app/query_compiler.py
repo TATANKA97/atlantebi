@@ -83,6 +83,44 @@ class CompiledSqlReference:
 
 
 @dataclass(frozen=True)
+class CompiledJoinColumnPair:
+    ordinal: int
+    from_column_key: str
+    to_column_key: str
+    from_physical_column: str
+    to_physical_column: str
+    from_sql_identifier: str
+    to_sql_identifier: str
+    sql_left_alias: str
+    sql_right_alias: str
+    sql_left_column_key: str
+    sql_right_column_key: str
+    sql_left_physical_column: str
+    sql_right_physical_column: str
+    sql_left_identifier: str
+    sql_right_identifier: str
+
+
+@dataclass(frozen=True)
+class CompiledJoinPredicate:
+    path_key: str | None
+    edge_key: str
+    from_table_key: str
+    to_table_key: str
+    from_alias: str
+    to_alias: str
+    from_schema: str
+    from_table: str
+    to_schema: str
+    to_table: str
+    constraint_name: str | None
+    column_pairs: list[CompiledJoinColumnPair]
+    join_type: Literal["inner"] = "inner"
+    source: Literal["graph_fk"] = "graph_fk"
+    traversal_direction: Literal["forward", "reverse"] = "forward"
+
+
+@dataclass(frozen=True)
 class QueryCompilerTrace:
     metric_key: str | None = None
     source_table_key: str | None = None
@@ -91,6 +129,7 @@ class QueryCompilerTrace:
     dimension_keys: list[str] = field(default_factory=list)
     filter_keys: list[str] = field(default_factory=list)
     join_paths: list[str] = field(default_factory=list)
+    join_predicates: list[CompiledJoinPredicate] = field(default_factory=list)
     selected_tables: list[CompiledSqlReference] = field(default_factory=list)
     selected_columns: list[CompiledSqlReference] = field(default_factory=list)
     aliases: dict[str, str] = field(default_factory=dict)
@@ -145,6 +184,7 @@ class _CompilerContext:
     group_by_structured: list[dict[str, object]] = field(default_factory=list)
     order_by_structured: list[dict[str, object]] | None = None
     joins: list[str] = field(default_factory=list)
+    join_predicates: list[CompiledJoinPredicate] = field(default_factory=list)
     limit: int | None = None
 
     @property
@@ -700,7 +740,9 @@ def _assign_aliases_and_joins(context: _CompilerContext) -> list[QueryCompilerIs
             join_node_key = edge.from_node_key
         _record_table_ref(context, join_node_key)
         _record_edge_ref(context, edge)
-        context.joins.append(_join_sql(context, edge, join_node_key))
+        join_predicate = _join_predicate(context, edge, join_node_key)
+        context.join_predicates.append(join_predicate)
+        context.joins.append(_join_sql(context, join_node_key, join_predicate))
     return issues
 
 
@@ -1002,14 +1044,59 @@ def _filter_clause(context: _CompilerContext, filter_item: SemanticFilter, alias
     return f"{expr} {sql_op} {param.name}"
 
 
-def _join_sql(context: _CompilerContext, edge: Any, join_node_key: str) -> str:
-    join_node = _node(context, join_node_key)
-    join_alias = context.aliases[join_node_key]
+def _join_predicate(context: _CompilerContext, edge: Any, join_node_key: str) -> CompiledJoinPredicate:
+    from_node = _node(context, edge.from_node_key)
+    to_node = _node(context, edge.to_node_key)
     from_alias = context.aliases[edge.from_node_key]
     to_alias = context.aliases[edge.to_node_key]
-    predicates = [
-        f"{_column_expr(from_alias, pair.from_column)} = {_column_expr(to_alias, pair.to_column)}"
+    column_pairs = [
+        _join_column_pair(from_alias, to_alias, pair)
         for pair in sorted(edge.column_pairs, key=lambda item: item.ordinal_position)
+    ]
+    return CompiledJoinPredicate(
+        path_key=None,
+        edge_key=edge.edge_key,
+        from_table_key=edge.from_node_key,
+        to_table_key=edge.to_node_key,
+        from_alias=from_alias,
+        to_alias=to_alias,
+        from_schema=from_node.schema_name,
+        from_table=from_node.object_name,
+        to_schema=to_node.schema_name,
+        to_table=to_node.object_name,
+        constraint_name=edge.constraint_name,
+        column_pairs=column_pairs,
+        traversal_direction="forward" if join_node_key == edge.to_node_key else "reverse",
+    )
+
+
+def _join_column_pair(from_alias: str, to_alias: str, pair: Any) -> CompiledJoinColumnPair:
+    from_identifier = _column_expr(from_alias, pair.from_column)
+    to_identifier = _column_expr(to_alias, pair.to_column)
+    return CompiledJoinColumnPair(
+        ordinal=pair.ordinal_position,
+        from_column_key=pair.from_column_key,
+        to_column_key=pair.to_column_key,
+        from_physical_column=pair.from_column,
+        to_physical_column=pair.to_column,
+        from_sql_identifier=from_identifier,
+        to_sql_identifier=to_identifier,
+        sql_left_alias=from_alias,
+        sql_right_alias=to_alias,
+        sql_left_column_key=pair.from_column_key,
+        sql_right_column_key=pair.to_column_key,
+        sql_left_physical_column=pair.from_column,
+        sql_right_physical_column=pair.to_column,
+        sql_left_identifier=from_identifier,
+        sql_right_identifier=to_identifier,
+    )
+
+
+def _join_sql(context: _CompilerContext, join_node_key: str, join_predicate: CompiledJoinPredicate) -> str:
+    join_alias = context.aliases[join_node_key]
+    predicates = [
+        f"{pair.sql_left_identifier} = {pair.sql_right_identifier}"
+        for pair in join_predicate.column_pairs
     ]
     return f"JOIN {_table_sql(context, join_node_key)} AS [{join_alias}] ON " + " AND ".join(predicates)
 
@@ -1068,8 +1155,9 @@ def _validate_snapshot_fk(context: _CompilerContext, edge: Any) -> list[QueryCom
         ]
     from_node = _node(context, edge.from_node_key)
     to_node = _node(context, edge.to_node_key)
-    expected_from = [pair.from_column for pair in sorted(edge.column_pairs, key=lambda item: item.ordinal_position)]
-    expected_to = [pair.to_column for pair in sorted(edge.column_pairs, key=lambda item: item.ordinal_position)]
+    ordered_pairs = sorted(edge.column_pairs, key=lambda item: item.ordinal_position)
+    expected_from = [pair.from_column for pair in ordered_pairs]
+    expected_to = [pair.to_column for pair in ordered_pairs]
     if (
         fk.from_schema != from_node.schema_name
         or fk.from_table != from_node.object_name
@@ -1090,6 +1178,31 @@ def _validate_snapshot_fk(context: _CompilerContext, edge: Any) -> list[QueryCom
                 physical_label=edge.constraint_name,
                 downstream_impact="Compiler could produce an invalid or unsafe join.",
                 suggested_action="Use matching graph and snapshot metadata.",
+            )
+        ]
+    fk_column_refs = [
+        (from_node.schema_name, from_node.object_name, pair.from_column)
+        for pair in ordered_pairs
+    ]
+    fk_column_refs.extend(
+        (to_node.schema_name, to_node.object_name, pair.to_column)
+        for pair in ordered_pairs
+    )
+    missing_columns = [
+        column_name
+        for schema_name, table_name, column_name in fk_column_refs
+        if (schema_name, table_name, column_name) not in context.snapshot_columns
+    ]
+    if missing_columns:
+        return [
+            _issue(
+                "SCHEMA_COLUMN_NOT_FOUND",
+                "error",
+                "Selected FK references physical columns missing from the Technical Snapshot.",
+                edge_key=edge.edge_key,
+                physical_label=edge.constraint_name,
+                downstream_impact="Compiler cannot audit the emitted join predicate against snapshot columns.",
+                suggested_action="Refresh the snapshot and graph from the same database metadata.",
             )
         ]
     return []
@@ -1235,6 +1348,7 @@ def _trace(context: _CompilerContext) -> QueryCompilerTrace:
         dimension_keys=[item.column_key for item in context.plan.group_by_dimensions],
         filter_keys=[item.column_key for item in context.plan.filters],
         join_paths=_selected_plan_edge_keys(context.plan),
+        join_predicates=list(context.join_predicates),
         selected_tables=list(context.table_refs.values()),
         selected_columns=list(context.column_refs.values()),
         aliases=dict(sorted(context.aliases.items(), key=lambda item: item[1])),
