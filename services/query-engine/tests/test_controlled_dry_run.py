@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from app.controlled_dry_run import (
 from app.query_compiler import compile_query_plan
 from app.query_result_validator import validate_compiled_query_result_contract
 from app.query_intent import resolve_query_intent
+from app.models import SemanticFilter
 from tests.test_query_compiler import _preflight, _snapshot_from_graph
 from tests.test_query_compiler_preflight import (
     _active_layer,
@@ -21,8 +23,11 @@ from tests.test_query_compiler_preflight import (
     _layer_with_concept,
     _layer_with_metrics,
     _semantic_metric,
+    _header_detail_graph,
+    _view_graph,
 )
 from tests.test_query_intent import active_adventureworks_layer, request_for
+from tests.test_queryability_builder import build, column, snapshot, table
 from tests.test_semantic_builder import adventureworks_graph
 
 
@@ -201,6 +206,291 @@ def test_pre_runtime_gates_block_context_method_browse_and_parameter_type_mismat
     assert "PARAMETER_TYPE_UNSUPPORTED" in _prep_codes(bad_parameter_preparation)
 
 
+def test_debug_artifact_gate_and_replay_hash_mismatches_block_explicitly() -> None:
+    graph, layer, intent, schema_snapshot, preflight, compiled, validation = _scalar_artifacts()
+
+    blocked_preflight = _prepare(
+        intent,
+        replace(preflight, status="blocked", decision_category="unsafe"),
+        compiled,
+        validation,
+        layer,
+        graph,
+        schema_snapshot,
+    )
+    assert "PREFLIGHT_NOT_ACCEPTED" in _prep_codes(blocked_preflight)
+
+    blocked_compiler = _prepare(
+        intent,
+        preflight,
+        replace(compiled, status="blocked", sql=None),
+        validation,
+        layer,
+        graph,
+        schema_snapshot,
+    )
+    assert "COMPILER_NOT_COMPILED" in _prep_codes(blocked_compiler)
+
+    blocked_validator = _prepare(
+        intent,
+        preflight,
+        compiled,
+        replace(validation, status="blocked"),
+        layer,
+        graph,
+        schema_snapshot,
+    )
+    assert "RESULT_VALIDATOR_NOT_ACCEPTED" in _prep_codes(blocked_validator)
+
+    stale_layer = layer.model_copy(update={"freshness": "stale"})
+    stale = _prepare(intent, preflight, compiled, validation, stale_layer, graph, schema_snapshot)
+    assert "SEMANTIC_LAYER_NOT_FRESH" in _prep_codes(stale)
+
+    mismatched_graph = graph.model_copy(update={"graph_hash": "0" * 64})
+    graph_mismatch = _prepare(intent, preflight, compiled, validation, layer, mismatched_graph, schema_snapshot)
+    assert "GRAPH_HASH_MISMATCH" in _prep_codes(graph_mismatch)
+
+    mismatched_snapshot = deepcopy(schema_snapshot)
+    mismatched_snapshot.snapshot_hash = "0" * 64
+    snapshot_mismatch = _prepare(intent, preflight, compiled, validation, layer, graph, mismatched_snapshot)
+    assert "SNAPSHOT_HASH_MISMATCH" in _prep_codes(snapshot_mismatch)
+
+    ok = _prepare(intent, preflight, compiled, validation, layer, graph, schema_snapshot)
+    assert ok.compiled_sql_hash is not None
+    assert ok.validator_report_hash is not None
+
+    sql_hash_mismatch = _prepare(
+        intent,
+        preflight,
+        compiled,
+        validation,
+        layer,
+        graph,
+        schema_snapshot,
+        expected_compiled_sql_hash="0" * 64,
+    )
+    assert "COMPILED_SQL_HASH_MISMATCH" in _prep_codes(sql_hash_mismatch)
+
+    validator_hash_mismatch = _prepare(
+        intent,
+        preflight,
+        compiled,
+        validation,
+        layer,
+        graph,
+        schema_snapshot,
+        expected_validator_report_hash="0" * 64,
+    )
+    assert "VALIDATOR_REPORT_HASH_MISMATCH" in _prep_codes(validator_hash_mismatch)
+
+    changed_sql = replace(compiled, sql=compiled.sql.replace("SubTotal", "TotalDue", 1))
+    changed = _prepare(intent, preflight, changed_sql, validation, layer, graph, schema_snapshot)
+    assert changed.compiled_sql_hash != ok.compiled_sql_hash
+
+
+def test_sql_shape_guardrails_block_comments_multistatement_keywords_and_cross_database_refs() -> None:
+    graph, layer, intent, schema_snapshot, preflight, compiled, validation = _scalar_artifacts()
+
+    comment = _prepare(intent, preflight, replace(compiled, sql=f"{compiled.sql}\n-- DROP TABLE x"), validation, layer, graph, schema_snapshot)
+    assert "SQL_COMMENT_PAYLOAD_FORBIDDEN" in _prep_codes(comment)
+
+    multistatement = _prepare(intent, preflight, replace(compiled, sql=f"{compiled.sql}; SELECT 1"), validation, layer, graph, schema_snapshot)
+    assert "SQL_MULTIPLE_STATEMENTS" in _prep_codes(multistatement)
+
+    forbidden = _prepare(intent, preflight, replace(compiled, sql=compiled.sql.replace("SELECT", "SELECT DROP", 1)), validation, layer, graph, schema_snapshot)
+    assert "SQL_FORBIDDEN_KEYWORD" in _prep_codes(forbidden)
+
+    cross_database_sql = compiled.sql.replace("FROM [SalesLT].", "FROM [OtherDb].[SalesLT].", 1)
+    cross_database = _prepare(intent, preflight, replace(compiled, sql=cross_database_sql), validation, layer, graph, schema_snapshot)
+    assert "SQL_CROSS_DATABASE_REFERENCE_FORBIDDEN" in _prep_codes(cross_database)
+
+
+def test_parameter_declarations_cover_in_between_unicode_decimal_and_order_blocks() -> None:
+    graph = _header_detail_graph(with_fk=True)
+    schema_snapshot = _snapshot_from_graph(graph)
+    layer = _layer_with_concept(_active_layer(_empty_layer_for(graph)), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "revenue")
+    metric = _semantic_metric(
+        graph,
+        concept_key="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        concept_ref="revenue",
+        variant="line_detail",
+        table_name="DORIG",
+        measure_column="IMPORTO",
+        grain_columns=["IDRIG"],
+        date_column=("DOTES", "DATA_DOC"),
+        required_edges=["FK_DORIG_DOTES"],
+        value_type="currency",
+        eligibility="eligible_with_disclosure",
+    )
+    layer = _layer_with_metrics(layer, [metric])
+    filters = [
+        SemanticFilter(column_key=_column_key(graph, "DORIG", "STATO"), operator="in", value=["A", "Èvaso"], value_type="string"),
+        SemanticFilter(column_key=_column_key(graph, "DORIG", "IMPORTO"), operator="between", value=[10.5, 100.25], value_type="decimal"),
+    ]
+    intent = _intent(metric, concept_ref="revenue", date_column=_column_key(graph, "DOTES", "DATA_DOC"), filters=filters)
+    preflight = _preflight(intent, layer, graph, schema_snapshot, policy={"status_scope": "include_all_with_disclosure"})
+    compiled = compile_query_plan(intent, preflight, layer, graph, schema_snapshot)
+    validation = validate_compiled_query_result_contract(compiled, intent, preflight, layer, graph, schema_snapshot)
+
+    preparation = _prepare(intent, preflight, compiled, validation, layer, graph, schema_snapshot)
+
+    assert preparation.status == "ready"
+    assert preparation.metadata_request is not None
+    assert preparation.metadata_request.params_declaration == (
+        "@p0 date, @p1 date, @p2 nvarchar(4000), @p3 nvarchar(4000), @p4 decimal(38,10), @p5 decimal(38,10)"
+    )
+    assert "Èvaso" not in preparation.metadata_request.tsql
+    assert "Èvaso" not in preparation.metadata_request.params_declaration
+    assert [binding.name for binding in preparation.metadata_request.parameter_bindings] == [f"@p{index}" for index in range(6)]
+    assert all(binding.value_fingerprint for binding in preparation.metadata_request.parameter_bindings)
+
+    duplicate_name = replace(compiled, parameters=[compiled.parameters[0], replace(compiled.parameters[1], name="@p0"), *compiled.parameters[2:]])
+    duplicate = _prepare(intent, preflight, duplicate_name, validation, layer, graph, schema_snapshot)
+    assert "PARAMETER_ORDER_INVALID" in _prep_codes(duplicate)
+
+
+def test_metadata_contract_blocks_extra_missing_ordinal_type_and_dimension_binary() -> None:
+    graph, layer, intent, schema_snapshot, preflight, compiled, validation = _grouped_artifacts()
+    preparation = _prepare(intent, preflight, compiled, validation, layer, graph, schema_snapshot)
+
+    extra = validate_controlled_dry_run_metadata(
+        preparation,
+        [
+            SqlServerMetadataColumn(name="dimension_0", ordinal=1, sql_type="nvarchar(50)", nullable=True),
+            SqlServerMetadataColumn(name="metric_value", ordinal=2, sql_type="money", nullable=False),
+            SqlServerMetadataColumn(name="extra", ordinal=3, sql_type="int", nullable=True),
+        ],
+        duration_ms=1,
+        audit_ref="audit-extra",
+    )
+    assert "METADATA_COLUMN_COUNT_MISMATCH" in _report_codes(extra)
+
+    missing = validate_controlled_dry_run_metadata(
+        preparation,
+        [SqlServerMetadataColumn(name="dimension_0", ordinal=1, sql_type="nvarchar(50)", nullable=True)],
+        duration_ms=1,
+        audit_ref="audit-missing",
+    )
+    assert "METADATA_COLUMN_COUNT_MISMATCH" in _report_codes(missing)
+
+    wrong_ordinal = validate_controlled_dry_run_metadata(
+        preparation,
+        [
+            SqlServerMetadataColumn(name="dimension_0", ordinal=2, sql_type="nvarchar(50)", nullable=True),
+            SqlServerMetadataColumn(name="metric_value", ordinal=1, sql_type="money", nullable=False),
+        ],
+        duration_ms=1,
+        audit_ref="audit-ordinal",
+    )
+    assert "METADATA_SHAPE_MISMATCH" in _report_codes(wrong_ordinal)
+
+    metric_text = validate_controlled_dry_run_metadata(
+        preparation,
+        [
+            SqlServerMetadataColumn(name="dimension_0", ordinal=1, sql_type="nvarchar(50)", nullable=True),
+            SqlServerMetadataColumn(name="metric_value", ordinal=2, sql_type="nvarchar(50)", nullable=False),
+        ],
+        duration_ms=1,
+        audit_ref="audit-type",
+    )
+    assert "METADATA_SHAPE_MISMATCH" in _report_codes(metric_text)
+
+    binary_dimension = validate_controlled_dry_run_metadata(
+        preparation,
+        [
+            SqlServerMetadataColumn(name="dimension_0", ordinal=1, sql_type="varbinary(max)", nullable=True),
+            SqlServerMetadataColumn(name="metric_value", ordinal=2, sql_type="money", nullable=False),
+        ],
+        duration_ms=1,
+        audit_ref="audit-binary",
+    )
+    assert "METADATA_SHAPE_MISMATCH" in _report_codes(binary_dimension)
+    assert binary_dimension.result_columns[0].nullable is True
+
+
+def test_pmi_view_weird_identifier_and_side_effect_free_debug_audit() -> None:
+    graph, layer, intent, schema_snapshot, preflight, compiled, validation = _scalar_artifacts()
+    before = (
+        deepcopy(intent),
+        deepcopy(preflight),
+        deepcopy(compiled),
+        deepcopy(validation),
+        deepcopy(layer),
+        deepcopy(graph),
+        deepcopy(schema_snapshot),
+    )
+    preparation = _prepare(intent, preflight, compiled, validation, layer, graph, schema_snapshot)
+    report = validate_controlled_dry_run_metadata(
+        preparation,
+        [SqlServerMetadataColumn(name="metric_value", ordinal=1, sql_type="decimal(38,10)", nullable=True)],
+        duration_ms=1,
+        audit_ref="audit-side-effect",
+    )
+    after = (intent, preflight, compiled, validation, layer, graph, schema_snapshot)
+
+    assert report.status in {"passed", "passed_with_warnings"}
+    assert before == after
+
+    preparation_before = deepcopy(preparation)
+    validate_controlled_dry_run_metadata(
+        preparation,
+        [SqlServerMetadataColumn(name="metric_value", ordinal=1, sql_type="decimal(38,10)", nullable=True)],
+        duration_ms=1,
+        audit_ref="audit-side-effect-2",
+    )
+    assert preparation == preparation_before
+
+    view_graph = _view_graph()
+    view_snapshot = _snapshot_from_graph(view_graph)
+    view_layer = _layer_with_concept(_active_layer(_empty_layer_for(view_graph)), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "rows")
+    view_metric = _semantic_metric(
+        view_graph,
+        concept_key="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        concept_ref="rows",
+        variant="view_count",
+        table_name="VW_DOC",
+        measure_column="ID",
+        grain_columns=["ID"],
+        value_type="count",
+    )
+    view_layer = _layer_with_metrics(view_layer, [view_metric])
+    view_intent = _intent(view_metric, concept_ref="rows")
+    view_preflight = _preflight(view_intent, view_layer, view_graph, view_snapshot, policy={"allow_view_backed_metrics": True})
+    view_compiled = compile_query_plan(view_intent, view_preflight, view_layer, view_graph, view_snapshot)
+    view_validation = validate_compiled_query_result_contract(view_compiled, view_intent, view_preflight, view_layer, view_graph, view_snapshot)
+    view_preparation = _prepare(view_intent, view_preflight, view_compiled, view_validation, view_layer, view_graph, view_snapshot)
+    assert view_preparation.status == "ready"
+    assert view_compiled.trace.join_predicates == []
+
+    weird_graph = build(
+        snapshot(
+            tables=[
+                table("select table]x", [column("id key", 1), column("gross amount]x", 2, role="money_candidate", native_type="money")], primary_key=["id key"]),
+            ]
+        )
+    )
+    weird_snapshot = _snapshot_from_graph(weird_graph)
+    weird_layer = _layer_with_concept(_active_layer(_empty_layer_for(weird_graph)), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "amount_metric")
+    weird_metric = _semantic_metric(
+        weird_graph,
+        concept_key="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        concept_ref="amount_metric",
+        variant="base",
+        table_name="select table]x",
+        measure_column="gross amount]x",
+        grain_columns=["id key"],
+        value_type="currency",
+    )
+    weird_layer = _layer_with_metrics(weird_layer, [weird_metric])
+    weird_intent = _intent(weird_metric, concept_ref="amount_metric")
+    weird_preflight = _preflight(weird_intent, weird_layer, weird_graph, weird_snapshot)
+    weird_compiled = compile_query_plan(weird_intent, weird_preflight, weird_layer, weird_graph, weird_snapshot)
+    weird_validation = validate_compiled_query_result_contract(weird_compiled, weird_intent, weird_preflight, weird_layer, weird_graph, weird_snapshot)
+    weird_preparation = _prepare(weird_intent, weird_preflight, weird_compiled, weird_validation, weird_layer, weird_graph, weird_snapshot)
+    assert weird_preparation.status == "ready"
+    assert "]]" in weird_preparation.metadata_request.tsql
+
+
 def test_composite_key_metadata_request_keeps_join_predicate_gate_strict() -> None:
     graph = _composite_multischema_graph()
     schema_snapshot = _snapshot_from_graph(graph)
@@ -247,9 +537,12 @@ def test_controlled_dry_run_module_has_no_demo_literals_or_db_driver_calls() -> 
     assert "app.drivers.sqlserver" not in source
     assert "pyodbc" not in source
     assert "sqlalchemy" not in source
+    assert "pymssql" not in source
+    assert "create_engine" not in source
+    assert "connect(" not in source
 
 
-def _prepare(intent, preflight, compiled, validation, layer, graph, schema_snapshot):
+def _prepare(intent, preflight, compiled, validation, layer, graph, schema_snapshot, **kwargs):
     return prepare_controlled_dry_run(
         intent,
         preflight,
@@ -261,7 +554,30 @@ def _prepare(intent, preflight, compiled, validation, layer, graph, schema_snaps
         tenant_id="tenant-1",
         user_id="user-1",
         connection_id="connection-1",
+        **kwargs,
     )
+
+
+def _scalar_artifacts():
+    graph = adventureworks_graph()
+    layer = active_adventureworks_layer()
+    intent = resolve_query_intent(request_for("fatturato 2008", layer=layer))
+    schema_snapshot = _snapshot_from_graph(graph)
+    preflight = _preflight(intent, layer, graph, schema_snapshot)
+    compiled = compile_query_plan(intent, preflight, layer, graph, schema_snapshot)
+    validation = validate_compiled_query_result_contract(compiled, intent, preflight, layer, graph, schema_snapshot)
+    return graph, layer, intent, schema_snapshot, preflight, compiled, validation
+
+
+def _grouped_artifacts():
+    graph = adventureworks_graph()
+    layer = active_adventureworks_layer()
+    intent = resolve_query_intent(request_for("fatturato per categoria prodotto", layer=layer))
+    schema_snapshot = _snapshot_from_graph(graph)
+    preflight = _preflight(intent, layer, graph, schema_snapshot)
+    compiled = compile_query_plan(intent, preflight, layer, graph, schema_snapshot)
+    validation = validate_compiled_query_result_contract(compiled, intent, preflight, layer, graph, schema_snapshot)
+    return graph, layer, intent, schema_snapshot, preflight, compiled, validation
 
 
 def _prep_codes(report) -> set[str]:
@@ -270,4 +586,3 @@ def _prep_codes(report) -> set[str]:
 
 def _report_codes(report) -> set[str]:
     return {issue.code for issue in [*report.errors, *report.warnings, *report.infos]}
-
