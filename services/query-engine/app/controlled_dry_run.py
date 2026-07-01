@@ -225,6 +225,8 @@ def prepare_controlled_dry_run(
     connection_id: str,
     sqlserver_validation_method: str = _VALIDATION_METHOD,
     browse_information_mode: int = _BROWSE_INFORMATION_MODE,
+    expected_compiled_sql_hash: str | None = None,
+    expected_validator_report_hash: str | None = None,
 ) -> ControlledDryRunPreparationReport:
     stage_results: list[DryRunStageResult] = []
     stage_results.append(
@@ -281,6 +283,18 @@ def prepare_controlled_dry_run(
     result_contract = query_result_validation_report.result_contract
     compiled_sql_hash = _hash_string(compiler_result.sql or "")
     validator_report_hash = _hash_payload(query_result_validation_report.to_debug_dict())
+    stage_results.append(
+        _stage_result(
+            "hash_replay_gate",
+            _validate_replay_hashes(
+                compiled_sql_hash=compiled_sql_hash,
+                validator_report_hash=validator_report_hash,
+                expected_compiled_sql_hash=expected_compiled_sql_hash,
+                expected_validator_report_hash=expected_validator_report_hash,
+            ),
+            [compiled_sql_hash, validator_report_hash],
+        )
+    )
 
     if not _has_errors(stage_results):
         request = DryRunMetadataRequest(
@@ -487,6 +501,33 @@ def _validate_sqlserver_method(*, sqlserver_validation_method: str, browse_infor
                 "BROWSE_INFORMATION_MODE_UNSUPPORTED",
                 "Dry-Run V1 uses browse_information_mode=0 to validate exposed result metadata.",
                 category="unsupported_sql_shape",
+            )
+        )
+    return issues
+
+
+def _validate_replay_hashes(
+    *,
+    compiled_sql_hash: str,
+    validator_report_hash: str,
+    expected_compiled_sql_hash: str | None,
+    expected_validator_report_hash: str | None,
+) -> list[DryRunIssue]:
+    issues: list[DryRunIssue] = []
+    if expected_compiled_sql_hash is not None and expected_compiled_sql_hash != compiled_sql_hash:
+        issues.append(
+            _gate_issue(
+                "COMPILED_SQL_HASH_MISMATCH",
+                "Compiled SQL hash does not match the expected dry-run input hash.",
+                category="context_mismatch",
+            )
+        )
+    if expected_validator_report_hash is not None and expected_validator_report_hash != validator_report_hash:
+        issues.append(
+            _gate_issue(
+                "VALIDATOR_REPORT_HASH_MISMATCH",
+                "Result Validator report hash does not match the expected dry-run input hash.",
+                category="context_mismatch",
             )
         )
     return issues
