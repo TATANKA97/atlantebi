@@ -2,16 +2,35 @@
 
 ## AI-Powered BI Platform per PMI italiane
 
-### Versione 1.1 — Next.js + Supabase + GCP
+### Versione 1.2 — Preflight-Gated Deterministic Query Pipeline
 
-Aggiornato al 16 giugno 2026. Questo documento sostituisce le assunzioni
-manual-first e la generazione SQL libera presenti nelle revisioni precedenti.
+Aggiornato al 1 luglio 2026.
+
+Questa versione supersede la v1.1. Incorpora le lezioni del lavoro
+architetturale interno, dell'analisi WrenAI, dell'analisi Metabase e dei
+post-merge debug report su Query Compiler Preflight Gate e Query Compiler V1
+Narrow.
 
 ---
 
 ## 0. Decisioni architetturali vincolanti
 
-Questa versione riparte da zero con scelte più solide.
+Questa versione fissa il modello Atlante come BI compiler pipeline controllata,
+non come text-to-SQL.
+
+### Invariante globale non negoziabile
+
+```txt
+AI does not generate SQL.
+AI may propose meaning and structured intent.
+The server validates, preflights, compiles and validates contracts deterministically.
+SQL is produced only by the deterministic compiler, after a successful preflight gate.
+Execution is forbidden until compiled SQL passes the Result Validator and a controlled dry-run/execution envelope exists.
+```
+
+AdventureWorksLT is regression/demo baseline only. Real PMI/ERP-style schemas
+are acceptance targets. Every milestone must avoid demo overfitting and must
+include anti-demo fixtures or acceptance criteria where applicable.
 
 ### Scelte principali
 
@@ -37,6 +56,54 @@ Questa versione riparte da zero con scelte più solide.
 | Verification                  | Proporzionale, deterministica, non ansiogena                                |
 | MCP runtime                   | Non previsto in V1                                                          |
 
+### Anti-demo / PMI-ERP readiness rule
+
+No milestone is considered complete if it only works on AdventureWorksLT or
+clean demo schemas.
+
+AdventureWorksLT remains useful as a repeatable SQL Server regression baseline,
+but acceptance must include real-world PMI/ERP risks:
+
+* ugly physical names;
+* missing FK;
+* disabled/untrusted FK;
+* composite keys;
+* multi-schema same table names;
+* table without candidate key;
+* bridge/many-to-many;
+* physical DB views and lineage;
+* multiple amount columns;
+* multiple business/audit dates;
+* status/cancelled/type document fields;
+* PII fields;
+* mixed customer/supplier/person/company tables;
+* nullable count columns;
+* naming-inferred relationships that must remain untrusted.
+
+Production code must not contain fixture/demo literals such as AdventureWorks
+or specific PMI test table names. Fixture names are allowed only in tests.
+
+### Lessons from WrenAI and Metabase
+
+WrenAI validates the value of a context/MDL layer, dry-plan lifecycle and
+memory. Atlante adopts the useful concepts but does not adopt agent-written SQL
+or raw SQL semantic objects.
+
+Metabase validates the importance of a staged query processor, metadata
+lifecycle, semantic types, metrics, segments, permissions, scan/fingerprint and
+dependency management. Atlante adopts the staged processor concept but keeps a
+stricter AI-safe compiler pipeline.
+
+Atlante's path:
+
+* no AI-written SQL;
+* deterministic compiler;
+* fail-closed graph;
+* preflight before compiler;
+* contract validator before dry-run;
+* dry-run before execution;
+* result validation after execution.
+
 ---
 
 ## 1. Visione prodotto
@@ -56,11 +123,13 @@ Il sistema:
 1. capisce l’intento;
 2. chiede chiarimenti se la domanda è ambigua;
 3. risolve metriche, dimensioni e filtri su artifact semantici validati;
-4. compila SQL read-only tramite un Query Compiler deterministico;
-5. esegue la query sul DB cliente;
-6. verifica il risultato con controlli proporzionati;
-7. genera grafico/tabella/KPI;
-8. permette di salvare il risultato come widget in dashboard.
+4. passa da un Preflight Gate prima di qualunque compilazione SQL;
+5. compila SQL Server read-only tramite un Query Compiler deterministico;
+6. valida il compiled query contract prima di qualunque dry-run o execution;
+7. potrà eseguire solo dentro un dry-run/execution envelope controllato;
+8. verifica il risultato runtime con controlli proporzionati;
+9. genera grafico/tabella/KPI;
+10. permette di salvare il risultato come widget in dashboard.
 
 Il prodotto non deve sembrare Power BI o Qlik. Deve essere più vicino a Claude, Superpower e Function Health: pulito, editoriale, chiaro, con pochi elementi ma ad alta qualità percepita.
 
@@ -99,8 +168,11 @@ La nuova architettura corregge questi punti separando:
 * AI interpretation e semantic proposal;
 * Semantic Validator deterministico;
 * Query Intent Resolver strutturato;
+* Query Compiler Preflight Gate;
 * Query Compiler SQL Server deterministico;
-* Result Validator;
+* Result Validator V1 / Compiled Query Contract Validator;
+* Controlled dry-run ed execution envelope;
+* Runtime Result Validator;
 * North Star Benchmarks;
 * Triangulation Engine.
 
@@ -131,8 +203,9 @@ L’utente fa una domanda, ottiene:
 * grafico;
 * tabella;
 * spiegazione breve;
-* SQL visibile solo se autorizzato;
-* verifiche principali;
+* compiled SQL visibile solo se autorizzato;
+* verifiche principali, distinguendo contract validation pre-execution e
+  runtime validation post-execution;
 * possibilità di salvare in dashboard.
 
 ### 3.3 Semantic layer che migliora nel tempo
@@ -150,8 +223,8 @@ sensitivity. L’AI propone significato business, ma non può inventare join,
 ampliare l’accesso tecnico o scrivere SQL finale.
 
 Le North Star non sono metriche semantiche. Sono benchmark inseriti
-dall’utente per controllare l’ordine di grandezza dei risultati dopo
-l’esecuzione.
+dall’utente per controllare l’ordine di grandezza dei risultati nella fase
+runtime post-execution, senza cambiare metrica o query.
 
 ---
 
@@ -256,6 +329,37 @@ Queste cose potranno arrivare dopo, ma non ora.
 └────────────────────────────┘    └──────────────────────────┘
 ```
 
+Il diagramma sopra descrive il deployment target. La sequenza applicativa
+normativa v1.2 e' quella della query pipeline: Resolver -> Preflight ->
+Compiler -> Result Validator -> dry-run planning -> dry-run envelope ->
+execution envelope. La presenza del query-engine non implica execution prima
+dei gate.
+
+---
+
+## 5A. Engineering evidence / post-merge reports
+
+I seguenti report sono evidenza formale di stato implementativo e hardening:
+
+```txt
+docs/dev/schema-retrieval-state-of-art.md
+docs/dev/semantic-layer-state-of-art.md
+docs/dev/semantic-layer-hardening-runtime-test-report.md
+docs/dev/query-compiler-preflight-gate-report.md
+docs/dev/query-compiler-preflight-gate-runtime-debug-report.md
+docs/dev/query-compiler-v1-narrow-report.md
+docs/dev/query-compiler-v1-narrow-runtime-debug-report.md
+docs/dev/query-result-validator-v1-report.md -- expected after current PR
+```
+
+Post-merge debug reports are required after critical safety boundaries:
+
+* Preflight Gate;
+* Query Compiler;
+* Result Validator;
+* Dry-run Envelope;
+* Execution Envelope.
+
 ---
 
 ## 6. Perché Next.js
@@ -317,7 +421,21 @@ Angular non è sbagliato in assoluto, ma per questo prodotto aumenterebbe rigidi
 | Deployment             | GCP Cloud Run                         |
 | Networking             | VPC Connector + Cloud NAT / VPN       |
 
-Motivo della separazione: il query engine è il cuore delicato del prodotto. Deve gestire dialect SQL, introspection, verifica query, TLS, timeout e connessioni DB. Tenerlo separato dalla UI evita un monolite fragile.
+Il query engine contiene confini separati:
+
+* schema introspection / Technical Snapshot;
+* Queryability Graph;
+* Semantic Layer diagnostics;
+* Query Intent Resolver;
+* Query Compiler Preflight Gate;
+* Query Compiler V1 Narrow;
+* Result Validator V1 / compiled query contract validator;
+* futuri dry-run ed execution envelope.
+
+Motivo della separazione: il query engine è il cuore delicato del prodotto.
+Deve gestire dialect SQL, introspection, verifica query, TLS, timeout e
+connessioni DB senza mescolare UI e safety boundaries. La presenza del driver
+SQL Server non implica execution prima dei gate v1.2.
 
 ---
 
@@ -530,6 +648,10 @@ Permessi separati:
 * `team.manage`
 * `settings.manage`
 * `business_anchor.manage`
+
+`query.manual_sql` resta riservato per futura funzionalità enterprise/admin.
+Non abilita native/raw SQL execution in V1 e non può bypassare Preflight,
+Query Compiler deterministico, Result Validator o execution envelope.
 
 ### 12.3 Isolamento tenant
 
@@ -883,7 +1005,7 @@ period_type = year
 ```
 
 La North Star non modifica metrica, `metric_definition_hash`,
-`semantic_hash` o queryability. Il Result Validator la usera' dopo
+`semantic_hash` o queryability. Il Runtime Result Validator la usera' dopo
 l'esecuzione per controllare l'ordine di grandezza.
 
 ### 13.14 dashboards
@@ -902,7 +1024,8 @@ updated_at timestamptz
 
 ### 13.15 widgets
 
-Un widget è l’oggetto salvato che contiene domanda, SQL, grafico, impostazioni e refresh.
+Un widget è l’oggetto salvato che contiene domanda, compiled SQL, grafico,
+impostazioni e refresh. SQL non è generato dall'AI.
 
 ```txt
 id uuid pk
@@ -910,8 +1033,9 @@ tenant_id uuid fk
 connection_id uuid fk
 title text
 natural_language_query text nullable
-generated_sql text
-query_source text -- ai | manual
+compiled_sql text nullable
+compiled_sql_hash text nullable
+query_source text -- deterministic_compiler | future_manual_admin
 chart_spec jsonb
 display_config jsonb
 auto_refresh_minutes integer nullable
@@ -919,6 +1043,8 @@ created_by uuid
 created_at timestamptz
 updated_at timestamptz
 ```
+
+`future_manual_admin` è fuori scope V1 e non abilita raw/native SQL execution.
 
 ### 13.16 dashboard_widgets
 
@@ -965,15 +1091,26 @@ user_id uuid fk
 connection_id uuid fk
 natural_language_query text
 clarified_query text nullable
-generated_sql text
+query_intent_plan jsonb
+preflight_report jsonb
+compiler_trace jsonb
+compiled_sql text nullable
+compiled_parameters jsonb
+result_contract jsonb
+validator_report jsonb
+semantic_version_id uuid nullable
+queryability_graph_version_id uuid nullable
+schema_snapshot_id uuid nullable
 chart_spec jsonb
-status text -- success | blocked | failed | needs_clarification
+status text -- needs_clarification | blocked | compiled | validated | dry_run_failed | success | failed
 result_row_count integer
 execution_ms integer
 confidence_label text -- high | medium | low | blocked
 confidence_score numeric nullable -- internal, not shown by default
 created_at timestamptz
 ```
+
+Questa è una descrizione concettuale PRD, non una migration in questo task.
 
 ### 13.19 query_checks
 
@@ -1021,7 +1158,16 @@ Pipeline obbligatoria:
 Technical Snapshot V1
 -> Queryability Graph V1
 -> Semantic Layer
--> Query Compiler
+-> Query Intent Resolver
+-> Query Compiler Preflight Gate
+-> Query Compiler V1 Narrow
+-> Result Validator V1 / Compiled Query Contract Validator
+-> Controlled dry-run planning
+-> Dry-run envelope
+-> Execution envelope
+-> Runtime result validation
+-> Chart compiler
+-> Dashboard/widget layer
 ```
 
 Il graph e' tecnico, deterministico, tenant-scoped e immutabile. Contiene
@@ -1266,8 +1412,8 @@ Esempio:
 ### 15.2 Come vengono usate
 
 La North Star viene collegata tramite `metric_key` stabile, periodo,
-tolleranza e unità. Viene letta dal Result Validator dopo l’esecuzione della
-query, quando metrica e periodo sono compatibili.
+tolleranza e unità. Viene letta dal Runtime Result Validator dopo l’esecuzione
+della query, quando metrica e periodo sono compatibili.
 
 Non viene inviata di default all’AI Semantic Discovery e non deve influenzare:
 
@@ -1279,7 +1425,7 @@ Non viene inviata di default all’AI Semantic Discovery e non deve influenzare:
 
 Il futuro Intent Resolver può sapere che un benchmark esiste, ma non può
 usarlo per alterare il calcolo. L’eventuale triangolazione parte solo dopo
-un anomaly flag del Result Validator.
+un anomaly flag del Runtime Result Validator.
 
 ### 15.3 Importante
 
@@ -1290,205 +1436,137 @@ di plausibilità, non una fonte dati primaria e non una validazione semantica.
 
 ## 16. Query pipeline
 
-### 16.1 Fase 1 — Query Intent Resolver
+La pipeline corretta v1.2 e' ora:
 
-Input:
+```txt
+Technical Snapshot
+-> Queryability Graph
+-> Semantic Layer
+-> Query Intent Resolver
+-> Query Compiler Preflight Gate
+-> Query Compiler V1 Narrow
+-> Result Validator V1 / Compiled Query Contract Validator
+-> Controlled dry-run planning
+-> Dry-run envelope
+-> Execution envelope
+-> Runtime result validation
+-> Chart compiler
+-> Dashboard/widget layer
+```
+
+Result Validator V1 oggi significa Compiled Query Contract Validator: valida
+compiled SQL, parametri, compiler trace e result contract prima di execution.
+Non valida ancora righe reali del database. Il Runtime Result Validator e' una
+fase successiva post-execution.
+
+### 16.1 Query Intent Resolver
+
+Completato. E' plan-only e non produce SQL.
+
+Input principali:
 
 * domanda utente;
-* Semantic Layer `active`, `fresh` e compiler-eligible;
-* memorie rilevanti;
-* permessi utente;
-* connessione attiva.
+* Semantic Layer active/fresh;
+* Queryability Graph;
+* policy disponibili;
+* permessi utente.
 
-Output strutturato:
+Output:
 
-```json
-{
-  "status": "ready | needs_clarification",
-  "intent": "...",
-  "metric_keys": [],
-  "dimension_column_keys": [],
-  "filters": [
-    {
-      "column_key": "...",
-      "operator": "eq",
-      "value": "...",
-      "value_type": "string"
-    }
-  ],
-  "time_range": null,
-  "requested_chart_type": null,
-  "ambiguities": [],
-  "interpretations": [],
-  "clarifying_question": null,
-  "options": []
-}
-```
+* metrica primaria selezionata;
+* dimensioni e filtri strutturati;
+* time range;
+* disclosure e chiarimenti;
+* piano tipizzato per il preflight.
 
-L’Intent Resolver seleziona soltanto metriche richieste o strettamente
-necessarie alla risposta. Non aggiunge metriche arbitrarie. Può usare una
-metrica `ai_proposed` solo quando è valida, fresh e compiler-eligible secondo
-la policy. In quel caso deve esporre l’interpretazione applicata.
+Il resolver non esegue query, non genera SQL e non modifica Semantic Layer o
+Graph.
 
-### 16.2 Ambiguità
+### 16.2 Query Compiler Preflight Gate
 
-Se la domanda è ambigua, il sistema deve chiedere.
+Completato. Gate diagnostico interno.
 
-Esempio:
+Consuma:
 
-> “Mostrami il totale documenti 2024”
+* QueryIntentResult;
+* Semantic Layer;
+* Queryability Graph;
+* graph validation report;
+* semantic invariant report;
+* Technical Snapshot quando disponibile;
+* policy tenant/manuali quando presenti.
 
-Domanda da fare:
-
-> “Per documenti intendi fatture, ordini, DDT, note credito o tutti i documenti commerciali?”
-
-Non deve indovinare.
-
-Esempio specifico:
-
-* “fatturato” usa per default `revenue/net_header` se la domanda è compatibile
-  con il grain header;
-* “totale documento” usa `revenue/document_total`;
-* “fatturato per categoria prodotto” usa `revenue/line_detail`;
-* se manca una variante grain-safe, il sistema chiede chiarimento invece di
-  compilare un join moltiplicativo.
-
-### 16.3 Fase 2 — Query Plan strutturato
-
-Il resolver produce un piano tipizzato, non SQL:
+Restituisce:
 
 ```txt
-selected metrics
-dimensions
-structured filters
-time range
-required FK edge paths
-grain
-ordering
-limit
-interpretation disclosure
+ready | ready_with_warnings | blocked
 ```
 
-Il piano viene rifiutato se:
-
-* la Semantic Layer è stale;
-* una metrica è `clarification_required` o `not_eligible`;
-* una stable key non esiste;
-* una dimensione viola la grain policy;
-* il path richiede FK disabled, untrusted o lineage view;
-* una colonna è esclusa;
-* la sensitivity viola la policy dell’utente.
-
-### 16.4 Fase 3 — Query Compiler deterministico
-
-Il Query Compiler SQL Server trasforma esclusivamente il piano validato in
-SQL read-only. Non accetta SQL generato dall’AI e non fa wrapping cieco di
-query o CTE.
-
-Responsabilità:
-
-* selezionare tabelle e colonne tramite stable key;
-* usare solo `required_join_edge_keys` trusted/enabled;
-* rispettare direzione, grain e cardinalità;
-* applicare aggregazioni e filtri strutturati;
-* impedire header/detail multiplication;
-* generare SQL specifico per il dialect SQL Server;
-* produrre un manifest compilato per audit e result validation;
-* includere soltanto output richiesti.
-
-Regole di sicurezza:
-
-* sqlglot;
-* dialect specifico;
-* allowlist statement;
-* table allowlist;
-* column allowlist;
-* blacklist difensiva;
-* timeout;
-* row limit;
-* statement singolo.
-
-Il compilatore non può emettere INSERT, UPDATE, DELETE, DDL, EXEC, stored
-procedure o riferimenti cross-database.
-
-### 16.5 Fase 4 — Execution read-only
-
-Default:
-
-* timeout 30s;
-* row limit 5.000;
-* result payload max configurabile;
-* read-only DB user;
-* connessione pool per tenant/connection;
-* retry solo su errori transienti, mai su errori SQL logici.
-
-### 16.6 Fase 5 — Result Validator
-
-Verification proporzionale, non ansiosa.
-
-#### Always-on checks
-
-* static validation;
-* tables in semantic layer;
-* columns in semantic layer;
-* dry run;
-* row count sanity;
-* null/negative sanity su misura principale;
-* duplicate output rows solo se utile.
-
-#### Aggregation checks
-
-Per SUM additive:
-
-* total vs breakdown;
-* header/detail reconciliation se join 1:N;
-* join amplification;
-* North Star plausibility se disponibile e compatibile.
-
-#### Skip onesto
-
-Se un controllo non è applicabile:
+con `decision_category`:
 
 ```txt
-status = skip
+safe | safe_with_disclosure | needs_policy | insufficient_metadata | unsafe | unsupported | stale | invalid_artifact
 ```
 
-Non deve penalizzare la confidence.
+Produce `plan_trace` e `stage_results`. Non genera SQL e non esegue query.
 
-#### Engine error
+### 16.3 Query Compiler V1 Narrow
 
-Se il verification engine genera una query di controllo non valida:
+Completato. Compiler interno deterministico per SQL Server read-only.
 
-```txt
-status = engine_error
-severity = info/warning
-```
+Accetta solo piani approvati dal Preflight Gate:
 
-Non deve essere confuso con dato errato.
+* `ready` + `safe`;
+* `ready_with_warnings` + `safe_with_disclosure`.
 
-Se una North Star segnala uno scostamento rilevante, il Result Validator
-produce un anomaly flag. Il futuro Triangulation Engine può eseguire query
-diagnostiche controllate; non modifica la metrica né la query primaria.
+Richiede Technical Snapshot coerente. Produce SQL text, parametri e compiler
+trace. Non esegue query. Non accetta raw SQL input. Non cerca path. Non inferisce
+join da naming. Compila solo da stable key, graph refs, snapshot refs e semantic
+refs gia' approvati.
 
-### 16.7 Fase 6 — Result policy
+### 16.4 Result Validator V1 / Compiled Query Contract Validator
 
-Il risultato viene bloccato solo se:
+In progress. Valida compiled SQL, parametri, compiler trace e expected result
+contract prima di qualunque dry-run o execution.
 
-* SQL non sicuro;
-* query primaria fallisce;
-* tabelle fuori layer;
-* permessi insufficienti;
-* verifica critica rileva contraddizione forte;
-* risultato troppo grande;
-* connessione DB non sicura per policy tenant.
+Regole:
 
-Non bloccare per:
+* ricostruisce indipendentemente la SQL shape canonica attesa;
+* non chiama `compile_query_plan()`;
+* non apre connessioni DB;
+* non esegue SQL;
+* non valida righe reali;
+* blocca DDL/DML/EXEC, raw SQL leak, mismatch parametri, mismatch trace,
+  mismatch semantic/graph/snapshot e result contract incoerente.
 
-* skip;
-* privacy finding;
-* engine error del controllo;
-* mancanza baseline storica;
-* mancanza North Star.
+### 16.5 Controlled Dry-Run Planning
+
+Milestone futura. Definira' quando e come si puo' pianificare un dry-run
+controllato dopo Result Validator V1 e relativo post-merge debug pass.
+
+### 16.6 Dry-Run Envelope V1
+
+Milestone futura. Dovra' essere read-only, timeout-bound, parameterized,
+audited e separata dall'execution ordinaria.
+
+### 16.7 Execution Envelope V1 Narrow
+
+Milestone futura. L'execution non parte finche' Result Validator, dry-run
+planning e dry-run envelope non sono pronti e verificati.
+
+### 16.8 Runtime Result Validation
+
+Milestone futura post-execution. Validera' metadata e righe restituite:
+row count sanity, null/negative sanity, total vs breakdown, join amplification,
+North Star plausibility, result size e shape.
+
+North Star non modifica metriche, query, graph o semantic hash. E' solo un
+controllo proporzionato di plausibilita' runtime.
+
+### 16.9 Chart Compiler
+
+Milestone futura dopo execution/result contracts. Il Chart Compiler riceve dati
+e result contract validati e produce chart spec deterministica. Non rigenera SQL.
 
 ---
 
@@ -1624,7 +1702,9 @@ Un widget è una query salvata con visualizzazione.
 Contiene:
 
 * domanda originale;
-* SQL generato;
+* compiled SQL prodotto dal deterministic compiler, quando disponibile;
+* compiled SQL hash;
+* result contract e validator report quando disponibili;
 * chart_spec;
 * impostazioni di visualizzazione;
 * refresh policy;
@@ -1635,7 +1715,7 @@ Contiene:
 
 Lo stesso widget può apparire su più dashboard tramite `dashboard_widgets`.
 
-Non duplicare query, SQL e refresh.
+Non duplicare query, compiled SQL e refresh.
 
 ### 19.2 Eliminazione widget
 
@@ -1669,7 +1749,7 @@ Quando l’utente dice:
 L’AI deve ricevere:
 
 * query originale;
-* SQL;
+* result contract e metadata del risultato;
 * colonne risultato;
 * chart_spec attuale;
 * richiesta utente.
@@ -1890,7 +1970,9 @@ Esempio di output dell’Intent Resolver:
 ```
 
 Il server valida il payload contro Semantic Layer e Queryability Graph. Il
-Query Compiler produce SQL solo dopo questa validazione.
+Query Compiler produce SQL solo dopo Query Compiler Preflight Gate riuscito.
+Il Result Validator V1 deve poi approvare compiled SQL, parametri, trace e
+result contract prima di qualunque dry-run o execution.
 
 ### 22.4 AI su dati risultato
 
@@ -1912,13 +1994,47 @@ Limiti:
 
 ## 23. Verification engine
 
-### 23.1 Filosofia
+Il termine verification copre due confini diversi e non vanno confusi.
 
-Il verification engine deve aiutare, non sabotare.
+### 23.1 Pre-execution Result Validator V1
 
-Non deve trasformare ogni assenza di contesto in problema.
+Nome operativo: Compiled Query Contract Validator.
 
-### 23.2 Stati
+Responsabilita':
+
+* valida compiled SQL contract;
+* valida parametri;
+* valida compiler trace;
+* valida expected result shape;
+* valida assenza di raw SQL, DDL, DML, EXEC e statement multipli;
+* ricostruisce la SQL shape canonica attesa senza richiamare il compiler;
+* non apre connessioni DB;
+* non esegue query;
+* non valida righe reali.
+
+Questo gate deve passare prima di qualunque controlled dry-run planning.
+
+### 23.2 Runtime Result Validator
+
+Fase futura post-execution.
+
+Responsabilita':
+
+* valida metadata e righe restituite;
+* row count sanity;
+* null/negative sanity;
+* total vs breakdown;
+* join amplification;
+* result size/shape;
+* North Star plausibility quando compatibile;
+* anomalie proporzionate, senza usare North Star per cambiare metriche o query.
+
+### 23.3 Filosofia
+
+Il verification engine deve aiutare, non sabotare. Non deve trasformare ogni
+assenza di contesto in problema.
+
+Stati runtime:
 
 | Stato        | Significato                  |
 | ------------ | ---------------------------- |
@@ -1927,8 +2043,6 @@ Non deve trasformare ogni assenza di contesto in problema.
 | fail         | problema forte               |
 | skip         | non applicabile              |
 | engine_error | errore tecnico del controllo |
-
-### 23.3 Regole confidence
 
 Non penalizzare:
 
@@ -1948,22 +2062,6 @@ Penalizzare:
 * join amplification reale;
 * North Star mismatch forte;
 * total vs breakdown mismatch.
-
-### 23.4 Controlli V1
-
-* static validation;
-* tables in layer;
-* columns in layer;
-* dry run;
-* row count sanity;
-* null/negative sanity;
-* duplicate output rows;
-* join amplification;
-* total vs breakdown;
-* header/detail reconciliation;
-* North Star plausibility;
-* metric consistency se metrica ha grain;
-* historical plausibility solo se baseline disponibile.
 
 ---
 
@@ -2184,9 +2282,15 @@ Tenant settings:
 
 ## 28. Testing
 
-Non serve obbligare test locale nella V1.
+Testing principles:
 
-Testing previsto:
+1. AdventureWorksLT is regression baseline, not acceptance proof.
+2. Each safety boundary must include anti-demo fixtures.
+3. Production modules must pass hardcoding guards against demo/fixture literals.
+4. Critical boundaries require post-merge debug reports.
+5. Tests must include corrupted artifact scenarios, not only happy paths.
+6. Tests must include multi-schema, composite key, missing FK, disabled FK,
+   lineage, bridge/m2m, PII and weird identifiers where relevant.
 
 ### 28.1 CI GitHub
 
@@ -2200,34 +2304,41 @@ Testing previsto:
 ### 28.2 DB demo cloud
 
 Mantenere Azure SQL AdventureWorksLT come fixture cloud SQL Server
-end-to-end. Una fixture MySQL verrà aggiunta con la relativa milestone.
+end-to-end. Una fixture MySQL verra' aggiunta con la relativa milestone.
 
-Servono per test reali:
-
-* connessione;
-* TLS;
-* introspection;
-* semantic layer;
-* query AI;
-* grafici;
-* verification.
+AdventureWorksLT serve per regressione ripetibile, non per dichiarare readiness
+PMI/ERP.
 
 ### 28.3 Test critici
 
 Obbligatori:
 
-* SQL validator;
-* SQL dialect SQL Server;
+* SQL Server introspection e Technical Snapshot;
+* Queryability Graph invariants;
+* Semantic Layer invariants;
+* Query Intent Resolver plan-only;
+* Query Compiler Preflight Gate;
+* Query Compiler V1 Narrow;
+* Result Validator V1 / compiled query contract;
 * chart compiler;
 * column formatting;
 * tenant isolation;
 * permission gates;
 * query engine timeout;
-* North Star plausibility;
-* total vs breakdown;
-* join amplification;
-* CTE handling;
+* North Star plausibility runtime;
+* total vs breakdown runtime;
+* join amplification runtime;
 * no PII in prompt enrichment default.
+
+### 28.4 Hardcoding guards
+
+```powershell
+Select-String -Path services/query-engine/app/query_compiler_preflight.py -Pattern "SalesOrder|ProductCategory|DOTES|DORIG|ANACLI|ARTICO|CATART"
+Select-String -Path services/query-engine/app/query_compiler.py -Pattern "SalesOrder|ProductCategory|DOTES|DORIG|ANACLI|ARTICO|CATART"
+Select-String -Path services/query-engine/app/query_result_validator.py -Pattern "SalesOrder|ProductCategory|DOTES|DORIG|ANACLI|ARTICO|CATART"
+```
+
+Expected: no matches.
 
 ---
 
@@ -2322,218 +2433,97 @@ Servizi:
 
 ## 31. Milestone MVP
 
-Stato aggiornato al 29 giugno 2026. Le milestone completate restano
-documentate perché definiscono le dipendenze delle fasi successive.
+### Completed
 
-### Milestone 1 — Fondamenta e sicurezza di base — completata
+* Milestone 1 — Foundations and base security — completed
+* Milestone 2 — SQL Server connection — completed
+* Milestone 3 — Technical Snapshot SQL Server V1 — completed
+* Milestone 4 — Queryability Graph V1 — completed
+* Milestone 5 — Semantic Layer V1 — completed
+* Milestone 6 — North Star Foundation — completed
+* Milestone 7 — Semantic End-to-End Gate — completed
+* Milestone 8 — Query Intent Resolver V1 plan-only — completed
+* Milestone 9A — Query Compiler Preflight Gate — completed
+* Milestone 9A-debug — Preflight post-merge debug pass — completed
+* Milestone 9B — Query Compiler V1 Narrow — completed
+* Milestone 9B-debug — Compiler post-merge debug pass — completed
 
-* repo;
-* Next.js app;
-* Supabase schema;
-* auth;
-* tenant;
-* GCP deploy;
-* query-engine skeleton;
-* CI.
+### In progress
 
-### Milestone 2 — Connessione SQL Server — completata
+* Milestone 9C — Result Validator V1 / Compiled Query Contract Validator — in progress
 
-* SQL Server adapter;
-* public allowlist mode;
-* TLS;
-* Secret Manager;
-* test connessione;
-* Azure SQL AdventureWorksLT demo.
+### Next
 
-MySQL è differito. Non deve rallentare il percorso SQL Server end-to-end.
+* Milestone 9C-debug — Result Validator post-merge debug pass
+* Milestone 10 — Controlled dry-run planning
+* Milestone 11 — Dry-run Envelope V1
+* Milestone 11-debug — Dry-run Envelope post-merge debug pass
+* Milestone 12 — Execution Envelope V1 Narrow
+* Milestone 13 — Runtime Result Metadata Validator
+* Milestone 14 — Field Profile / Fingerprinting V1
+* Milestone 15 — Semantic Segments / Named Filters
+* Milestone 16 — Durable Business Context / Policy Layer
+* Milestone 17 — Confirmed Examples Memory
+* Milestone 18 — Dependency Graph / Breaking Change Checks
+* Milestone 19 — Chart Compiler V1
+* Milestone 20 — Dashboard / Widget Runtime
+* Milestone 21 — Pilot Hardening
 
-### Milestone 3 — Technical Snapshot SQL Server V1 — completata
+Anti-demo acceptance for every milestone from 9C onward:
 
-* catalog views `sys.*`;
-* oggetti, colonne, PK/FK, constraint e indici;
-* indexed view;
-* view definition e lineage;
-* coverage deterministica;
-* schema e snapshot hash;
-* audit AdventureWorksLT.
+```txt
+This milestone is not complete if it only works on AdventureWorksLT or a clean demo schema. It must include PMI/ERP-style fixtures or explicit evidence that it remains generic over stable keys, graph refs, snapshot refs, semantic refs and policy refs.
+```
 
-### Milestone 4 — Queryability Graph V1 — completata
-
-* graph tecnico immutabile e versionato;
-* stable key;
-* cardinalità, trust, nullability e self-reference;
-* bridge candidate;
-* path finding fino a quattro hop;
-* ambiguity e fanout warning;
-* lineage object e column separato dai join.
-
-### Milestone 5 — Semantic Layer V1 — completata
-
-* **5.1 Foundation pura**: contract, deterministic seed, business concept,
-  metric identity/definition hash, grain safety, compact dimension policy,
-  compiler eligibility e validator puro;
-* **5.2 AI Semantic Discovery**: structured output, prompt/model versioning,
-  allowlisted input, identity e safety server-side, eval AdventureWorksLT;
-* **5.3 Persistence e lifecycle**: persistenza transazionale, optimistic
-  concurrency, freshness, rebase per stable key, activation atomica,
-  immutabilità, RLS/RPC e audit;
-* **5.4 API e Workspace**: API tenant-scoped e UI AI-first per generazione,
-  review, correzione, validation, activation e rebase.
-* **5.5 Canonical quality hardening**: AI candidate minimali, policy hash,
-  canonical metric builder, synthesis da quality profile, valuta risolta,
-  shortest grain-safe path, quality report e messaggi UI coerenti con l'esito.
-
-### Milestone 6 — North Star Foundation — completata
-
-* contract `north_star_benchmarks`;
-* persistence tenant-scoped;
-* CRUD controllato;
-* collegamento tramite `metric_key`;
-* tolleranze, periodo, unità e severità;
-* tab UI dedicato;
-* nessuna triangolazione o modifica del calcolo metrica.
-
-### Milestone 7 — Semantic End-to-End Gate — completata
-
-* graph -> seed -> AI draft -> validation -> activation;
-* auto-activation e manual review policy;
-* stale e rebase;
-* eval AdventureWorksLT;
-* verifica DB/API/UI e security suite;
-* semantic active pronto come input del compiler;
-* v11 AdventureWorksLT considerata baseline valida per procedere:
-  active/fresh, quality gate passed, metriche core compiler-eligible,
-  ambiguita' aperte ridotte a chiarimenti materiali.
-* generazione sincrona mantenuta per il gate; background generation job e UX
-  asincrona sono il successivo hardening production.
-
-### Milestone 8 — Query Intent Resolver — completata lato plan-only
-
-* intent strutturato;
-* selezione metriche richiesta;
-* business concept e metric variant;
-* clarification flow;
-* disclosure delle interpretazioni;
-* nessun SQL libero;
-* nessuna esecuzione query;
-* nessun Query Compiler in questa milestone.
-
-Stato: implementata come resolver V1 stretto. Una domanda utente diventa un
-`QueryIntentPlan` strutturato e validato contro Semantic Layer active/fresh,
-Queryability Graph e policy. Il resolver supporta una metrica primaria, al
-massimo una dimensione, time range semplice per anno, disclosure e
-clarification materialmente necessarie. L'AI e' advisory: il canonicalizer
-server-side decide la selezione finale. Il payload non contiene SQL e non
-avvia execution.
-
-Acceptance AdventureWorksLT:
-
-* "fatturato 2008" -> `revenue/net_header`, `OrderDate`,
-  disclosure status-scope;
-* "totale documento 2008" -> `revenue/document_total`, `OrderDate`;
-* "quantita' venduta per categoria" -> `quantity_sold/line_quantity`,
-  ProductCategory safe;
-* "fatturato per categoria prodotto" -> `revenue/line_detail`,
-  ProductCategory safe, mai `SubTotal` via detail;
-* "clienti" -> `needs_clarification`;
-* "clienti che hanno ordinato" -> `customers/order_customers`;
-* "clienti in anagrafica" -> `customers/customer_master`;
-* "totale documento per categoria prodotto" -> blocked,
-  `unsafe_dimension_for_metric`;
-* "fatturato e quantita' per categoria" -> blocked,
-  `multi_metric_not_supported`;
-* Semantic Layer stale, metriche `not_eligible`, filtri/dimensioni sensitive
-  o richieste fuori scope devono bloccare il piano con `unsupported_reason`
-  strutturato.
-
-### Milestone 9 — Query Compiler SQL Server
-
-* query plan tipizzato;
-* compiler deterministico;
-* grain e join safety;
-* filtri strutturati;
-* SQL validation;
-* execution read-only;
-* result table e query history.
-
-### Milestone 10 — Result Validator e triangolazione controllata
-
-* total vs breakdown;
-* join amplification;
-* null/outlier;
-* North Star anomaly flag;
-* triangolazione interna quando necessaria;
-* confidence labels;
-* verification drawer.
-
-### Milestone 11 — Chart Compiler
-
-* chart spec;
-* ECharts renderer;
-* column formatting;
-* chart types V1;
-* edit chart;
-* save widget.
-
-### Milestone 12 — Dashboard
-
-* dashboard CRUD;
-* widget grid;
-* widget copy/link;
-* refresh;
-* cache;
-* export.
-
-### Milestone 13 — Pilot hardening
-
-* rate limits;
-* cost caps;
-* audit;
-* error sanitization;
-* privacy controls;
-* docs;
-* demo tenant.
+Execution is not part of Query Compiler V1. Query Compiler V1 only produces
+compiled SQL, parameters and compiler trace after a successful preflight gate.
 
 ---
 
 ## 32. Criteri di successo MVP
 
-Il prodotto è pronto per pilot se:
+Il prodotto non e' pronto per pilot finche':
 
 1. connessione SQL Server via IP allowlist funziona;
-2. almeno una VPN pilot è documentata o testata;
+2. almeno una VPN pilot e' documentata o testata;
 3. Technical Snapshot e Queryability Graph precedono sempre il Semantic Layer;
 4. Semantic Layer deriva da una graph version tramite stable key;
-5. una versione active è fresh, validata e immutabile;
-6. una versione stale non è compilabile;
-7. “fatturato 2008” viene risolto senza configurazione manuale;
-8. “fatturato per categoria prodotto” usa una metrica detail grain-safe;
-9. una query ambigua chiede chiarimento;
-10. l’AI non genera SQL finale e non inventa join;
-11. il Query Compiler emette solo SQL Server read-only validato;
-12. l’AI non aggiunge metriche o colonne non richieste;
-13. una North Star rileva mismatch grossolani senza cambiare la metrica;
-14. chart `bar` renderizza sempre se i dati sono compatibili;
-15. colonne count non sono formattate come valuta;
-16. Supabase non contiene password DB;
-17. risultati non vengono nascosti per skip o engine error;
-18. widget copiato su dashboard non duplica query;
-19. audit log traccia azioni sensibili;
-20. rate limit e AI cost cap sono attivi;
-21. demo SQL Server end-to-end è ripetibile.
+5. una versione active e' fresh, validata e immutabile;
+6. una versione stale non e' compilabile;
+7. Query Intent Resolver e' plan-only e non emette SQL;
+8. Preflight Gate blocca piani unsafe, stale, unsupported o con metadata insufficienti;
+9. Query Compiler emette SQL Server SELECT deterministico solo da piani preflight-approved;
+10. Result Validator valida compiled SQL, parametri, trace e result contract prima del dry-run;
+11. dry-run envelope esiste prima dell'execution;
+12. execution envelope e' read-only, timeout-bound, audited e parameterized;
+13. Runtime Result Validator valida metadata e risultati proporzionalmente;
+14. Field Profile/Fingerprinting esiste per colonne status/date/amount/category/PII-like prima di broad PMI rollout;
+15. Semantic Segments/Named Filters esistono prima di dichiarare robuste semantiche come valid orders, non-cancelled invoices o active customers;
+16. nessun modulo production e' overfitted su AdventureWorksLT o clean demo schemas;
+17. una query ambigua chiede chiarimento;
+18. l'AI non aggiunge metriche o colonne non richieste;
+19. una North Star rileva mismatch grossolani senza cambiare la metrica;
+20. chart `bar` renderizza sempre se i dati sono compatibili;
+21. colonne count non sono formattate come valuta;
+22. Supabase non contiene password DB o copia raw del DB cliente;
+23. risultati non vengono nascosti per skip o engine error;
+24. widget copiato su dashboard non duplica query;
+25. audit log traccia azioni sensibili;
+26. rate limit e AI cost cap sono attivi;
+27. demo SQL Server end-to-end e anti-demo PMI/ERP fixtures sono ripetibili.
 
 ---
 
 ## 33. Regole di prodotto non negoziabili
 
-1. Se la domanda è ambigua, chiedere chiarimento.
-2. Non indovinare quando il rischio semantico è alto.
+1. Se la domanda e' ambigua, chiedere chiarimento.
+2. Non indovinare quando il rischio semantico e' alto.
 3. Non aggiungere colonne non richieste.
 4. Non usare AI come validatore di sicurezza.
-5. Non permettere all’AI di scrivere SQL finale o inventare join.
+5. Non permettere all'AI di scrivere SQL finale o inventare join.
 6. Non usare Semantic Layer stale nel Query Compiler.
 7. Non usare Supabase come copia del DB cliente.
-8. Non mostrare percentuali di confidence come verità scientifica.
+8. Non mostrare percentuali di confidence come verita' scientifica.
 9. Non penalizzare privacy finding come errore dati.
 10. Non bloccare risultati corretti per controlli non applicabili.
 11. Non salvare password DB nel database app.
@@ -2541,6 +2531,15 @@ Il prodotto è pronto per pilot se:
 13. Non fare overfitting su AdventureWorksLT.
 14. Non confondere North Star e metriche semantiche.
 15. Ogni fix deve essere sistemico, non patch specifica su un dataset.
+16. Do not compile without a successful preflight gate.
+17. Do not execute compiled SQL without Result Validator approval.
+18. Do not treat Result Validator V1 as proof of business correctness.
+19. Do not treat AdventureWorksLT as acceptance for real PMI databases.
+20. Do not trust naming-inferred relationships.
+21. Do not use physical DB view lineage as join evidence.
+22. Do not introduce native/raw SQL execution in V1.
+23. Do not skip post-merge debug passes for safety boundaries.
+24. Do not mark a milestone complete without anti-demo/PMI acceptance.
 
 ---
 
@@ -2557,9 +2556,13 @@ Sistema:
 * usa metrica fatturato verificata;
 * usa data default della metrica;
 * raggruppa per mese;
-* il Query Compiler genera SQL dal piano strutturato;
+* il Preflight Gate approva il piano strutturato;
+* il Query Compiler genera SQL solo da quel piano approvato;
+* il Result Validator V1 approva compiled SQL, parametri, trace e result contract;
+* il risultato viene mostrato solo quando dry-run/execution envelope e runtime
+  validation saranno disponibili nella pipeline;
 * produce bar/line chart;
-* fa total vs breakdown;
+* fa total vs breakdown nella fase runtime;
 * confronta la North Star se presente;
 * mostra risultato.
 
@@ -2603,38 +2606,42 @@ Sistema:
 
 ## 35. Prossima implementazione
 
-Fondamenta, connessione SQL Server, Technical Snapshot, Queryability Graph,
-North Star Foundation e Semantic Layer fino al Semantic End-to-End Gate sono
-completati. La v11 AdventureWorksLT e' la baseline di partenza per la query
-pipeline: semantic active/fresh, quality gate passed, metriche core
-compiler-eligible e ambiguita' aperte limitate a chiarimenti materiali.
+### Current implementation state
 
-La Milestone 8 - Query Intent Resolver e' implementata come gate plan-only.
-Il resolver:
+Completed:
 
-* legge domanda utente, Semantic Layer active/fresh, policy utente e graph;
-* seleziona solo metriche richieste o strettamente necessarie;
-* sceglie metric variant coerenti con grain e dimensioni;
-* produce un Query Plan strutturato, non SQL;
-* blocca Semantic Layer stale, metriche non eligible e join/fanout unsafe;
-* chiede chiarimento quando l'intento resta materialmente ambiguo;
-* restituisce disclosure quando usa metriche AI-proposed o policy-resolved;
-* espone un endpoint query-engine `POST /query/intent/resolve` e una pagina
-  debug web `/query-intent`.
+* Technical Snapshot SQL Server V1;
+* Queryability Graph V1;
+* Semantic Layer V1 + invariant hardening;
+* Query Intent Resolver V1;
+* Query Compiler Preflight Gate + runtime debug pass;
+* Query Compiler V1 Narrow + runtime debug pass.
 
-Fuori scope Milestone 8:
+In progress:
 
-* Query Compiler SQL Server;
-* esecuzione query;
-* chart/dashboard;
-* Result Validator;
-* triangolazione;
-* generazione semantica asincrona production.
+* Result Validator V1 / Compiled Query Contract Validator.
 
-La generazione semantica asincrona resta hardening production successivo, ma
-non deve bloccare il percorso MVP. Prima serve sapere interpretare una domanda
-in un piano sicuro; questo gate ora esiste. Il prossimo passo MVP e' compilare
-quel piano in SQL Server deterministico.
+Next:
+
+1. Result Validator V1 report and gates.
+2. Result Validator post-merge debug pass.
+3. Controlled dry-run planning.
+4. Dry-run Envelope V1.
+5. Execution Envelope V1 Narrow.
+6. Runtime Result Metadata Validator.
+7. Field Profile / Fingerprinting V1.
+8. Semantic Segments / Named Filters.
+9. Durable Business Context / Policy Layer.
+10. Confirmed Examples Memory.
+11. Dependency Graph / Breaking Change Checks.
+12. Chart Compiler.
+13. Dashboard/widget runtime.
+
+Result Validator V1 is the current implementation task. Controlled dry-run
+planning can start only after Result Validator V1 and its post-merge debug pass.
+Execution cannot start yet. Broad compiler, FieldProfile, SemanticSegments and
+durable policy are future milestones, not blockers for the current Result
+Validator task.
 
 ---
 
@@ -2652,3 +2659,6 @@ Questa architettura è più solida perché separa chiaramente:
 * secrets.
 
 Il punto chiave è non far più decidere tutto all’AI in un unico colpo. L’AI deve essere un copilota controllato, non il sistema operativo della BI.
+
+Non stiamo costruendo un text-to-SQL. Stiamo costruendo una BI compiler
+pipeline controllata.
